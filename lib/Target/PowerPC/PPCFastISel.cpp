@@ -1552,7 +1552,8 @@ bool PPCFastISel::SelectRet(const Instruction *I) {
     // we can't use PPCMaterializeInt because it extends the sign which will
     // cause negations of the returned value to be incorrect as they are
     // implemented as the flip of the least significant bit.
-    if (const ConstantInt *C = dyn_cast<ConstantInt>(RV) ) {
+    if (isa<ConstantInt>(*RV)) {
+      const Constant *C = cast<Constant>(RV);
 
       CCValAssign &VA = ValLocs[0];
 
