@@ -1,5 +1,37 @@
 ; RUN: llc < %s -O0 -verify-machineinstrs -fast-isel-abort -mtriple=powerpc64-unknown-linux-gnu -mcpu=pwr7 | FileCheck %s --check-prefix=ELF64
 
+define zeroext i1 @rettrue() nounwind uwtable ssp {
+entry:
+; ELF64: rettrue
+; ELF64: li 3, 1
+; ELF64: blr
+  ret i1 true
+}
+
+define zeroext i1 @retfalse() nounwind uwtable ssp {
+entry:
+; ELF64: retfalse
+; ELF64: li 3, 0
+; ELF64: blr
+  ret i1 false
+}
+
+define signext i1 @retstrue() nounwind uwtable ssp {
+entry:
+; ELF64: retstrue
+; ELF64: li 3, -1
+; ELF64: blr
+  ret i1 true
+}
+
+define signext i1 @retsfalse() nounwind uwtable ssp {
+entry:
+; ELF64: retsfalse
+; ELF64: li 3, 0
+; ELF64: blr
+  ret i1 false
+}
+
 define signext i8 @ret2(i8 signext %a) nounwind uwtable ssp {
 entry:
 ; ELF64: ret2
