@@ -1558,21 +1558,8 @@ bool PPCFastISel::SelectRet(const Instruction *I) {
       CCValAssign &VA = ValLocs[0];
 
       unsigned RetReg = VA.getLocReg();
-      unsigned SrcReg = 0;
-
-      switch (VA.getLocInfo()) {
-        default:
-          llvm_unreachable("Unknown loc info!");
-          break;
-        case CCValAssign::Full:
-        case CCValAssign::AExt:
-        case CCValAssign::ZExt:
-          SrcReg = PPCMaterializeInt(C, MVT::i64, false);
-          break;
-        case CCValAssign::SExt:
-          SrcReg = PPCMaterializeInt(C, MVT::i64, true);
-          break;
-      }
+      unsigned SrcReg = PPCMaterializeInt(C, MVT::i64,
+                                          VA.getLocInfo() == CCValAssign::SExt);
 
       BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc,
             TII.get(TargetOpcode::COPY), RetReg).addReg(SrcReg);
