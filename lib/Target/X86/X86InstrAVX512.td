@@ -125,15 +125,15 @@ multiclass AVX512_masking_common<bits<8> O, Format F, X86VectorVTInfo _,
                                  dag RHS, dag MaskingRHS,
                                  string MaskingConstraint = ""> {
   def NAME: AVX512<O, F, Outs, Ins,
-                       OpcodeStr#" \t{"#AttSrcAsm#", $dst|"#
-                                      "$dst, "#IntelSrcAsm#"}",
+                       OpcodeStr#"\t{"#AttSrcAsm#", $dst|"#
+                                     "$dst, "#IntelSrcAsm#"}",
                        [(set _.RC:$dst, RHS)]>;
 
   // Prefer over VMOV*rrk Pat<>
   let AddedComplexity = 20 in
     def NAME#k: AVX512<O, F, Outs, MaskingIns,
-                       OpcodeStr#" \t{"#AttSrcAsm#", $dst {${mask}}|"#
-                                      "$dst {${mask}}, "#IntelSrcAsm#"}",
+                       OpcodeStr#"\t{"#AttSrcAsm#", $dst {${mask}}|"#
+                                     "$dst {${mask}}, "#IntelSrcAsm#"}",
                        [(set _.RC:$dst, MaskingRHS)]>,
               EVEX_K {
       // In case of the 3src subclass this is overridden with a let.
@@ -141,8 +141,8 @@ multiclass AVX512_masking_common<bits<8> O, Format F, X86VectorVTInfo _,
   }
   let AddedComplexity = 30 in // Prefer over VMOV*rrkz Pat<>
     def NAME#kz: AVX512<O, F, Outs, ZeroMaskingIns,
-                       OpcodeStr#" \t{"#AttSrcAsm#", $dst {${mask}} {z}|"#
-                                      "$dst {${mask}} {z}, "#IntelSrcAsm#"}",
+                       OpcodeStr#"\t{"#AttSrcAsm#", $dst {${mask}} {z}|"#
+                                     "$dst {${mask}} {z}, "#IntelSrcAsm#"}",
                        [(set _.RC:$dst,
                              (vselect _.KRCWM:$mask, RHS,
                                       (_.VT (bitconvert
@@ -1767,6 +1767,17 @@ def : Pat<(v16i1 (insert_subvector undef, (v8i1 VK8:$src), (iPTR 0))),
 
 def : Pat<(v8i1 (extract_subvector (v16i1 VK16:$src), (iPTR 8))),
           (v8i1 (COPY_TO_REGCLASS (KSHIFTRWri VK16:$src, (i8 8)), VK8))>;
+
+let Predicates = [HasVLX] in {
+  def : Pat<(v8i1 (insert_subvector undef, (v4i1 VK4:$src), (iPTR 0))),
+            (v8i1 (COPY_TO_REGCLASS VK4:$src, VK8))>;
+  def : Pat<(v8i1 (insert_subvector undef, (v2i1 VK2:$src), (iPTR 0))),
+            (v8i1 (COPY_TO_REGCLASS VK2:$src, VK8))>;
+  def : Pat<(v4i1 (extract_subvector (v8i1 VK8:$src), (iPTR 0))),
+            (v4i1 (COPY_TO_REGCLASS VK8:$src, VK4))>;
+  def : Pat<(v2i1 (extract_subvector (v8i1 VK8:$src), (iPTR 0))),
+            (v2i1 (COPY_TO_REGCLASS VK8:$src, VK2))>;
+}
 
 def : Pat<(v8i1 (X86vshli VK8:$src, (i8 imm:$imm))),
           (v8i1 (COPY_TO_REGCLASS (KSHIFTLWri (COPY_TO_REGCLASS VK8:$src, VK16), (I8Imm $imm)), VK8))>;
