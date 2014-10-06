@@ -254,10 +254,7 @@ static Value *GetLinearExpression(Value *V, APInt &Scale, APInt &Offset,
     Value *Result = GetLinearExpression(CastOp, Scale, Offset, Extension,
                                         DL, Depth+1, AT, DT);
     Scale = Scale.zext(OldWidth);
-
-    // We have to sign-extend even if Extension == EK_ZeroExt as we can't
-    // decompose a sign extension (i.e. zext(x - 1) != zext(x) - zext(-1)).
-    Offset = Offset.sext(OldWidth);
+    Offset = Offset.zext(OldWidth);
 
     return Result;
   }
@@ -907,8 +904,8 @@ BasicAliasAnalysis::aliasGEP(const GEPOperator *GEP1, uint64_t V1Size,
   // derived pointer.
   if (const GEPOperator *GEP2 = dyn_cast<GEPOperator>(V2)) {
     // Do the base pointers alias?
-    AliasResult BaseAlias = aliasCheck(UnderlyingV1, UnknownSize, nullptr,
-                                       UnderlyingV2, UnknownSize, nullptr);
+    AliasResult BaseAlias = aliasCheck(UnderlyingV1, UnknownSize, AAMDNodes(),
+                                       UnderlyingV2, UnknownSize, AAMDNodes());
 
     // Check for geps of non-aliasing underlying pointers where the offsets are
     // identical.
@@ -991,7 +988,7 @@ BasicAliasAnalysis::aliasGEP(const GEPOperator *GEP1, uint64_t V1Size,
     if (V1Size == UnknownSize && V2Size == UnknownSize)
       return MayAlias;
 
-    AliasResult R = aliasCheck(UnderlyingV1, UnknownSize, nullptr,
+    AliasResult R = aliasCheck(UnderlyingV1, UnknownSize, AAMDNodes(),
                                V2, V2Size, V2AAInfo);
     if (R != MustAlias)
       // If V2 may alias GEP base pointer, conservatively returns MayAlias.
@@ -1058,26 +1055,8 @@ BasicAliasAnalysis::aliasGEP(const GEPOperator *GEP1, uint64_t V1Size,
   // Grab the least significant bit set in any of the scales.
   if (!GEP1VariableIndices.empty()) {
     uint64_t Modulo = 0;
-    bool AllPositive = true;
-    for (unsigned i = 0, e = GEP1VariableIndices.size(); i != e; ++i) {
-      const Value *V = GEP1VariableIndices[i].V;
+    for (unsigned i = 0, e = GEP1VariableIndices.size(); i != e; ++i)
       Modulo |= (uint64_t)GEP1VariableIndices[i].Scale;
-
-      // If the variable's been zero-extended or begins with a zero then
-      //  we know it's positive. regardless of whether the value is signed
-      // or unsigned.
-      bool SignKnownZero, SignKnownOne;
-      ComputeSignBit(
-        const_cast<Value *>(V),
-        SignKnownZero, SignKnownOne,
-        DL, 0, AT, nullptr, DT);
-      bool IsZExt = GEP1VariableIndices[i].Extension == EK_ZeroExt;
-      AllPositive &= IsZExt || SignKnownZero;
-
-      // If the Value is currently positive but could change in a cycle,
-      // then we can't guarantee it'll always br positive.
-      AllPositive &= isValueEqualInPotentialCycles(V, V);
-    }
     Modulo = Modulo ^ (Modulo & (Modulo - 1));
 
     // We can compute the difference between the two addresses
@@ -1086,12 +1065,6 @@ BasicAliasAnalysis::aliasGEP(const GEPOperator *GEP1, uint64_t V1Size,
     uint64_t ModOffset = (uint64_t)GEP1BaseOffset & (Modulo - 1);
     if (V1Size != UnknownSize && V2Size != UnknownSize &&
         ModOffset >= V2Size && V1Size <= Modulo - ModOffset)
-      return NoAlias;
-
-    // If we know all the variables are positive, then GEP1 >= GEP1BasePtr.
-    // If GEP1BasePtr > V2 (GEP1BaseOffset > 0) then we know the pointers
-    // don't alias if V2Size can fit in the gap between V2 and GEP1BasePtr.
-    if (AllPositive && GEP1BaseOffset > 0 && V2Size <= (uint64_t) GEP1BaseOffset)
       return NoAlias;
   }
 
