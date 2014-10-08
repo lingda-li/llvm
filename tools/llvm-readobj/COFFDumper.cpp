@@ -56,6 +56,7 @@ public:
   void printDynamicSymbols() override;
   void printUnwindInfo() override;
   void printCOFFImports() override;
+  void printCOFFDirectives() override;
 
 private:
   void printSymbol(const SymbolRef &Sym);
@@ -82,6 +83,8 @@ private:
 
   const llvm::object::COFFObjectFile *Obj;
   RelocMapTy RelocMap;
+  StringRef CVFileIndexToStringOffsetTable;
+  StringRef CVStringTable;
 };
 
 } // namespace
@@ -440,8 +443,6 @@ void COFFDumper::printCodeViewLineTables(const SectionRef &Section) {
 
   SmallVector<StringRef, 10> FunctionNames;
   StringMap<StringRef> FunctionLineTables;
-  StringRef FileIndexToStringOffsetTable;
-  StringRef StringTable;
 
   ListScope D(W, "CodeViewLineTables");
   {
@@ -502,25 +503,25 @@ void COFFDumper::printCodeViewLineTables(const SectionRef &Section) {
         break;
       }
       case COFF::DEBUG_STRING_TABLE_SUBSECTION:
-        if (PayloadSize == 0 || StringTable.data() != nullptr ||
+        if (PayloadSize == 0 || CVStringTable.data() != nullptr ||
             Contents.back() != '\0') {
           // Empty or duplicate or non-null-terminated subsection.
           error(object_error::parse_failed);
           return;
         }
-        StringTable = Contents;
+        CVStringTable = Contents;
         break;
       case COFF::DEBUG_INDEX_SUBSECTION:
         // Holds the translation table from file indices
         // to offsets in the string table.
 
         if (PayloadSize == 0 ||
-            FileIndexToStringOffsetTable.data() != nullptr) {
+            CVFileIndexToStringOffsetTable.data() != nullptr) {
           // Empty or duplicate subsection.
           error(object_error::parse_failed);
           return;
         }
-        FileIndexToStringOffsetTable = Contents;
+        CVFileIndexToStringOffsetTable = Contents;
         break;
       }
       Offset += PayloadSize;
@@ -555,7 +556,7 @@ void COFFDumper::printCodeViewLineTables(const SectionRef &Section) {
 
       uint32_t FilenameOffset;
       {
-        DataExtractor SDE(FileIndexToStringOffsetTable, true, 4);
+        DataExtractor SDE(CVFileIndexToStringOffsetTable, true, 4);
         uint32_t OffsetInSDE = OffsetInIndex;
         if (!SDE.isValidOffset(OffsetInSDE)) {
           error(object_error::parse_failed);
@@ -564,15 +565,15 @@ void COFFDumper::printCodeViewLineTables(const SectionRef &Section) {
         FilenameOffset = SDE.getU32(&OffsetInSDE);
       }
 
-      if (FilenameOffset == 0 || FilenameOffset + 1 >= StringTable.size() ||
-          StringTable.data()[FilenameOffset - 1] != '\0') {
+      if (FilenameOffset == 0 || FilenameOffset + 1 >= CVStringTable.size() ||
+          CVStringTable.data()[FilenameOffset - 1] != '\0') {
         // Each string in an F3 subsection should be preceded by a null
         // character.
         error(object_error::parse_failed);
         return;
       }
 
-      StringRef Filename(StringTable.data() + FilenameOffset);
+      StringRef Filename(CVStringTable.data() + FilenameOffset);
       ListScope S(W, "FilenameSegment");
       W.printString("Filename", Filename);
       for (unsigned J = 0; J != SegmentLength && DE.isValidOffset(Offset);
@@ -628,8 +629,7 @@ void COFFDumper::printSections() {
     if (opts::SectionSymbols) {
       ListScope D(W, "Symbols");
       for (const SymbolRef &Symbol : Obj->symbols()) {
-        bool Contained = false;
-        if (Sec.containsSymbol(Symbol, Contained) || !Contained)
+        if (!Sec.containsSymbol(Symbol))
           continue;
 
         printSymbol(Symbol);
@@ -932,3 +932,21 @@ void COFFDumper::printCOFFImports() {
     printImportedSymbols(I->imported_symbol_begin(), I->imported_symbol_end());
   }
 }
+
+void COFFDumper::printCOFFDirectives() {
+  for (const SectionRef &Section : Obj->sections()) {
+    StringRef Contents;
+    StringRef Name;
+
+    if (error(Section.getName(Name)))
+      continue;
+    if (Name != ".drectve")
+      continue;
+
+    if (error(Section.getContents(Contents)))
+      return;
+
+    W.printString("Directive(s)", Contents);
+  }
+}
+
