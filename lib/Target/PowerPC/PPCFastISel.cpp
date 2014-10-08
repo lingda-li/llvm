@@ -897,10 +897,10 @@ unsigned PPCFastISel::PPCMoveToFPReg(MVT SrcVT, unsigned SrcReg,
   if (SrcVT == MVT::i32) {
     if (!IsSigned) {
       LoadOpc = PPC::LFIWZX;
-      Addr.Offset = 4;
+      Addr.Offset = (PPCSubTarget->isLittleEndian()) ? 0 : 4;
     } else if (PPCSubTarget->hasLFIWAX()) {
       LoadOpc = PPC::LFIWAX;
-      Addr.Offset = 4;
+      Addr.Offset = (PPCSubTarget->isLittleEndian()) ? 0 : 4;
     }
   }
 
