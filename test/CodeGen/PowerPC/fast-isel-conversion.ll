@@ -10,6 +10,7 @@
 define void @sitofp_single_i64(i64 %a, float %b) nounwind ssp {
 entry:
 ; ELF64: sitofp_single_i64
+; ELF64LE: sitofp_single_i64
 ; PPC970: sitofp_single_i64
   %b.addr = alloca float, align 4
   %conv = sitofp i64 %a to float
@@ -30,17 +31,18 @@ entry:
 define void @sitofp_single_i32(i32 %a, float %b) nounwind ssp {
 entry:
 ; ELF64: sitofp_single_i32
+; ELF64LE: sitofp_single_i32
 ; PPC970: sitofp_single_i32
   %b.addr = alloca float, align 4
   %conv = sitofp i32 %a to float
 ; ELF64: std
 ; stack offset used to load the float: 65524 = -16 + 4
-; ELF64: ori [0-9]+, [0-9]+, 65524 
+; ELF64: ori {{[0-9]+}}, {{[0-9]+}}, 65524 
 ; ELF64: lfiwax
 ; ELF64: fcfids
 ; ELF64LE: std
 ; stack offset used to load the float: 65520 = -16 + 0
-; ELF64LE: ori [0-9]+, [0-9]+, 65520
+; ELF64LE: ori {{[0-9]+}}, {{[0-9]+}}, 65520
 ; ELF64LE: lfiwax
 ; ELF64LE: fcfids
 ; PPC970: std
@@ -54,6 +56,7 @@ entry:
 define void @sitofp_single_i16(i16 %a, float %b) nounwind ssp {
 entry:
 ; ELF64: sitofp_single_i16
+; ELF64LE: sitofp_single_i16
 ; PPC970: sitofp_single_i16
   %b.addr = alloca float, align 4
   %conv = sitofp i16 %a to float
@@ -77,6 +80,7 @@ entry:
 define void @sitofp_single_i8(i8 %a) nounwind ssp {
 entry:
 ; ELF64: sitofp_single_i8
+; ELF64LE: sitofp_single_i8
 ; PPC970: sitofp_single_i8
   %b.addr = alloca float, align 4
   %conv = sitofp i8 %a to float
@@ -100,17 +104,18 @@ entry:
 define void @sitofp_double_i32(i32 %a, double %b) nounwind ssp {
 entry:
 ; ELF64: sitofp_double_i32
+; ELF64LE: sitofp_double_i32
 ; PPC970: sitofp_double_i32
   %b.addr = alloca double, align 8
   %conv = sitofp i32 %a to double
 ; ELF64: std
 ; stack offset used to load the float: 65524 = -16 + 4
-; ELF64: ori [0-9]+, [0-9]+, 65524
+; ELF64: ori {{[0-9]+}}, {{[0-9]+}}, 65524
 ; ELF64: lfiwax
 ; ELF64: fcfid
 ; ELF64LE: std
 ; stack offset used to load the float: 65520 = -16 + 0
-; ELF64LE: ori [0-9]+, [0-9]+, 65520
+; ELF64LE: ori {{[0-9]+}}, {{[0-9]+}}, 65520
 ; ELF64LE: lfiwax
 ; ELF64LE: fcfid
 ; PPC970: std
@@ -123,6 +128,7 @@ entry:
 define void @sitofp_double_i64(i64 %a, double %b) nounwind ssp {
 entry:
 ; ELF64: sitofp_double_i64
+; ELF64LE: sitofp_double_i64
 ; PPC970: sitofp_double_i64
   %b.addr = alloca double, align 8
   %conv = sitofp i64 %a to double
@@ -142,6 +148,7 @@ entry:
 define void @sitofp_double_i16(i16 %a, double %b) nounwind ssp {
 entry:
 ; ELF64: sitofp_double_i16
+; ELF64LE: sitofp_double_i16
 ; PPC970: sitofp_double_i16
   %b.addr = alloca double, align 8
   %conv = sitofp i16 %a to double
@@ -164,6 +171,7 @@ entry:
 define void @sitofp_double_i8(i8 %a, double %b) nounwind ssp {
 entry:
 ; ELF64: sitofp_double_i8
+; ELF64LE: sitofp_double_i8
 ; PPC970: sitofp_double_i8
   %b.addr = alloca double, align 8
   %conv = sitofp i8 %a to double
@@ -188,6 +196,7 @@ entry:
 define void @uitofp_single_i64(i64 %a, float %b) nounwind ssp {
 entry:
 ; ELF64: uitofp_single_i64
+; ELF64LE: uitofp_single_i64
 ; PPC970: uitofp_single_i64
   %b.addr = alloca float, align 4
   %conv = uitofp i64 %a to float
@@ -205,17 +214,18 @@ entry:
 define void @uitofp_single_i32(i32 %a, float %b) nounwind ssp {
 entry:
 ; ELF64: uitofp_single_i32
+; ELF64LE: uitofp_single_i32
 ; PPC970: uitofp_single_i32
   %b.addr = alloca float, align 4
   %conv = uitofp i32 %a to float
 ; ELF64: std
 ; stack offset used to load the float: 65524 = -16 + 4
-; ELF64: ori [0-9]+, [0-9]+, 65524
+; ELF64: ori {{[0-9]+}}, {{[0-9]+}}, 65524
 ; ELF64: lfiwzx
 ; ELF64: fcfidus
 ; ELF64LE: std
 ; stack offset used to load the float: 65520 = -16 + 0
-; ELF64LE: ori [0-9]+, [0-9]+, 65524
+; ELF64LE: ori {{[0-9]+}}, {{[0-9]+}}, 65520
 ; ELF64LE: lfiwzx
 ; ELF64LE: fcfidus
 ; PPC970-NOT: lfiwzx
@@ -227,6 +237,7 @@ entry:
 define void @uitofp_single_i16(i16 %a, float %b) nounwind ssp {
 entry:
 ; ELF64: uitofp_single_i16
+; ELF64LE: uitofp_single_i16
 ; PPC970: uitofp_single_i16
   %b.addr = alloca float, align 4
   %conv = uitofp i16 %a to float
@@ -250,6 +261,7 @@ entry:
 define void @uitofp_single_i8(i8 %a) nounwind ssp {
 entry:
 ; ELF64: uitofp_single_i8
+; ELF64LE: uitofp_single_i8
 ; PPC970: uitofp_single_i8
   %b.addr = alloca float, align 4
   %conv = uitofp i8 %a to float
@@ -273,6 +285,7 @@ entry:
 define void @uitofp_double_i64(i64 %a, double %b) nounwind ssp {
 entry:
 ; ELF64: uitofp_double_i64
+; ELF64LE: uitofp_double_i64
 ; PPC970: uitofp_double_i64
   %b.addr = alloca double, align 8
   %conv = uitofp i64 %a to double
@@ -290,17 +303,18 @@ entry:
 define void @uitofp_double_i32(i32 %a, double %b) nounwind ssp {
 entry:
 ; ELF64: uitofp_double_i32
+; ELF64LE: uitofp_double_i32
 ; PPC970: uitofp_double_i32
   %b.addr = alloca double, align 8
   %conv = uitofp i32 %a to double
 ; ELF64: std
 ; stack offset used to load the float: 65524 = -16 + 4
-; ELF64: ori [0-9]+, [0-9]+, 65524
+; ELF64: ori {{[0-9]+}}, {{[0-9]+}}, 65524
 ; ELF64: lfiwzx
 ; ELF64: fcfidu
 ; ELF64LE: std
 ; stack offset used to load the float: 65520 = -16 + 0
-; ELF64LE: ori [0-9]+, [0-9]+, 65524
+; ELF64LE: ori {{[0-9]+}}, {{[0-9]+}}, 65520
 ; ELF64LE: lfiwzx
 ; ELF64LE: fcfidu
 ; PPC970-NOT: lfiwzx
@@ -312,6 +326,7 @@ entry:
 define void @uitofp_double_i16(i16 %a, double %b) nounwind ssp {
 entry:
 ; ELF64: uitofp_double_i16
+; ELF64LE: uitofp_double_i16
 ; PPC970: uitofp_double_i16
   %b.addr = alloca double, align 8
   %conv = uitofp i16 %a to double
@@ -334,6 +349,7 @@ entry:
 define void @uitofp_double_i8(i8 %a, double %b) nounwind ssp {
 entry:
 ; ELF64: uitofp_double_i8
+; ELF64LE: uitofp_double_i8
 ; PPC970: uitofp_double_i8
   %b.addr = alloca double, align 8
   %conv = uitofp i8 %a to double
@@ -358,6 +374,7 @@ entry:
 define void @fptosi_float_i32(float %a) nounwind ssp {
 entry:
 ; ELF64: fptosi_float_i32
+; ELF64LE: fptosi_float_i32
 ; PPC970: fptosi_float_i32
   %b.addr = alloca i32, align 4
   %conv = fptosi float %a to i32
@@ -377,6 +394,7 @@ entry:
 define void @fptosi_float_i64(float %a) nounwind ssp {
 entry:
 ; ELF64: fptosi_float_i64
+; ELF64LE: fptosi_float_i64
 ; PPC970: fptosi_float_i64
   %b.addr = alloca i64, align 4
   %conv = fptosi float %a to i64
@@ -396,6 +414,7 @@ entry:
 define void @fptosi_double_i32(double %a) nounwind ssp {
 entry:
 ; ELF64: fptosi_double_i32
+; ELF64LE: fptosi_double_i32
 ; PPC970: fptosi_double_i32
   %b.addr = alloca i32, align 8
   %conv = fptosi double %a to i32
@@ -415,6 +434,7 @@ entry:
 define void @fptosi_double_i64(double %a) nounwind ssp {
 entry:
 ; ELF64: fptosi_double_i64
+; ELF64LE: fptosi_double_i64
 ; PPC970: fptosi_double_i64
   %b.addr = alloca i64, align 8
   %conv = fptosi double %a to i64
@@ -436,6 +456,7 @@ entry:
 define void @fptoui_float_i32(float %a) nounwind ssp {
 entry:
 ; ELF64: fptoui_float_i32
+; ELF64LE: fptoui_float_i32
 ; PPC970: fptoui_float_i32
   %b.addr = alloca i32, align 4
   %conv = fptoui float %a to i32
@@ -455,6 +476,7 @@ entry:
 define void @fptoui_float_i64(float %a) nounwind ssp {
 entry:
 ; ELF64: fptoui_float_i64
+; ELF64LE: fptoui_float_i64
 ; PPC970: fptoui_float_i64
   %b.addr = alloca i64, align 4
   %conv = fptoui float %a to i64
@@ -472,6 +494,7 @@ entry:
 define void @fptoui_double_i32(double %a) nounwind ssp {
 entry:
 ; ELF64: fptoui_double_i32
+; ELF64LE: fptoui_double_i32
 ; PPC970: fptoui_double_i32
   %b.addr = alloca i32, align 8
   %conv = fptoui double %a to i32
@@ -491,6 +514,7 @@ entry:
 define void @fptoui_double_i64(double %a) nounwind ssp {
 entry:
 ; ELF64: fptoui_double_i64
+; ELF64LE: fptoui_double_i64
 ; PPC970: fptoui_double_i64
   %b.addr = alloca i64, align 8
   %conv = fptoui double %a to i64
