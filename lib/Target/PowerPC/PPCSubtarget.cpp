@@ -32,6 +32,13 @@ using namespace llvm;
 #define GET_SUBTARGETINFO_CTOR
 #include "PPCGenSubtargetInfo.inc"
 
+/// FIXME: This is a temporary option to allow testing the VSX implementation
+/// components that we now are supposed to be working. VSX is deactivated by
+/// default due to some endianess issues that need to be tackled.
+static cl::opt<bool> ForceVSX("force-ppcle-vsx",
+cl::desc("force VSX to be used in little endian machines supporting it"),
+         cl::Hidden);
+
 /// Return the datalayout string of a subtarget.
 static std::string getDataLayoutString(const Triple &T) {
   bool is64Bit = T.getArch() == Triple::ppc64 || T.getArch() == Triple::ppc64le;
@@ -154,9 +161,10 @@ void PPCSubtarget::initSubtargetFeatures(StringRef CPU, StringRef FS) {
   IsLittleEndian = (TargetTriple.getArch() == Triple::ppc64le);
 
   // FIXME: For now, we disable VSX in little-endian mode until endian
-  // issues in those instructions can be addressed.
+  // issues in those instructions can be addressed, unless force-ppcle-vsx is
+  // provided by the user.
   if (IsLittleEndian)
-    HasVSX = false;
+    HasVSX = HasVSX && ForceVSX;
 
   // Determine default ABI.
   if (TargetABI == PPC_ABI_UNKNOWN) {

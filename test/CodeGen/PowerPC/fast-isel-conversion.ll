@@ -1,4 +1,5 @@
 ; RUN: llc < %s -O0 -verify-machineinstrs -fast-isel-abort -mtriple=powerpc64-unknown-linux-gnu -mcpu=pwr7 | FileCheck %s --check-prefix=ELF64
+; RUN: llc < %s -O0 -verify-machineinstrs -fast-isel-abort -mtriple=powerpc64le-unknown-linux-gnu -mcpu=pwr8 | FileCheck %s --check-prefix=ELF64LE
 ; RUN: llc < %s -O0 -verify-machineinstrs -mtriple=powerpc64-unknown-linux-gnu -mcpu=970 | FileCheck %s --check-prefix=PPC970
 
 ;; Tests for 970 don't use -fast-isel-abort because we intentionally punt
@@ -15,6 +16,9 @@ entry:
 ; ELF64: std
 ; ELF64: lfd
 ; ELF64: fcfids
+; ELF64LE: std
+; ELF64LE: lfd
+; ELF64LE: fcfids
 ; PPC970: std
 ; PPC970: lfd
 ; PPC970: fcfid
@@ -30,8 +34,15 @@ entry:
   %b.addr = alloca float, align 4
   %conv = sitofp i32 %a to float
 ; ELF64: std
+; stack offset used to load the float: 65524 = -16 + 4
+; ELF64: ori [0-9]+, [0-9]+, 65524 
 ; ELF64: lfiwax
 ; ELF64: fcfids
+; ELF64LE: std
+; stack offset used to load the float: 65520 = -16 + 0
+; ELF64LE: ori [0-9]+, [0-9]+, 65520
+; ELF64LE: lfiwax
+; ELF64LE: fcfids
 ; PPC970: std
 ; PPC970: lfd
 ; PPC970: fcfid
@@ -50,6 +61,10 @@ entry:
 ; ELF64: std
 ; ELF64: lfd
 ; ELF64: fcfids
+; ELF64LE: extsh
+; ELF64LE: std
+; ELF64LE: lfd
+; ELF64LE: fcfids
 ; PPC970: extsh
 ; PPC970: std
 ; PPC970: lfd
@@ -69,6 +84,10 @@ entry:
 ; ELF64: std
 ; ELF64: lfd
 ; ELF64: fcfids
+; ELF64LE: extsb
+; ELF64LE: std
+; ELF64LE: lfd
+; ELF64LE: fcfids
 ; PPC970: extsb
 ; PPC970: std
 ; PPC970: lfd
@@ -85,8 +104,15 @@ entry:
   %b.addr = alloca double, align 8
   %conv = sitofp i32 %a to double
 ; ELF64: std
+; stack offset used to load the float: 65524 = -16 + 4
+; ELF64: ori [0-9]+, [0-9]+, 65524
 ; ELF64: lfiwax
 ; ELF64: fcfid
+; ELF64LE: std
+; stack offset used to load the float: 65520 = -16 + 0
+; ELF64LE: ori [0-9]+, [0-9]+, 65520
+; ELF64LE: lfiwax
+; ELF64LE: fcfid
 ; PPC970: std
 ; PPC970: lfd
 ; PPC970: fcfid
@@ -103,6 +129,9 @@ entry:
 ; ELF64: std
 ; ELF64: lfd
 ; ELF64: fcfid
+; ELF64LE: std
+; ELF64LE: lfd
+; ELF64LE: fcfid
 ; PPC970: std
 ; PPC970: lfd
 ; PPC970: fcfid
@@ -120,6 +149,10 @@ entry:
 ; ELF64: std
 ; ELF64: lfd
 ; ELF64: fcfid
+; ELF64LE: extsh
+; ELF64LE: std
+; ELF64LE: lfd
+; ELF64LE: fcfid
 ; PPC970: extsh
 ; PPC970: std
 ; PPC970: lfd
@@ -138,6 +171,10 @@ entry:
 ; ELF64: std
 ; ELF64: lfd
 ; ELF64: fcfid
+; ELF64LE: extsb
+; ELF64LE: std
+; ELF64LE: lfd
+; ELF64LE: fcfid
 ; PPC970: extsb
 ; PPC970: std
 ; PPC970: lfd
@@ -157,6 +194,9 @@ entry:
 ; ELF64: std
 ; ELF64: lfd
 ; ELF64: fcfidus
+; ELF64LE: std
+; ELF64LE: lfd
+; ELF64LE: fcfidus
 ; PPC970-NOT: fcfidus
   store float %conv, float* %b.addr, align 4
   ret void
@@ -169,8 +209,15 @@ entry:
   %b.addr = alloca float, align 4
   %conv = uitofp i32 %a to float
 ; ELF64: std
+; stack offset used to load the float: 65524 = -16 + 4
+; ELF64: ori [0-9]+, [0-9]+, 65524
 ; ELF64: lfiwzx
 ; ELF64: fcfidus
+; ELF64LE: std
+; stack offset used to load the float: 65520 = -16 + 0
+; ELF64LE: ori [0-9]+, [0-9]+, 65524
+; ELF64LE: lfiwzx
+; ELF64LE: fcfidus
 ; PPC970-NOT: lfiwzx
 ; PPC970-NOT: fcfidus
   store float %conv, float* %b.addr, align 4
@@ -187,6 +234,10 @@ entry:
 ; ELF64: std
 ; ELF64: lfd
 ; ELF64: fcfidus
+; ELF64LE: rldicl {{[0-9]+}}, {{[0-9]+}}, 0, 48
+; ELF64LE: std
+; ELF64LE: lfd
+; ELF64LE: fcfidus
 ; PPC970: rlwinm {{[0-9]+}}, {{[0-9]+}}, 0, 16, 31
 ; PPC970: std
 ; PPC970: lfd
@@ -206,6 +257,10 @@ entry:
 ; ELF64: std
 ; ELF64: lfd
 ; ELF64: fcfidus
+; ELF64LE: rldicl {{[0-9]+}}, {{[0-9]+}}, 0, 56
+; ELF64LE: std
+; ELF64LE: lfd
+; ELF64LE: fcfidus
 ; PPC970: rlwinm {{[0-9]+}}, {{[0-9]+}}, 0, 24, 31
 ; PPC970: std
 ; PPC970: lfd
@@ -224,6 +279,9 @@ entry:
 ; ELF64: std
 ; ELF64: lfd
 ; ELF64: fcfidu
+; ELF64LE: std
+; ELF64LE: lfd
+; ELF64LE: fcfidu
 ; PPC970-NOT: fcfidu
   store double %conv, double* %b.addr, align 8
   ret void
@@ -236,8 +294,15 @@ entry:
   %b.addr = alloca double, align 8
   %conv = uitofp i32 %a to double
 ; ELF64: std
+; stack offset used to load the float: 65524 = -16 + 4
+; ELF64: ori [0-9]+, [0-9]+, 65524
 ; ELF64: lfiwzx
 ; ELF64: fcfidu
+; ELF64LE: std
+; stack offset used to load the float: 65520 = -16 + 0
+; ELF64LE: ori [0-9]+, [0-9]+, 65524
+; ELF64LE: lfiwzx
+; ELF64LE: fcfidu
 ; PPC970-NOT: lfiwzx
 ; PPC970-NOT: fcfidu
   store double %conv, double* %b.addr, align 8
@@ -254,6 +319,10 @@ entry:
 ; ELF64: std
 ; ELF64: lfd
 ; ELF64: fcfidu
+; ELF64LE: rldicl {{[0-9]+}}, {{[0-9]+}}, 0, 48
+; ELF64LE: std
+; ELF64LE: lfd
+; ELF64LE: fcfidu
 ; PPC970: rlwinm {{[0-9]+}}, {{[0-9]+}}, 0, 16, 31
 ; PPC970: std
 ; PPC970: lfd
@@ -272,6 +341,10 @@ entry:
 ; ELF64: std
 ; ELF64: lfd
 ; ELF64: fcfidu
+; ELF64LE: rldicl {{[0-9]+}}, {{[0-9]+}}, 0, 56
+; ELF64LE: std
+; ELF64LE: lfd
+; ELF64LE: fcfidu
 ; PPC970: rlwinm {{[0-9]+}}, {{[0-9]+}}, 0, 24, 31
 ; PPC970: std
 ; PPC970: lfd
@@ -291,6 +364,9 @@ entry:
 ; ELF64: fctiwz
 ; ELF64: stfd
 ; ELF64: lwa
+; ELF64LE: fctiwz
+; ELF64LE: stfd
+; ELF64LE: lwa
 ; PPC970: fctiwz
 ; PPC970: stfd
 ; PPC970: lwa
@@ -307,6 +383,9 @@ entry:
 ; ELF64: fctidz
 ; ELF64: stfd
 ; ELF64: ld
+; ELF64LE: fctidz
+; ELF64LE: stfd
+; ELF64LE: ld
 ; PPC970: fctidz
 ; PPC970: stfd
 ; PPC970: ld
@@ -323,6 +402,9 @@ entry:
 ; ELF64: fctiwz
 ; ELF64: stfd
 ; ELF64: lwa
+; ELF64LE: fctiwz
+; ELF64LE: stfd
+; ELF64LE: lwa
 ; PPC970: fctiwz
 ; PPC970: stfd
 ; PPC970: lwa
@@ -339,6 +421,9 @@ entry:
 ; ELF64: fctidz
 ; ELF64: stfd
 ; ELF64: ld
+; ELF64LE: fctidz
+; ELF64LE: stfd
+; ELF64LE: ld
 ; PPC970: fctidz
 ; PPC970: stfd
 ; PPC970: ld
@@ -357,6 +442,9 @@ entry:
 ; ELF64: fctiwuz
 ; ELF64: stfd
 ; ELF64: lwz
+; ELF64LE: fctiwuz
+; ELF64LE: stfd
+; ELF64LE: lwz
 ; PPC970: fctidz
 ; PPC970: stfd
 ; PPC970: lwz
@@ -373,6 +461,9 @@ entry:
 ; ELF64: fctiduz
 ; ELF64: stfd
 ; ELF64: ld
+; ELF64LE: fctiduz
+; ELF64LE: stfd
+; ELF64LE: ld
 ; PPC970-NOT: fctiduz
   store i64 %conv, i64* %b.addr, align 4
   ret void
@@ -387,6 +478,9 @@ entry:
 ; ELF64: fctiwuz
 ; ELF64: stfd
 ; ELF64: lwz
+; ELF64LE: fctiwuz
+; ELF64LE: stfd
+; ELF64LE: lwz
 ; PPC970: fctidz
 ; PPC970: stfd
 ; PPC970: lwz
@@ -403,6 +497,9 @@ entry:
 ; ELF64: fctiduz
 ; ELF64: stfd
 ; ELF64: ld
+; ELF64LE: fctiduz
+; ELF64LE: stfd
+; ELF64LE: ld
 ; PPC970-NOT: fctiduz
   store i64 %conv, i64* %b.addr, align 8
   ret void
