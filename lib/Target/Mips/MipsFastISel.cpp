@@ -48,6 +48,7 @@ class MipsFastISel final : public FastISel {
   LLVMContext *Context;
 
   bool TargetSupported;
+  bool UnsupportedFPMode;
 
 public:
   explicit MipsFastISel(FunctionLoweringInfo &funcInfo,
@@ -63,6 +64,7 @@ public:
     TargetSupported = ((Subtarget->getRelocationModel() == Reloc::PIC_) &&
                        ((Subtarget->hasMips32r2() || Subtarget->hasMips32()) &&
                         (Subtarget->isABI_O32())));
+    UnsupportedFPMode = Subtarget->isFP64bit();
   }
 
   bool fastSelectInstruction(const Instruction *I) override;
@@ -82,9 +84,13 @@ private:
   bool SelectTrunc(const Instruction *I);
   bool SelectFPExt(const Instruction *I);
   bool SelectFPTrunc(const Instruction *I);
+  bool SelectFPToI(const Instruction *I, bool IsSigned);
+  bool SelectCmp(const Instruction *I);
 
   bool isTypeLegal(Type *Ty, MVT &VT);
   bool isLoadTypeLegal(Type *Ty, MVT &VT);
+
+  unsigned getRegEnsuringSimpleIntegerWidening(const Value *, bool IsUnsigned);
 
   unsigned MaterializeFP(const ConstantFP *CFP, MVT VT);
   unsigned MaterializeGV(const GlobalValue *GV, MVT VT);
@@ -168,6 +174,21 @@ bool MipsFastISel::ComputeAddress(const Value *Obj, Address &Addr) {
   return Addr.Base.Reg != 0;
 }
 
+unsigned MipsFastISel::getRegEnsuringSimpleIntegerWidening(const Value *V,
+                                                           bool IsUnsigned) {
+  unsigned VReg = getRegForValue(V);
+  if (VReg == 0)
+    return 0;
+  MVT VMVT = TLI.getValueType(V->getType(), true).getSimpleVT();
+  if ((VMVT == MVT::i8) || (VMVT == MVT::i16)) {
+    unsigned TempReg = createResultReg(&Mips::GPR32RegClass);
+    if (!EmitIntExt(VMVT, VReg, MVT::i32, TempReg, IsUnsigned))
+      return 0;
+    VReg = TempReg;
+  }
+  return VReg;
+}
+
 bool MipsFastISel::EmitLoad(MVT VT, unsigned &ResultReg, Address &Addr,
                             unsigned Alignment) {
   //
@@ -191,11 +212,15 @@ bool MipsFastISel::EmitLoad(MVT VT, unsigned &ResultReg, Address &Addr,
     break;
   }
   case MVT::f32: {
+    if (UnsupportedFPMode)
+      return false;
     ResultReg = createResultReg(&Mips::FGR32RegClass);
     Opc = Mips::LWC1;
     break;
   }
   case MVT::f64: {
+    if (UnsupportedFPMode)
+      return false;
     ResultReg = createResultReg(&Mips::AFGR64RegClass);
     Opc = Mips::LDC1;
     break;
@@ -218,7 +243,7 @@ unsigned MipsFastISel::fastMaterializeConstant(const Constant *C) {
   MVT VT = CEVT.getSimpleVT();
 
   if (const ConstantFP *CFP = dyn_cast<ConstantFP>(C))
-    return MaterializeFP(CFP, VT);
+    return (UnsupportedFPMode) ? 0 : MaterializeFP(CFP, VT);
   else if (const GlobalValue *GV = dyn_cast<GlobalValue>(C))
     return MaterializeGV(GV, VT);
   else if (isa<ConstantInt>(C))
@@ -244,9 +269,13 @@ bool MipsFastISel::EmitStore(MVT VT, unsigned SrcReg, Address &Addr,
     Opc = Mips::SW;
     break;
   case MVT::f32:
+    if (UnsupportedFPMode)
+      return false;
     Opc = Mips::SWC1;
     break;
   case MVT::f64:
+    if (UnsupportedFPMode)
+      return false;
     Opc = Mips::SDC1;
     break;
   default:
@@ -388,6 +417,8 @@ bool MipsFastISel::SelectRet(const Instruction *I) {
 
 // Attempt to fast-select a floating-point extend instruction.
 bool MipsFastISel::SelectFPExt(const Instruction *I) {
+  if (UnsupportedFPMode)
+    return false;
   Value *Src = I->getOperand(0);
   EVT SrcVT = TLI.getValueType(Src->getType(), true);
   EVT DestVT = TLI.getValueType(I->getType(), true);
@@ -409,6 +440,8 @@ bool MipsFastISel::SelectFPExt(const Instruction *I) {
 
 // Attempt to fast-select a floating-point truncate instruction.
 bool MipsFastISel::SelectFPTrunc(const Instruction *I) {
+  if (UnsupportedFPMode)
+    return false;
   Value *Src = I->getOperand(0);
   EVT SrcVT = TLI.getValueType(Src->getType(), true);
   EVT DestVT = TLI.getValueType(I->getType(), true);
@@ -481,6 +514,131 @@ bool MipsFastISel::SelectTrunc(const Instruction *I) {
   return true;
 }
 
+// Attempt to fast-select a floating-point-to-integer conversion.
+bool MipsFastISel::SelectFPToI(const Instruction *I, bool IsSigned) {
+  if (UnsupportedFPMode)
+    return false;
+  MVT DstVT, SrcVT;
+  if (!IsSigned)
+    return false; // We don't handle this case yet. There is no native
+                  // instruction for this but it can be synthesized.
+  Type *DstTy = I->getType();
+  if (!isTypeLegal(DstTy, DstVT))
+    return false;
+
+  if (DstVT != MVT::i32)
+    return false;
+
+  Value *Src = I->getOperand(0);
+  Type *SrcTy = Src->getType();
+  if (!isTypeLegal(SrcTy, SrcVT))
+    return false;
+
+  if (SrcVT != MVT::f32 && SrcVT != MVT::f64)
+    return false;
+
+  unsigned SrcReg = getRegForValue(Src);
+  if (SrcReg == 0)
+    return false;
+
+  // Determine the opcode for the conversion, which takes place
+  // entirely within FPRs.
+  unsigned DestReg = createResultReg(&Mips::GPR32RegClass);
+  unsigned TempReg = createResultReg(&Mips::FGR32RegClass);
+  unsigned Opc;
+
+  if (SrcVT == MVT::f32)
+    Opc = Mips::TRUNC_W_S;
+  else
+    Opc = Mips::TRUNC_W_D32;
+
+  // Generate the convert.
+  EmitInst(Opc, TempReg).addReg(SrcReg);
+
+  EmitInst(Mips::MFC1, DestReg).addReg(TempReg);
+
+  updateValueMap(I, DestReg);
+  return true;
+}
+
+//
+// Because of how SelectCmp is called with fast-isel, you can
+// end up with redundant "andi" instructions after the sequences emitted below.
+// We should try and solve this issue in the future.
+//
+bool MipsFastISel::SelectCmp(const Instruction *I) {
+  const CmpInst *CI = cast<CmpInst>(I);
+  bool IsUnsigned = CI->isUnsigned();
+  const Value *Left = I->getOperand(0), *Right = I->getOperand(1);
+
+  unsigned LeftReg = getRegEnsuringSimpleIntegerWidening(Left, IsUnsigned);
+  if (LeftReg == 0)
+    return false;
+  unsigned RightReg = getRegEnsuringSimpleIntegerWidening(Right, IsUnsigned);
+  if (RightReg == 0)
+    return false;
+  unsigned ResultReg = createResultReg(&Mips::GPR32RegClass);
+
+  switch (CI->getPredicate()) {
+  default:
+    return false;
+  case CmpInst::ICMP_EQ: {
+    unsigned TempReg = createResultReg(&Mips::GPR32RegClass);
+    EmitInst(Mips::XOR, TempReg).addReg(LeftReg).addReg(RightReg);
+    EmitInst(Mips::SLTiu, ResultReg).addReg(TempReg).addImm(1);
+    break;
+  }
+  case CmpInst::ICMP_NE: {
+    unsigned TempReg = createResultReg(&Mips::GPR32RegClass);
+    EmitInst(Mips::XOR, TempReg).addReg(LeftReg).addReg(RightReg);
+    EmitInst(Mips::SLTu, ResultReg).addReg(Mips::ZERO).addReg(TempReg);
+    break;
+  }
+  case CmpInst::ICMP_UGT: {
+    EmitInst(Mips::SLTu, ResultReg).addReg(RightReg).addReg(LeftReg);
+    break;
+  }
+  case CmpInst::ICMP_ULT: {
+    EmitInst(Mips::SLTu, ResultReg).addReg(LeftReg).addReg(RightReg);
+    break;
+  }
+  case CmpInst::ICMP_UGE: {
+    unsigned TempReg = createResultReg(&Mips::GPR32RegClass);
+    EmitInst(Mips::SLTu, TempReg).addReg(LeftReg).addReg(RightReg);
+    EmitInst(Mips::XORi, ResultReg).addReg(TempReg).addImm(1);
+    break;
+  }
+  case CmpInst::ICMP_ULE: {
+    unsigned TempReg = createResultReg(&Mips::GPR32RegClass);
+    EmitInst(Mips::SLTu, TempReg).addReg(RightReg).addReg(LeftReg);
+    EmitInst(Mips::XORi, ResultReg).addReg(TempReg).addImm(1);
+    break;
+  }
+  case CmpInst::ICMP_SGT: {
+    EmitInst(Mips::SLT, ResultReg).addReg(RightReg).addReg(LeftReg);
+    break;
+  }
+  case CmpInst::ICMP_SLT: {
+    EmitInst(Mips::SLT, ResultReg).addReg(LeftReg).addReg(RightReg);
+    break;
+  }
+  case CmpInst::ICMP_SGE: {
+    unsigned TempReg = createResultReg(&Mips::GPR32RegClass);
+    EmitInst(Mips::SLT, TempReg).addReg(LeftReg).addReg(RightReg);
+    EmitInst(Mips::XORi, ResultReg).addReg(TempReg).addImm(1);
+    break;
+  }
+  case CmpInst::ICMP_SLE: {
+    unsigned TempReg = createResultReg(&Mips::GPR32RegClass);
+    EmitInst(Mips::SLT, TempReg).addReg(RightReg).addReg(LeftReg);
+    EmitInst(Mips::XORi, ResultReg).addReg(TempReg).addImm(1);
+    break;
+  }
+  }
+  updateValueMap(I, ResultReg);
+  return true;
+}
+
 bool MipsFastISel::fastSelectInstruction(const Instruction *I) {
   if (!TargetSupported)
     return false;
@@ -502,11 +660,20 @@ bool MipsFastISel::fastSelectInstruction(const Instruction *I) {
     return SelectFPTrunc(I);
   case Instruction::FPExt:
     return SelectFPExt(I);
+  case Instruction::FPToSI:
+    return SelectFPToI(I, /*isSigned*/ true);
+  case Instruction::FPToUI:
+    return SelectFPToI(I, /*isSigned*/ false);
+  case Instruction::ICmp:
+  case Instruction::FCmp:
+    return SelectCmp(I);
   }
   return false;
 }
 
 unsigned MipsFastISel::MaterializeFP(const ConstantFP *CFP, MVT VT) {
+  if (UnsupportedFPMode)
+    return 0;
   int64_t Imm = CFP->getValueAPF().bitcastToAPInt().getZExtValue();
   if (VT == MVT::f32) {
     const TargetRegisterClass *RC = &Mips::FGR32RegClass;

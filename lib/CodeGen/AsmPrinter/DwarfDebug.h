@@ -174,7 +174,7 @@ class DwarfDebug : public AsmPrinterHandler {
   MapVector<const MDNode *, DwarfCompileUnit *> CUMap;
 
   // Maps subprogram MDNode with its corresponding DwarfCompileUnit.
-  DenseMap<const MDNode *, DwarfCompileUnit *> SPMap;
+  MapVector<const MDNode *, DwarfCompileUnit *> SPMap;
 
   // Maps a CU DIE with its corresponding DwarfCompileUnit.
   DenseMap<const DIE *, DwarfCompileUnit *> CUDieMap;
@@ -349,14 +349,8 @@ class DwarfDebug : public AsmPrinterHandler {
   void ensureAbstractVariableIsCreatedIfScoped(const DIVariable &Var,
                                                const MDNode *Scope);
 
-  DIE *createAndAddScopeChildren(DwarfCompileUnit &TheCU, LexicalScope *Scope,
-                                 DIE &ScopeDIE);
   /// \brief Construct a DIE for this abstract scope.
-  void constructAbstractSubprogramScopeDIE(DwarfCompileUnit &TheCU,
-                                           LexicalScope *Scope);
-  /// \brief Construct a DIE for this subprogram scope.
-  void constructSubprogramScopeDIE(DwarfCompileUnit &TheCU,
-                                   LexicalScope *Scope);
+  void constructAbstractSubprogramScopeDIE(LexicalScope *Scope);
 
   /// \brief Emit initial Dwarf sections with a label at the start of each one.
   void emitSectionLabels();
@@ -675,13 +669,18 @@ public:
 
   // FIXME: Sink these functions down into DwarfFile/Dwarf*Unit.
 
-  /// A helper function to create children of a Scope DIE.
-  DIE *createScopeChildrenDIE(DwarfCompileUnit &TheCU, LexicalScope *Scope,
-                              SmallVectorImpl<std::unique_ptr<DIE>> &Children,
-                              unsigned *ChildScopeCount = nullptr);
-
   DenseMap<const MDNode *, DIE *> &getAbstractSPDies() {
     return AbstractSPDies;
+  }
+
+  ScopeVariablesMap &getScopeVariables() { return ScopeVariables; }
+
+  SmallPtrSet<const MDNode *, 16> &getProcessedSPNodes() {
+    return ProcessedSPNodes;
+  }
+
+  SmallVector<DbgVariable *, 8> &getCurrentFnArguments() {
+    return CurrentFnArguments;
   }
 };
 } // End of namespace llvm
