@@ -1305,6 +1305,16 @@ def DCBZL  : DCB_Form<1014, 1, (outs), (ins memrr:$dst), "dcbzl $dst",
                       IIC_LdStDCBF, [(int_ppc_dcbzl xoaddr:$dst)]>,
                       PPC970_DGroup_Single;
 
+//Variations of DCB* instructions taht specify the TH (i8 type) field
+def DCBT_TH   : DCBTH_Form<278, (outs), (ins memrr:$dst, u5imm:$th), 
+                "dcbt $dst, $th",
+                IIC_LdStDCBF, [(int_ppc_dcbt_th xoaddr:$dst, (i32 imm:$th))]>,
+                PPC970_DGroup_Single;
+def DCBTST_TH : DCBTH_Form<246, (outs), (ins memrr:$dst, u5imm:$th), 
+                "dcbtst $dst, $th",
+                IIC_LdStDCBF, [(int_ppc_dcbtst_th xoaddr:$dst, (i32 imm:$th))]>,
+                PPC970_DGroup_Single;
+
 def ICBT  : XForm_icbt<31, 22, (outs), (ins u4imm:$CT, memrr:$src),
                        "icbt $CT, $src", IIC_LdStLoad>, Requires<[IsBookE]>;
 

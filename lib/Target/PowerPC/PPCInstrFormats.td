@@ -829,6 +829,23 @@ class DCB_Form<bits<10> xo, bits<5> immfield, dag OOL, dag IOL, string asmstr,
   let Inst{31}    = 0;
 }
 
+// DCBTH_Form - Form X instruction, used for dcb* instructions that specify the 
+// TH field.
+class DCBTH_Form<bits<10> xo, dag OOL, dag IOL, string asmstr, 
+                      InstrItinClass itin, list<dag> pattern>
+  : I<31, OOL, IOL, asmstr, itin> {
+  bits<5> A;
+  bits<5> B;
+  bits<5> immfield;
+
+  let Pattern = pattern;
+
+  let Inst{6-10}  = immfield;
+  let Inst{11-15} = A;
+  let Inst{16-20} = B;
+  let Inst{21-30} = xo;
+  let Inst{31}    = 0;
+}
 
 // DSS_Form - Form X instruction, used for altivec dss* instructions.
 class DSS_Form<bits<1> T, bits<10> xo, dag OOL, dag IOL, string asmstr,
