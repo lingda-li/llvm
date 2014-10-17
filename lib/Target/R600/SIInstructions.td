@@ -1509,16 +1509,12 @@ defm V_CUBETC_F32 : VOP3Inst <vop3<0x146>, "V_CUBETC_F32",
 defm V_CUBEMA_F32 : VOP3Inst <vop3<0x147>, "V_CUBEMA_F32",
   VOP_F32_F32_F32_F32
 >;
-
-let neverHasSideEffects = 1, mayLoad = 0, mayStore = 0 in {
 defm V_BFE_U32 : VOP3Inst <vop3<0x148>, "V_BFE_U32",
   VOP_I32_I32_I32_I32, AMDGPUbfe_u32
 >;
 defm V_BFE_I32 : VOP3Inst <vop3<0x149>, "V_BFE_I32",
   VOP_I32_I32_I32_I32, AMDGPUbfe_i32
 >;
-}
-
 defm V_BFI_B32 : VOP3Inst <vop3<0x14a>, "V_BFI_B32",
   VOP_I32_I32_I32_I32, AMDGPUbfi
 >;
@@ -1791,12 +1787,6 @@ let usesCustomInserter = 1 in {
 def SI_ADDR64_RSRC : InstSI <
   (outs SReg_128:$srsrc),
   (ins SSrc_64:$ptr),
-  "", []
->;
-
-def SI_BUFFER_RSRC : InstSI <
-  (outs SReg_128:$srsrc),
-  (ins SReg_32:$ptr_lo, SReg_32:$ptr_hi, SSrc_32:$data_lo, SSrc_32:$data_hi),
   "", []
 >;
 
@@ -2696,10 +2686,9 @@ def : DSAtomicCmpXChg<DS_CMPST_RTN_B64, i64, atomic_cmp_swap_64_local>;
 multiclass MUBUFLoad_Pattern <MUBUF Instr_ADDR64, ValueType vt,
                               PatFrag constant_ld> {
   def : Pat <
-     (vt (constant_ld (add i64:$ptr, i64:$offset))),
-     (Instr_ADDR64 (SI_ADDR64_RSRC $ptr), $offset, 0)
+     (vt (constant_ld (MUBUFAddr64 v4i32:$srsrc, i64:$vaddr, i16:$offset))),
+     (Instr_ADDR64 $srsrc, $vaddr, $offset)
   >;
-
 }
 
 defm : MUBUFLoad_Pattern <BUFFER_LOAD_SBYTE_ADDR64, i32, sextloadi8_constant>;
