@@ -1280,30 +1280,45 @@ let PPC970_Unit = 7 in {
 }
 
 // DCB* instructions.
-def DCBA   : DCB_Form<758, 0, (outs), (ins memrr:$dst), "dcba $dst",
-                      IIC_LdStDCBF, [(int_ppc_dcba xoaddr:$dst)]>,
+// Utility class to set the prefetch hint field 
+class TH_field<bits<5> th > {
+  // Prefetch hint type field
+  bits<5> TH = th; 
+}
+def DCBA   : DCB_Form<758, (outs), (ins memrr:$dst), "dcba $dst",
+                      IIC_LdStDCBF, [(int_ppc_dcba xoaddr:$dst)]>, TH_field<0>,
                       PPC970_DGroup_Single;
-def DCBF   : DCB_Form<86, 0, (outs), (ins memrr:$dst), "dcbf $dst",
-                      IIC_LdStDCBF, [(int_ppc_dcbf xoaddr:$dst)]>,
+def DCBF   : DCB_Form<86, (outs), (ins memrr:$dst), "dcbf $dst",
+                      IIC_LdStDCBF, [(int_ppc_dcbf xoaddr:$dst)]>, TH_field<0>,
                       PPC970_DGroup_Single;
-def DCBI   : DCB_Form<470, 0, (outs), (ins memrr:$dst), "dcbi $dst",
-                      IIC_LdStDCBF, [(int_ppc_dcbi xoaddr:$dst)]>,
+def DCBI   : DCB_Form<470, (outs), (ins memrr:$dst), "dcbi $dst",
+                      IIC_LdStDCBF, [(int_ppc_dcbi xoaddr:$dst)]>, TH_field<0>,
                       PPC970_DGroup_Single;
-def DCBST  : DCB_Form<54, 0, (outs), (ins memrr:$dst), "dcbst $dst",
-                      IIC_LdStDCBF, [(int_ppc_dcbst xoaddr:$dst)]>,
+def DCBST  : DCB_Form<54, (outs), (ins memrr:$dst), "dcbst $dst",
+                      IIC_LdStDCBF, [(int_ppc_dcbst xoaddr:$dst)]>, TH_field<0>,
                       PPC970_DGroup_Single;
-def DCBT   : DCB_Form<278, 0, (outs), (ins memrr:$dst), "dcbt $dst",
-                      IIC_LdStDCBF, [(int_ppc_dcbt xoaddr:$dst)]>,
+def DCBT   : DCB_Form<278, (outs), (ins memrr:$dst), "dcbt $dst",
+                      IIC_LdStDCBF, [(int_ppc_dcbt xoaddr:$dst)]>, TH_field<0>,
                       PPC970_DGroup_Single;
-def DCBTST : DCB_Form<246, 0, (outs), (ins memrr:$dst), "dcbtst $dst",
-                      IIC_LdStDCBF, [(int_ppc_dcbtst xoaddr:$dst)]>,
+def DCBTST : DCB_Form<246, (outs), (ins memrr:$dst), "dcbtst $dst",
+                      IIC_LdStDCBF, [(int_ppc_dcbtst xoaddr:$dst)]>,TH_field<0>,
                       PPC970_DGroup_Single;
-def DCBZ   : DCB_Form<1014, 0, (outs), (ins memrr:$dst), "dcbz $dst",
-                      IIC_LdStDCBF, [(int_ppc_dcbz xoaddr:$dst)]>,
+def DCBZ   : DCB_Form<1014, (outs), (ins memrr:$dst), "dcbz $dst",
+                      IIC_LdStDCBF, [(int_ppc_dcbz xoaddr:$dst)]>, TH_field<0>,
                       PPC970_DGroup_Single;
-def DCBZL  : DCB_Form<1014, 1, (outs), (ins memrr:$dst), "dcbzl $dst",
-                      IIC_LdStDCBF, [(int_ppc_dcbzl xoaddr:$dst)]>,
+def DCBZL  : DCB_Form<1014, (outs), (ins memrr:$dst), "dcbzl $dst",
+                      IIC_LdStDCBF, [(int_ppc_dcbzl xoaddr:$dst)]>, TH_field<1>,
                       PPC970_DGroup_Single;
+
+//Variations of DCB* instructions that specify the TH (prefetch hint) field
+def DCBT_TH   : DCB_Form<278, (outs), (ins memrr:$dst, u5imm:$th), 
+                "dcbt $dst, $th",
+                IIC_LdStDCBF, [(int_ppc_dcbt_th xoaddr:$dst, (i32 imm:$th))]>,
+                PPC970_DGroup_Single;
+def DCBTST_TH : DCB_Form<246, (outs), (ins memrr:$dst, u5imm:$th), 
+                "dcbtst $dst, $th",
+                IIC_LdStDCBF, [(int_ppc_dcbtst_th xoaddr:$dst, (i32 imm:$th))]>,
+                PPC970_DGroup_Single;
 
 def ICBT  : XForm_icbt<31, 22, (outs), (ins u4imm:$CT, memrr:$src),
                        "icbt $CT, $src", IIC_LdStLoad>, Requires<[IsBookE]>;

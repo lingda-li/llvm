@@ -47,21 +47,21 @@ let Uses = [RM] in {
 
   // Load indexed instructions
   let mayLoad = 1, canFoldAsLoad = 1 in {
-    def LXSDX : XForm_1<31, 588,
+    def LXSDX : XX1Form<31, 588,
                         (outs vsfrc:$XT), (ins memrr:$src),
                         "lxsdx $XT, $src", IIC_LdStLFD,
                         [(set f64:$XT, (load xoaddr:$src))]>;
 
-    def LXVD2X : XForm_1<31, 844,
+    def LXVD2X : XX1Form<31, 844,
                          (outs vsrc:$XT), (ins memrr:$src),
                          "lxvd2x $XT, $src", IIC_LdStLFD,
                          [(set v2f64:$XT, (load xoaddr:$src))]>;
 
-    def LXVDSX : XForm_1<31, 332,
+    def LXVDSX : XX1Form<31, 332,
                          (outs vsrc:$XT), (ins memrr:$src),
                          "lxvdsx $XT, $src", IIC_LdStLFD, []>;
 
-    def LXVW4X : XForm_1<31, 780,
+    def LXVW4X : XX1Form<31, 780,
                          (outs vsrc:$XT), (ins memrr:$src),
                          "lxvw4x $XT, $src", IIC_LdStLFD, []>;
   }
@@ -480,7 +480,23 @@ let Uses = [RM] in {
                       (outs vsrc:$XT), (ins vsrc:$XB),
                       "xvnegsp $XT, $XB", IIC_VecFP,
                       [(set v4f32:$XT, (fneg v4f32:$XB))]>;
-
+  
+  // FIXME: Currently these move instructions between fixed and floating point 
+  // registers are only used by the FastIsel. We should identify other cases 
+  // in ISelLowering that can leverage these instructions and add the proper 
+  // patterns here.
+  let B = 0 /*register B of the XX1Form format is unused*/ in {
+  def MTFPRD : XX1Form<31, 179,
+                        (outs vsfrc:$XT), (ins g8rc:$src),
+                        "mtfprd $XT, $src", IIC_VecFP,[]>;
+  def MTFPRWA : XX1Form<31, 211,
+                        (outs vsfrc:$XT), (ins gprc:$src),
+                        "mtfprwa $XT, $src", IIC_VecFP, []>;
+  def MTFPRWZ : XX1Form<31, 243,
+                        (outs vsfrc:$XT), (ins gprc:$src),
+                        "mtfprwz $XT, $src", IIC_VecFP, []>;
+  }
+        
   // Conversion Instructions
   def XSCVDPSP : XX2Form<60, 265,
                       (outs vsfrc:$XT), (ins vsfrc:$XB),
