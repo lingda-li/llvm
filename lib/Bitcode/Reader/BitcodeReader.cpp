@@ -2102,9 +2102,9 @@ std::error_code BitcodeReader::ParseModule(bool Resume) {
       else
         UpgradeDLLImportExportLinkage(NewGA, Record[2]);
       if (Record.size() > 5)
-	NewGA->setThreadLocalMode(GetDecodedThreadLocalMode(Record[5]));
+        NewGA->setThreadLocalMode(GetDecodedThreadLocalMode(Record[5]));
       if (Record.size() > 6)
-	NewGA->setUnnamedAddr(Record[6]);
+        NewGA->setUnnamedAddr(Record[6]);
       ValueList.push_back(NewGA);
       AliasInits.push_back(std::make_pair(NewGA, Record[1]));
       break;
@@ -3357,10 +3357,8 @@ std::error_code BitcodeReader::MaterializeModule(Module *M) {
   // disk.
   for (Module::iterator F = TheModule->begin(), E = TheModule->end();
        F != E; ++F) {
-    if (F->isMaterializable()) {
-      if (std::error_code EC = materialize(F))
-        return EC;
-    }
+    if (std::error_code EC = materialize(F))
+      return EC;
   }
   // At this point, if there are any function bodies, the current bit is
   // pointing to the END_BLOCK record after them. Now make sure the rest
