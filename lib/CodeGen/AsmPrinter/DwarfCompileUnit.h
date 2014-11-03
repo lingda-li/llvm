@@ -52,6 +52,9 @@ class DwarfCompileUnit : public DwarfUnit {
   // the CU itself.
   SmallVector<RangeSpanList, 1> CURangeLists;
 
+  // List of ranges for a given compile unit.
+  SmallVector<RangeSpan, 1> CURanges;
+
   /// \brief Construct a DIE for the given DbgVariable without initializing the
   /// DbgVariable's DIE reference.
   std::unique_ptr<DIE> constructVariableDIEImpl(const DbgVariable &DV,
@@ -223,16 +226,13 @@ public:
 
   void applySubprogramAttributesToDefinition(DISubprogram SP, DIE &SPDie);
 
-  /// addRangeList - Add an address range list to the list of range lists.
-  void addRangeList(RangeSpanList Ranges) {
-    CURangeLists.push_back(std::move(Ranges));
-  }
-
   /// getRangeLists - Get the vector of range lists.
   const SmallVectorImpl<RangeSpanList> &getRangeLists() const {
     return CURangeLists;
   }
-  SmallVectorImpl<RangeSpanList> &getRangeLists() { return CURangeLists; }
+
+  /// getRanges - Get the list of ranges for this unit.
+  const SmallVectorImpl<RangeSpan> &getRanges() const { return CURanges; }
 };
 
 } // end llvm namespace
