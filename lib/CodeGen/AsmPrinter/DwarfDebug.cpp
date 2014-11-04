@@ -565,7 +565,7 @@ void DwarfDebug::finalizeModuleInfo() {
       if (!AddrPool.isEmpty())
         SkCU->addSectionLabel(SkCU->getUnitDie(), dwarf::DW_AT_GNU_addr_base,
                               DwarfAddrSectionSym, DwarfAddrSectionSym);
-      if (!TheCU.getRangeLists().empty())
+      if (!SkCU->getRangeLists().empty())
         SkCU->addSectionLabel(SkCU->getUnitDie(), dwarf::DW_AT_GNU_ranges_base,
                               DwarfDebugRangeSectionSym,
                               DwarfDebugRangeSectionSym);
@@ -578,22 +578,16 @@ void DwarfDebug::finalizeModuleInfo() {
     // .subsections_via_symbols in mach-o. This would mean turning on
     // ranges for all subprogram DIEs for mach-o.
     DwarfCompileUnit &U = SkCU ? *SkCU : TheCU;
-    unsigned NumRanges = TheCU.getRanges().size();
-    if (NumRanges) {
-      if (NumRanges > 1) {
-        U.addSectionLabel(U.getUnitDie(), dwarf::DW_AT_ranges,
-                          Asm->GetTempSymbol("cu_ranges", U.getUniqueID()),
-                          DwarfDebugRangeSectionSym);
-
+    if (unsigned NumRanges = TheCU.getRanges().size()) {
+      if (NumRanges > 1)
         // A DW_AT_low_pc attribute may also be specified in combination with
         // DW_AT_ranges to specify the default base address for use in
         // location lists (see Section 2.6.2) and range lists (see Section
         // 2.17.3).
         U.addUInt(U.getUnitDie(), dwarf::DW_AT_low_pc, dwarf::DW_FORM_addr, 0);
-      } else {
-        const RangeSpan &Range = TheCU.getRanges().back();
-        U.attachLowHighPC(U.getUnitDie(), Range.getStart(), Range.getEnd());
-      }
+      else
+        TheCU.setBaseAddress(TheCU.getRanges().front().getStart());
+      U.attachRangesOrLowHighPC(U.getUnitDie(), TheCU.takeRanges());
     }
   }
 
@@ -1786,14 +1780,11 @@ void DwarfDebug::emitDebugLoc() {
   for (const auto &DebugLoc : DotDebugLocEntries) {
     Asm->OutStreamer.EmitLabel(DebugLoc.Label);
     const DwarfCompileUnit *CU = DebugLoc.CU;
-    assert(!CU->getRanges().empty());
     for (const auto &Entry : DebugLoc.List) {
       // Set up the range. This range is relative to the entry point of the
       // compile unit. This is a hard coded 0 for low_pc when we're emitting
       // ranges, or the DW_AT_low_pc on the compile unit otherwise.
-      if (CU->getRanges().size() == 1) {
-        // Grab the begin symbol from the first range as our base.
-        const MCSymbol *Base = CU->getRanges()[0].getStart();
+      if (auto *Base = CU->getBaseAddress()) {
         Asm->EmitLabelDifference(Entry.getBeginSym(), Base, Size);
         Asm->EmitLabelDifference(Entry.getEndSym(), Base, Size);
       } else {
@@ -2003,9 +1994,7 @@ void DwarfDebug::emitDebugRanges() {
         const MCSymbol *End = Range.getEnd();
         assert(Begin && "Range without a begin symbol?");
         assert(End && "Range without an end symbol?");
-        if (TheCU->getRanges().size() == 1) {
-          // Grab the begin symbol from the first range as our base.
-          const MCSymbol *Base = TheCU->getRanges()[0].getStart();
+        if (auto *Base = TheCU->getBaseAddress()) {
           Asm->EmitLabelDifference(Begin, Base, Size);
           Asm->EmitLabelDifference(End, Base, Size);
         } else {
@@ -2014,23 +2003,6 @@ void DwarfDebug::emitDebugRanges() {
         }
       }
 
-      // And terminate the list with two 0 values.
-      Asm->OutStreamer.EmitIntValue(0, Size);
-      Asm->OutStreamer.EmitIntValue(0, Size);
-    }
-
-    // Now emit a range for the CU itself.
-    if (TheCU->getRanges().size() > 1) {
-      Asm->OutStreamer.EmitLabel(
-          Asm->GetTempSymbol("cu_ranges", TheCU->getUniqueID()));
-      for (const RangeSpan &Range : TheCU->getRanges()) {
-        const MCSymbol *Begin = Range.getStart();
-        const MCSymbol *End = Range.getEnd();
-        assert(Begin && "Range without a begin symbol?");
-        assert(End && "Range without an end symbol?");
-        Asm->OutStreamer.EmitSymbolValue(Begin, Size);
-        Asm->OutStreamer.EmitSymbolValue(End, Size);
-      }
       // And terminate the list with two 0 values.
       Asm->OutStreamer.EmitIntValue(0, Size);
       Asm->OutStreamer.EmitIntValue(0, Size);
