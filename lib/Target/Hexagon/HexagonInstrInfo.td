@@ -248,7 +248,8 @@ def: T_cmp32_rr_pat<C2_cmpgtu, setugt, i1>;
 def: T_cmp32_rr_pat<C2_cmpgt,  RevCmp<setlt>,  i1>;
 def: T_cmp32_rr_pat<C2_cmpgtu, RevCmp<setult>, i1>;
 
-let CextOpcode = "MUX", InputType = "reg", hasNewValue = 1 in
+let CextOpcode = "MUX", InputType = "reg", hasNewValue = 1,
+  isCodeGenOnly = 0 in
 def C2_mux: ALU32_rr<(outs IntRegs:$Rd),
                      (ins PredRegs:$Pu, IntRegs:$Rs, IntRegs:$Rt),
       "$Rd = mux($Pu, $Rs, $Rt)", [], "", ALU32_3op_tc_1_SLOT0123>, ImmRegRel {
@@ -374,12 +375,68 @@ multiclass Addri_base<string mnemonic, SDNode OpNode> {
 let isCodeGenOnly = 0 in
 defm ADD_ri : Addri_base<"add", add>, ImmRegRel, PredNewRel;
 
+//===----------------------------------------------------------------------===//
+// Template class used for the following ALU32 instructions.
+// Rd=and(Rs,#s10)
+// Rd=or(Rs,#s10)
+//===----------------------------------------------------------------------===//
+let isExtendable = 1, opExtendable = 2, isExtentSigned = 1, opExtentBits = 10,
+InputType = "imm", hasNewValue = 1 in
+class T_ALU32ri_logical <string mnemonic, SDNode OpNode, bits<2> MinOp>
+  : ALU32_ri <(outs IntRegs:$Rd),
+              (ins IntRegs:$Rs, s10Ext:$s10),
+  "$Rd = "#mnemonic#"($Rs, #$s10)" ,
+  [(set (i32 IntRegs:$Rd), (OpNode (i32 IntRegs:$Rs), s10ExtPred:$s10))]> {
+    bits<5> Rd;
+    bits<5> Rs;
+    bits<10> s10;
+    let CextOpcode = mnemonic;
+
+    let IClass = 0b0111;
+
+    let Inst{27-24} = 0b0110;
+    let Inst{23-22} = MinOp;
+    let Inst{21}    = s10{9};
+    let Inst{20-16} = Rs;
+    let Inst{13-5}  = s10{8-0};
+    let Inst{4-0}   = Rd;
+  }
+
+let isCodeGenOnly = 0 in {
+def OR_ri  : T_ALU32ri_logical<"or", or, 0b10>, ImmRegRel;
+def AND_ri : T_ALU32ri_logical<"and", and, 0b00>, ImmRegRel;
+}
+
+// Subtract register from immediate
+// Rd32=sub(#s10,Rs32)
+let isExtendable = 1, opExtendable = 1, isExtentSigned = 1, opExtentBits = 10,
+CextOpcode = "sub", InputType = "imm", hasNewValue = 1, isCodeGenOnly = 0 in
+def SUB_ri: ALU32_ri <(outs IntRegs:$Rd), (ins s10Ext:$s10, IntRegs:$Rs),
+  "$Rd = sub(#$s10, $Rs)" ,
+  [(set IntRegs:$Rd, (sub s10ExtPred:$s10, IntRegs:$Rs))] > ,
+  ImmRegRel {
+    bits<5> Rd;
+    bits<10> s10;
+    bits<5> Rs;
+
+    let IClass = 0b0111;
+
+    let Inst{27-22} = 0b011001;
+    let Inst{21}    = s10{9};
+    let Inst{20-16} = Rs;
+    let Inst{13-5}  = s10{8-0};
+    let Inst{4-0}   = Rd;
+  }
+
 // Nop.
 let hasSideEffects = 0, isCodeGenOnly = 0 in
 def A2_nop: ALU32Inst <(outs), (ins), "nop" > {
   let IClass = 0b0111;
   let Inst{27-24} = 0b1111;
 }
+// Rd = not(Rs) gets mapped to Rd=sub(#-1, Rs).
+def : Pat<(not (i32 IntRegs:$src1)),
+          (SUB_ri -1, (i32 IntRegs:$src1))>;
 
 multiclass ALU32_Pbase<string mnemonic, RegisterClass RC, bit isNot,
                        bit isPredNew> {
@@ -421,121 +478,6 @@ multiclass ALU32_Pred<string mnemonic, RegisterClass RC, bit PredNot> {
   }
 }
 
-//===----------------------------------------------------------------------===//
-// template class for non-predicated alu32_2op instructions
-// - aslh, asrh, sxtb, sxth, zxth
-//===----------------------------------------------------------------------===//
-let hasNewValue = 1, opNewValue = 0 in
-class T_ALU32_2op <string mnemonic, bits<3> minOp> :
-    ALU32Inst < (outs IntRegs:$Rd), (ins IntRegs:$Rs),
-    "$Rd = "#mnemonic#"($Rs)", [] > {
-  bits<5> Rd;
-  bits<5> Rs;
-
-  let IClass = 0b0111;
-
-  let Inst{27-24} = 0b0000;
-  let Inst{23-21} = minOp;
-  let Inst{13} = 0b0;
-  let Inst{4-0} = Rd;
-  let Inst{20-16} = Rs;
-}
-  
-//===----------------------------------------------------------------------===//
-// template class for predicated alu32_2op instructions
-// - aslh, asrh, sxtb, sxth, zxtb, zxth
-//===----------------------------------------------------------------------===//
-let hasSideEffects = 0, validSubTargets = HasV4SubT,
-    hasNewValue = 1, opNewValue = 0 in
-class T_ALU32_2op_Pred <string mnemonic, bits<3> minOp, bit isPredNot, 
-    bit isPredNew > :
-    ALU32Inst <(outs IntRegs:$Rd), (ins PredRegs:$Pu, IntRegs:$Rs),
-    !if(isPredNot, "if (!$Pu", "if ($Pu")
-    #!if(isPredNew, ".new) ",") ")#"$Rd = "#mnemonic#"($Rs)"> {
-  bits<5> Rd;
-  bits<2> Pu;
-  bits<5> Rs;
-
-  let IClass = 0b0111;
-
-  let Inst{27-24} = 0b0000;
-  let Inst{23-21} = minOp;
-  let Inst{13} = 0b1;
-  let Inst{11} = isPredNot;
-  let Inst{10} = isPredNew;
-  let Inst{4-0} = Rd;
-  let Inst{9-8} = Pu;
-  let Inst{20-16} = Rs;
-}
-
-multiclass ALU32_2op_Pred<string mnemonic, bits<3> minOp, bit PredNot> {
-  let isPredicatedFalse = PredNot in {
-    def NAME : T_ALU32_2op_Pred<mnemonic, minOp, PredNot, 0>;
-
-    // Predicate new
-    let isPredicatedNew = 1 in
-    def NAME#new : T_ALU32_2op_Pred<mnemonic, minOp, PredNot, 1>;
-  }
-}
-
-multiclass ALU32_2op_base<string mnemonic, bits<3> minOp> {
-  let BaseOpcode = mnemonic in {
-    let isPredicable = 1, hasSideEffects = 0 in
-    def A2_#NAME : T_ALU32_2op<mnemonic, minOp>;
-
-    let validSubTargets = HasV4SubT, isPredicated = 1, hasSideEffects = 0 in {
-      defm A4_p#NAME#t : ALU32_2op_Pred<mnemonic, minOp, 0>;
-      defm A4_p#NAME#f : ALU32_2op_Pred<mnemonic, minOp, 1>;
-    }
-  }
-}
-
-let isCodeGenOnly = 0 in {
-defm aslh : ALU32_2op_base<"aslh", 0b000>, PredNewRel;
-defm asrh : ALU32_2op_base<"asrh", 0b001>, PredNewRel;
-defm sxtb : ALU32_2op_base<"sxtb", 0b101>, PredNewRel;
-defm sxth : ALU32_2op_base<"sxth", 0b111>, PredNewRel;
-defm zxth : ALU32_2op_base<"zxth", 0b110>, PredNewRel;
-}
-
-// Rd=zxtb(Rs): assembler mapped to Rd=and(Rs,#255).
-// Compiler would want to generate 'zxtb' instead of 'and' becuase 'zxtb' has
-// predicated forms while 'and' doesn't. Since integrated assembler can't
-// handle 'mapped' instructions, we need to encode 'zxtb' same as 'and' where
-// immediate operand is set to '255'.
-
-let hasNewValue = 1, opNewValue = 0 in
-class T_ZXTB: ALU32Inst < (outs IntRegs:$Rd), (ins IntRegs:$Rs),
-  "$Rd = zxtb($Rs)", [] > { // Rd = and(Rs,255)
-    bits<5> Rd;
-    bits<5> Rs;
-    bits<10> s10 = 255;
-
-    let IClass = 0b0111;
-
-    let Inst{27-22} = 0b011000;
-    let Inst{4-0} = Rd;
-    let Inst{20-16} = Rs;
-    let Inst{21} = s10{9};
-    let Inst{13-5} = s10{8-0};
-}
-
-//Rd=zxtb(Rs): assembler mapped to "Rd=and(Rs,#255)
-multiclass ZXTB_base <string mnemonic, bits<3> minOp> {
-  let BaseOpcode = mnemonic in {
-    let isPredicable = 1, hasSideEffects = 0 in
-    def A2_#NAME : T_ZXTB;
-
-    let validSubTargets = HasV4SubT, isPredicated = 1, hasSideEffects = 0 in {
-      defm A4_p#NAME#t : ALU32_2op_Pred<mnemonic, minOp, 0>;
-      defm A4_p#NAME#f : ALU32_2op_Pred<mnemonic, minOp, 1>;
-    }
-  }
-}
-
-let isCodeGenOnly=0 in
-defm zxtb : ZXTB_base<"zxtb",0b100>, PredNewRel;
-
 // Combines the two integer registers SRC1 and SRC2 into a double register.
 let isPredicable = 1 in
 class T_Combine : ALU32_rr<(outs DoubleRegs:$dst),
@@ -566,35 +508,6 @@ class COMBINE_imm<Operand imm1, Operand imm2, PatLeaf pat1, PatLeaf pat2> :
 
 let isExtendable = 1, opExtendable = 1, isExtentSigned = 1, opExtentBits = 8 in
 def COMBINE_Ii : COMBINE_imm<s8Ext, s8Imm, s8ExtPred, s8ImmPred>;
-
-let isExtendable = 1, opExtendable = 2, isExtentSigned = 1, opExtentBits = 10,
-CextOpcode = "OR", InputType = "imm" in
-def OR_ri : ALU32_ri<(outs IntRegs:$dst),
-            (ins IntRegs:$src1, s10Ext:$src2),
-            "$dst = or($src1, #$src2)",
-            [(set (i32 IntRegs:$dst), (or (i32 IntRegs:$src1),
-                                          s10ExtPred:$src2))]>, ImmRegRel;
-
-let isExtendable = 1, opExtendable = 2, isExtentSigned = 1, opExtentBits = 10,
-InputType = "imm", CextOpcode = "AND" in
-def AND_ri : ALU32_ri<(outs IntRegs:$dst),
-            (ins IntRegs:$src1, s10Ext:$src2),
-            "$dst = and($src1, #$src2)",
-            [(set (i32 IntRegs:$dst), (and (i32 IntRegs:$src1),
-                                           s10ExtPred:$src2))]>, ImmRegRel;
-
-// Rd32=sub(#s10,Rs32)
-let isExtendable = 1, opExtendable = 1, isExtentSigned = 1, opExtentBits = 10,
-CextOpcode = "SUB", InputType = "imm" in
-def SUB_ri : ALU32_ri<(outs IntRegs:$dst),
-            (ins s10Ext:$src1, IntRegs:$src2),
-            "$dst = sub(#$src1, $src2)",
-            [(set IntRegs:$dst, (sub s10ExtPred:$src1, IntRegs:$src2))]>,
-            ImmRegRel;
-
-// Rd = not(Rs) gets mapped to Rd=sub(#-1, Rs).
-def : Pat<(not (i32 IntRegs:$src1)),
-          (SUB_ri -1, (i32 IntRegs:$src1))>;
 
 // Rd = neg(Rs) gets mapped to Rd=sub(#0, Rs).
 // Pattern definition for 'neg' was not necessary.
@@ -736,6 +649,177 @@ def TFCR : CRInst<(outs CRRegs:$dst), (ins IntRegs:$src1),
 //===----------------------------------------------------------------------===//
 // ALU32/PERM +
 //===----------------------------------------------------------------------===//
+// Scalar mux register immediate.
+let hasSideEffects = 0, isExtentSigned = 1, CextOpcode = "MUX",
+    InputType = "imm", hasNewValue = 1, isExtendable = 1, opExtentBits = 8 in
+class T_MUX1 <bit MajOp, dag ins, string AsmStr>
+      : ALU32Inst <(outs IntRegs:$Rd), ins, AsmStr>, ImmRegRel {
+  bits<5> Rd;
+  bits<2> Pu;
+  bits<8> s8;
+  bits<5> Rs;
+
+  let IClass = 0b0111;
+  let Inst{27-24} = 0b0011;
+  let Inst{23} = MajOp;
+  let Inst{22-21} = Pu;
+  let Inst{20-16} = Rs;
+  let Inst{13}    = 0b0;
+  let Inst{12-5}  = s8;
+  let Inst{4-0}   = Rd;
+}
+
+let opExtendable = 2, isCodeGenOnly = 0 in
+def C2_muxri : T_MUX1<0b1, (ins PredRegs:$Pu, s8Ext:$s8, IntRegs:$Rs),
+                           "$Rd = mux($Pu, #$s8, $Rs)">;
+
+let opExtendable = 3, isCodeGenOnly = 0 in
+def C2_muxir : T_MUX1<0b0, (ins PredRegs:$Pu, IntRegs:$Rs, s8Ext:$s8),
+                           "$Rd = mux($Pu, $Rs, #$s8)">;
+
+def : Pat<(i32 (select I1:$Pu, s8ExtPred:$s8, I32:$Rs)),
+          (C2_muxri I1:$Pu, s8ExtPred:$s8, I32:$Rs)>;
+
+def : Pat<(i32 (select I1:$Pu, I32:$Rs, s8ExtPred:$s8)),
+          (C2_muxir I1:$Pu, I32:$Rs, s8ExtPred:$s8)>;
+
+// C2_muxii: Scalar mux immediates.
+let isExtentSigned = 1, hasNewValue = 1, isExtendable = 1,
+    opExtentBits = 8, opExtendable = 2, isCodeGenOnly = 0 in
+def C2_muxii: ALU32Inst <(outs IntRegs:$Rd),
+                         (ins PredRegs:$Pu, s8Ext:$s8, s8Imm:$S8),
+  "$Rd = mux($Pu, #$s8, #$S8)" ,
+  [(set (i32 IntRegs:$Rd),
+        (i32 (select I1:$Pu, s8ExtPred:$s8, s8ImmPred:$S8)))] > {
+    bits<5> Rd;
+    bits<2> Pu;
+    bits<8> s8;
+    bits<8> S8;
+
+    let IClass = 0b0111;
+
+    let Inst{27-25} = 0b101;
+    let Inst{24-23} = Pu;
+    let Inst{22-16} = S8{7-1};
+    let Inst{13}    = S8{0};
+    let Inst{12-5}  = s8;
+    let Inst{4-0}   = Rd;
+  }
+
+//===----------------------------------------------------------------------===//
+// template class for non-predicated alu32_2op instructions
+// - aslh, asrh, sxtb, sxth, zxth
+//===----------------------------------------------------------------------===//
+let hasNewValue = 1, opNewValue = 0 in
+class T_ALU32_2op <string mnemonic, bits<3> minOp> :
+    ALU32Inst < (outs IntRegs:$Rd), (ins IntRegs:$Rs),
+    "$Rd = "#mnemonic#"($Rs)", [] > {
+  bits<5> Rd;
+  bits<5> Rs;
+
+  let IClass = 0b0111;
+
+  let Inst{27-24} = 0b0000;
+  let Inst{23-21} = minOp;
+  let Inst{13} = 0b0;
+  let Inst{4-0} = Rd;
+  let Inst{20-16} = Rs;
+}
+
+//===----------------------------------------------------------------------===//
+// template class for predicated alu32_2op instructions
+// - aslh, asrh, sxtb, sxth, zxtb, zxth
+//===----------------------------------------------------------------------===//
+let hasSideEffects = 0, validSubTargets = HasV4SubT,
+    hasNewValue = 1, opNewValue = 0 in
+class T_ALU32_2op_Pred <string mnemonic, bits<3> minOp, bit isPredNot, 
+    bit isPredNew > :
+    ALU32Inst <(outs IntRegs:$Rd), (ins PredRegs:$Pu, IntRegs:$Rs),
+    !if(isPredNot, "if (!$Pu", "if ($Pu")
+    #!if(isPredNew, ".new) ",") ")#"$Rd = "#mnemonic#"($Rs)"> {
+  bits<5> Rd;
+  bits<2> Pu;
+  bits<5> Rs;
+
+  let IClass = 0b0111;
+
+  let Inst{27-24} = 0b0000;
+  let Inst{23-21} = minOp;
+  let Inst{13} = 0b1;
+  let Inst{11} = isPredNot;
+  let Inst{10} = isPredNew;
+  let Inst{4-0} = Rd;
+  let Inst{9-8} = Pu;
+  let Inst{20-16} = Rs;
+}
+
+multiclass ALU32_2op_Pred<string mnemonic, bits<3> minOp, bit PredNot> {
+  let isPredicatedFalse = PredNot in {
+    def NAME : T_ALU32_2op_Pred<mnemonic, minOp, PredNot, 0>;
+
+    // Predicate new
+    let isPredicatedNew = 1 in
+    def NAME#new : T_ALU32_2op_Pred<mnemonic, minOp, PredNot, 1>;
+  }
+}
+
+multiclass ALU32_2op_base<string mnemonic, bits<3> minOp> {
+  let BaseOpcode = mnemonic in {
+    let isPredicable = 1, hasSideEffects = 0 in
+    def A2_#NAME : T_ALU32_2op<mnemonic, minOp>;
+
+    let validSubTargets = HasV4SubT, isPredicated = 1, hasSideEffects = 0 in {
+      defm A4_p#NAME#t : ALU32_2op_Pred<mnemonic, minOp, 0>;
+      defm A4_p#NAME#f : ALU32_2op_Pred<mnemonic, minOp, 1>;
+    }
+  }
+}
+
+let isCodeGenOnly = 0 in {
+defm aslh : ALU32_2op_base<"aslh", 0b000>, PredNewRel;
+defm asrh : ALU32_2op_base<"asrh", 0b001>, PredNewRel;
+defm sxtb : ALU32_2op_base<"sxtb", 0b101>, PredNewRel;
+defm sxth : ALU32_2op_base<"sxth", 0b111>, PredNewRel;
+defm zxth : ALU32_2op_base<"zxth", 0b110>, PredNewRel;
+}
+
+// Rd=zxtb(Rs): assembler mapped to Rd=and(Rs,#255).
+// Compiler would want to generate 'zxtb' instead of 'and' becuase 'zxtb' has
+// predicated forms while 'and' doesn't. Since integrated assembler can't
+// handle 'mapped' instructions, we need to encode 'zxtb' same as 'and' where
+// immediate operand is set to '255'.
+
+let hasNewValue = 1, opNewValue = 0 in
+class T_ZXTB: ALU32Inst < (outs IntRegs:$Rd), (ins IntRegs:$Rs),
+  "$Rd = zxtb($Rs)", [] > { // Rd = and(Rs,255)
+    bits<5> Rd;
+    bits<5> Rs;
+    bits<10> s10 = 255;
+
+    let IClass = 0b0111;
+
+    let Inst{27-22} = 0b011000;
+    let Inst{4-0} = Rd;
+    let Inst{20-16} = Rs;
+    let Inst{21} = s10{9};
+    let Inst{13-5} = s10{8-0};
+}
+
+//Rd=zxtb(Rs): assembler mapped to "Rd=and(Rs,#255)
+multiclass ZXTB_base <string mnemonic, bits<3> minOp> {
+  let BaseOpcode = mnemonic in {
+    let isPredicable = 1, hasSideEffects = 0 in
+    def A2_#NAME : T_ZXTB;
+
+    let validSubTargets = HasV4SubT, isPredicated = 1, hasSideEffects = 0 in {
+      defm A4_p#NAME#t : ALU32_2op_Pred<mnemonic, minOp, 0>;
+      defm A4_p#NAME#f : ALU32_2op_Pred<mnemonic, minOp, 1>;
+    }
+  }
+}
+
+let isCodeGenOnly=0 in
+defm zxtb : ZXTB_base<"zxtb",0b100>, PredNewRel;
 
 let hasSideEffects = 0 in
 def COMBINE_ii : ALU32_ii<(outs DoubleRegs:$dst),
@@ -749,32 +833,6 @@ def VMUX_prr64 : ALU64_rr<(outs DoubleRegs:$dst), (ins PredRegs:$src1,
                                                    DoubleRegs:$src3),
             "$dst = vmux($src1, $src2, $src3)",
             []>;
-
-let isExtendable = 1, opExtendable = 2, isExtentSigned = 1, opExtentBits = 8,
-CextOpcode = "MUX", InputType = "imm" in
-def MUX_ir : ALU32_ir<(outs IntRegs:$dst), (ins PredRegs:$src1, s8Ext:$src2,
-                                                IntRegs:$src3),
-             "$dst = mux($src1, #$src2, $src3)",
-             [(set (i32 IntRegs:$dst),
-                   (i32 (select (i1 PredRegs:$src1), s8ExtPred:$src2,
-                                (i32 IntRegs:$src3))))]>, ImmRegRel;
-
-let isExtendable = 1, opExtendable = 3, isExtentSigned = 1, opExtentBits = 8,
-CextOpcode = "MUX", InputType = "imm" in
-def MUX_ri : ALU32_ri<(outs IntRegs:$dst), (ins PredRegs:$src1, IntRegs:$src2,
-                                                s8Ext:$src3),
-             "$dst = mux($src1, $src2, #$src3)",
-             [(set (i32 IntRegs:$dst),
-                   (i32 (select (i1 PredRegs:$src1), (i32 IntRegs:$src2),
-                                 s8ExtPred:$src3)))]>, ImmRegRel;
-
-let isExtendable = 1, opExtendable = 2, isExtentSigned = 1, opExtentBits = 8 in
-def MUX_ii : ALU32_ii<(outs IntRegs:$dst), (ins PredRegs:$src1, s8Ext:$src2,
-                                                s8Imm:$src3),
-             "$dst = mux($src1, #$src2, #$src3)",
-             [(set (i32 IntRegs:$dst), (i32 (select (i1 PredRegs:$src1),
-                                                    s8ExtPred:$src2,
-                                                    s8ImmPred:$src3)))]>;
 
 def : Pat <(shl (i32 IntRegs:$src1), (i32 16)),
            (A2_aslh IntRegs:$src1)>;
@@ -2659,7 +2717,7 @@ def : Pat<(store (i1 -1), ADDRriS11_2:$addr),
 
 // Map from memb(Rs) = Pd -> Rt = mux(Pd, #0, #1); store Rt.
 def : Pat<(store (i1 PredRegs:$src1), ADDRriS11_2:$addr),
-      (STrib ADDRriS11_2:$addr, (i32 (MUX_ii (i1 PredRegs:$src1), 1, 0)) )>;
+      (STrib ADDRriS11_2:$addr, (i32 (C2_muxii (i1 PredRegs:$src1), 1, 0)) )>;
 
 // Map Rdd = anyext(Rs) -> Rdd = sxtw(Rs).
 // Hexagon_TODO: We can probably use combine but that will cost 2 instructions.
@@ -2779,11 +2837,11 @@ def : Pat <(i1 (setule (i64 DoubleRegs:$src1), (i64 DoubleRegs:$src2))),
 // Sign extends.
 // i1 -> i32
 def : Pat <(i32 (sext (i1 PredRegs:$src1))),
-      (i32 (MUX_ii (i1 PredRegs:$src1), -1, 0))>;
+      (i32 (C2_muxii (i1 PredRegs:$src1), -1, 0))>;
 
 // i1 -> i64
 def : Pat <(i64 (sext (i1 PredRegs:$src1))),
-      (i64 (COMBINE_rr (TFRI -1), (MUX_ii (i1 PredRegs:$src1), -1, 0)))>;
+      (i64 (COMBINE_rr (TFRI -1), (C2_muxii (i1 PredRegs:$src1), -1, 0)))>;
 
 // Convert sign-extended load back to load and sign extend.
 // i8 -> i64
@@ -2809,11 +2867,11 @@ def:  Pat <(i64 (sextloadi32 ADDRriS11_2:$src1)),
 // Zero extends.
 // i1 -> i32
 def : Pat <(i32 (zext (i1 PredRegs:$src1))),
-      (i32 (MUX_ii (i1 PredRegs:$src1), 1, 0))>;
+      (i32 (C2_muxii (i1 PredRegs:$src1), 1, 0))>;
 
 // i1 -> i64
 def : Pat <(i64 (zext (i1 PredRegs:$src1))),
-      (i64 (COMBINE_rr (TFRI 0), (MUX_ii (i1 PredRegs:$src1), 1, 0)))>,
+      (i64 (COMBINE_rr (TFRI 0), (C2_muxii (i1 PredRegs:$src1), 1, 0)))>,
       Requires<[NoV4T]>;
 
 // i32 -> i64
@@ -2874,15 +2932,15 @@ def:  Pat <(i32 (zextloadi1 ADDRriS11_0:$src1)),
 
 // Map from Rs = Pd to Pd = mux(Pd, #1, #0)
 def : Pat <(i32 (zext (i1 PredRegs:$src1))),
-      (i32 (MUX_ii (i1 PredRegs:$src1), 1, 0))>;
+      (i32 (C2_muxii (i1 PredRegs:$src1), 1, 0))>;
 
 // Map from Rs = Pd to Pd = mux(Pd, #1, #0)
 def : Pat <(i32 (anyext (i1 PredRegs:$src1))),
-      (i32 (MUX_ii (i1 PredRegs:$src1), 1, 0))>;
+      (i32 (C2_muxii (i1 PredRegs:$src1), 1, 0))>;
 
 // Map from Rss = Pd to Rdd = sxtw (mux(Pd, #1, #0))
 def : Pat <(i64 (anyext (i1 PredRegs:$src1))),
-      (i64 (SXTW (i32 (MUX_ii (i1 PredRegs:$src1), 1, 0))))>;
+      (i64 (SXTW (i32 (C2_muxii (i1 PredRegs:$src1), 1, 0))))>;
 
 
 let AddedComplexity = 100 in
