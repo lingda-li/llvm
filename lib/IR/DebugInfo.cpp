@@ -411,31 +411,33 @@ static bool fieldIsMDString(const MDNode *DbgNode, unsigned Elt) {
 }
 
 /// \brief Check if a value can be a reference to a type.
-static bool isTypeRef(const Value *Val) {
-  return !Val ||
-         (isa<MDString>(Val) && !cast<MDString>(Val)->getString().empty()) ||
-         (isa<MDNode>(Val) && DIType(cast<MDNode>(Val)).isType());
+static bool isTypeRef(const Metadata *MD) {
+  if (!MD)
+    return true;
+  if (auto *S = dyn_cast<MDString>(MD))
+    return !S->getString().empty();
+  if (auto *N = dyn_cast<MDNode>(MD))
+    return DIType(N).isType();
+  return false;
 }
 
 /// \brief Check if referenced field might be a type.
 static bool fieldIsTypeRef(const MDNode *DbgNode, unsigned Elt) {
-  Value *Fld = getField(DbgNode, Elt);
-  return isTypeRef(Fld);
+  return isTypeRef(dyn_cast_or_null<Metadata>(getField(DbgNode, Elt)));
 }
 
 /// \brief Check if a value can be a ScopeRef.
-static bool isScopeRef(const Value *Val) {
-  return !Val ||
-    (isa<MDString>(Val) && !cast<MDString>(Val)->getString().empty()) ||
-    // Not checking for Val->isScope() here, because it would work
-    // only for lexical scopes and not all subclasses of DIScope.
-    isa<MDNode>(Val);
+static bool isScopeRef(const Metadata *MD) {
+  if (!MD)
+    return true;
+  if (auto *S = dyn_cast<MDString>(MD))
+    return !S->getString().empty();
+  return isa<MDNode>(MD);
 }
 
 /// \brief Check if a field at position Elt of a MDNode can be a ScopeRef.
 static bool fieldIsScopeRef(const MDNode *DbgNode, unsigned Elt) {
-  Value *Fld = getField(DbgNode, Elt);
-  return isScopeRef(Fld);
+  return isScopeRef(dyn_cast_or_null<Metadata>(getField(DbgNode, Elt)));
 }
 
 bool DIType::Verify() const {
@@ -949,7 +951,7 @@ DITypeIdentifierMap
 llvm::generateDITypeIdentifierMap(const NamedMDNode *CU_Nodes) {
   DITypeIdentifierMap Map;
   for (unsigned CUi = 0, CUe = CU_Nodes->getNumOperands(); CUi != CUe; ++CUi) {
-    DICompileUnit CU(CU_Nodes->getOperandAsMDNode(CUi));
+    DICompileUnit CU(CU_Nodes->getOperand(CUi));
     DIArray Retain = CU.getRetainedTypes();
     for (unsigned Ti = 0, Te = Retain.getNumElements(); Ti != Te; ++Ti) {
       if (!Retain.getElement(Ti).isCompositeType())
@@ -997,7 +999,7 @@ void DebugInfoFinder::processModule(const Module &M) {
   InitializeTypeMap(M);
   if (NamedMDNode *CU_Nodes = M.getNamedMetadata("llvm.dbg.cu")) {
     for (unsigned i = 0, e = CU_Nodes->getNumOperands(); i != e; ++i) {
-      DICompileUnit CU(CU_Nodes->getOperandAsMDNode(i));
+      DICompileUnit CU(CU_Nodes->getOperand(i));
       addCompileUnit(CU);
       DIArray GVs = CU.getGlobalVariables();
       for (unsigned i = 0, e = GVs.getNumElements(); i != e; ++i) {
@@ -1125,7 +1127,7 @@ void DebugInfoFinder::processDeclare(const Module &M,
   if (!DV.isVariable())
     return;
 
-  if (!NodesSeen.insert(DV))
+  if (!NodesSeen.insert(DV).second)
     return;
   processScope(DIVariable(N).getContext());
   processType(DIVariable(N).getType().resolve(TypeIdentifierMap));
@@ -1141,7 +1143,7 @@ void DebugInfoFinder::processValue(const Module &M, const DbgValueInst *DVI) {
   if (!DV.isVariable())
     return;
 
-  if (!NodesSeen.insert(DV))
+  if (!NodesSeen.insert(DV).second)
     return;
   processScope(DIVariable(N).getContext());
   processType(DIVariable(N).getType().resolve(TypeIdentifierMap));
@@ -1151,7 +1153,7 @@ bool DebugInfoFinder::addType(DIType DT) {
   if (!DT)
     return false;
 
-  if (!NodesSeen.insert(DT))
+  if (!NodesSeen.insert(DT).second)
     return false;
 
   TYs.push_back(DT);
@@ -1161,7 +1163,7 @@ bool DebugInfoFinder::addType(DIType DT) {
 bool DebugInfoFinder::addCompileUnit(DICompileUnit CU) {
   if (!CU)
     return false;
-  if (!NodesSeen.insert(CU))
+  if (!NodesSeen.insert(CU).second)
     return false;
 
   CUs.push_back(CU);
@@ -1172,7 +1174,7 @@ bool DebugInfoFinder::addGlobalVariable(DIGlobalVariable DIG) {
   if (!DIG)
     return false;
 
-  if (!NodesSeen.insert(DIG))
+  if (!NodesSeen.insert(DIG).second)
     return false;
 
   GVs.push_back(DIG);
@@ -1183,7 +1185,7 @@ bool DebugInfoFinder::addSubprogram(DISubprogram SP) {
   if (!SP)
     return false;
 
-  if (!NodesSeen.insert(SP))
+  if (!NodesSeen.insert(SP).second)
     return false;
 
   SPs.push_back(SP);
@@ -1197,7 +1199,7 @@ bool DebugInfoFinder::addScope(DIScope Scope) {
   // as null for now.
   if (Scope->getNumOperands() == 0)
     return false;
-  if (!NodesSeen.insert(Scope))
+  if (!NodesSeen.insert(Scope).second)
     return false;
   Scopes.push_back(Scope);
   return true;
@@ -1413,6 +1415,9 @@ void DIExpression::printInternal(raw_ostream &OS) const {
       OS << " offset=" << Offset << ", size=" << Size;
       break;
     }
+    case DW_OP_deref:
+      // No arguments.
+      break;
     default:
       // Else bail out early. This may be a line table entry.
       OS << "Unknown]";
@@ -1465,19 +1470,19 @@ void DIVariable::printExtendedName(raw_ostream &OS) const {
   }
 }
 
-template <> DIRef<DIScope>::DIRef(const Value *V) : Val(V) {
+template <> DIRef<DIScope>::DIRef(const Metadata *V) : Val(V) {
   assert(isScopeRef(V) && "DIScopeRef should be a MDString or MDNode");
 }
-template <> DIRef<DIType>::DIRef(const Value *V) : Val(V) {
+template <> DIRef<DIType>::DIRef(const Metadata *V) : Val(V) {
   assert(isTypeRef(V) && "DITypeRef should be a MDString or MDNode");
 }
 
 template <>
 DIScopeRef DIDescriptor::getFieldAs<DIScopeRef>(unsigned Elt) const {
-  return DIScopeRef(getField(DbgNode, Elt));
+  return DIScopeRef(cast_or_null<Metadata>(getField(DbgNode, Elt)));
 }
 template <> DITypeRef DIDescriptor::getFieldAs<DITypeRef>(unsigned Elt) const {
-  return DITypeRef(getField(DbgNode, Elt));
+  return DITypeRef(cast_or_null<Metadata>(getField(DbgNode, Elt)));
 }
 
 bool llvm::StripDebugInfo(Module &M) {
@@ -1542,8 +1547,8 @@ llvm::makeSubprogramMap(const Module &M) {
   if (!CU_Nodes)
     return R;
 
-  for (Value *N : CU_Nodes->operands()) {
-    DICompileUnit CUNode(cast<MDNode>(N));
+  for (MDNode *N : CU_Nodes->operands()) {
+    DICompileUnit CUNode(N);
     DIArray SPs = CUNode.getSubprograms();
     for (unsigned i = 0, e = SPs.getNumElements(); i != e; ++i) {
       DISubprogram SP(SPs.getElement(i));

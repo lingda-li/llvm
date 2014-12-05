@@ -18,6 +18,7 @@
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/PatternMatch.h"
+#include "llvm/IR/Statepoint.h"
 #include "llvm/Transforms/Utils/BuildLibCalls.h"
 #include "llvm/Transforms/Utils/Local.h"
 using namespace llvm;
@@ -117,7 +118,7 @@ Instruction *InstCombiner::SimplifyMemTransfer(MemIntrinsic *MI) {
 
         // If the memcpy has metadata describing the members, see if we can
         // get the TBAA tag describing our copy.
-        if (MDNode *M = MI->getMDNode(LLVMContext::MD_tbaa_struct)) {
+        if (MDNode *M = MI->getMetadata(LLVMContext::MD_tbaa_struct)) {
           if (M->getNumOperands() == 3 &&
               M->getOperand(0) &&
               isa<ConstantInt>(M->getOperand(0)) &&
@@ -613,6 +614,13 @@ Instruction *InstCombiner::visitCallInst(CallInst &CI) {
       return new LoadInst(Ptr);
     }
     break;
+  case Intrinsic::ppc_vsx_lxvw4x:
+  case Intrinsic::ppc_vsx_lxvd2x: {
+    // Turn PPC VSX loads into normal loads.
+    Value *Ptr = Builder->CreateBitCast(II->getArgOperand(0),
+                                        PointerType::getUnqual(II->getType()));
+    return new LoadInst(Ptr, Twine(""), false, 1);
+  }
   case Intrinsic::ppc_altivec_stvx:
   case Intrinsic::ppc_altivec_stvxl:
     // Turn stvx -> store if the pointer is known aligned.
@@ -624,6 +632,13 @@ Instruction *InstCombiner::visitCallInst(CallInst &CI) {
       return new StoreInst(II->getArgOperand(0), Ptr);
     }
     break;
+  case Intrinsic::ppc_vsx_stxvw4x:
+  case Intrinsic::ppc_vsx_stxvd2x: {
+    // Turn PPC VSX stores into normal stores.
+    Type *OpPtrTy = PointerType::getUnqual(II->getArgOperand(0)->getType());
+    Value *Ptr = Builder->CreateBitCast(II->getArgOperand(1), OpPtrTy);
+    return new StoreInst(II->getArgOperand(0), Ptr, false, 1);
+  }
   case Intrinsic::x86_sse_storeu_ps:
   case Intrinsic::x86_sse2_storeu_pd:
   case Intrinsic::x86_sse2_storeu_dq:
@@ -1102,6 +1117,26 @@ Instruction *InstCombiner::visitCallInst(CallInst &CI) {
       return EraseInstFromFunction(*II);
     }
 
+    // assume( (load addr) != null ) -> add 'nonnull' metadata to load
+    // (if assume is valid at the load)
+    if (ICmpInst* ICmp = dyn_cast<ICmpInst>(IIOperand)) {
+      Value *LHS = ICmp->getOperand(0);
+      Value *RHS = ICmp->getOperand(1);
+      if (ICmpInst::ICMP_NE == ICmp->getPredicate() &&
+          isa<LoadInst>(LHS) &&
+          isa<Constant>(RHS) &&
+          RHS->getType()->isPointerTy() &&
+          cast<Constant>(RHS)->isNullValue()) {
+        LoadInst* LI = cast<LoadInst>(LHS);
+        if (isValidAssumeForContext(II, LI, DL, DT)) {
+          MDNode* MD = MDNode::get(II->getContext(), ArrayRef<Value*>());
+          LI->setMetadata(LLVMContext::MD_nonnull, MD);
+          return EraseInstFromFunction(*II);
+        }
+      }
+      // TODO: apply nonnull return attributes to calls and invokes
+      // TODO: apply range metadata for range check patterns?
+    }
     // If there is a dominating assume with the same condition as this one,
     // then this one is redundant, and should be removed.
     APInt KnownZero(1, 0), KnownOne(1, 0);
@@ -1129,6 +1164,14 @@ static bool isSafeToEliminateVarargsCast(const CallSite CS,
                                          const DataLayout * const DL,
                                          const int ix) {
   if (!CI->isLosslessCast())
+    return false;
+
+  // If this is a GC intrinsic, avoid munging types.  We need types for
+  // statepoint reconstruction in SelectionDAG.
+  // TODO: This is probably something which should be expanded to all
+  // intrinsics since the entire point of intrinsics is that
+  // they are understandable by the optimizer.
+  if (isStatepoint(CS) || isGCRelocate(CS) || isGCResult(CS))
     return false;
 
   // The size of ByVal or InAlloca arguments is derived from the type, so we

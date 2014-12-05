@@ -23,6 +23,7 @@
 #include "llvm/IR/InstrTypes.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/LeakDetector.h"
+#include "llvm/IR/TypeFinder.h"
 #include "llvm/Support/Dwarf.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/RandomNumberGenerator.h"
@@ -276,8 +277,7 @@ getModuleFlagsMetadata(SmallVectorImpl<ModuleFlagEntry> &Flags) const {
   const NamedMDNode *ModFlags = getModuleFlagsMetadata();
   if (!ModFlags) return;
 
-  for (const Value *FlagMD : ModFlags->operands()) {
-    const MDNode *Flag = cast<MDNode>(FlagMD);
+  for (const MDNode *Flag : ModFlags->operands()) {
     ModFlagBehavior MFB;
     if (Flag->getNumOperands() >= 3 &&
         isValidModFlagBehavior(Flag->getOperand(0), MFB) &&
@@ -426,6 +426,19 @@ std::error_code Module::materializeAllPermanently() {
 // Other module related stuff.
 //
 
+std::vector<StructType *> Module::getIdentifiedStructTypes() const {
+  // If we have a materializer, it is possible that some unread function
+  // uses a type that is currently not visible to a TypeFinder, so ask
+  // the materializer which types it created.
+  if (Materializer)
+    return Materializer->getIdentifiedStructTypes();
+
+  std::vector<StructType *> Ret;
+  TypeFinder SrcStructTypes;
+  SrcStructTypes.run(*this, true);
+  Ret.assign(SrcStructTypes.begin(), SrcStructTypes.end());
+  return Ret;
+}
 
 // dropAllReferences() - This function causes all the subelements to "let go"
 // of all references that they are maintaining.  This allows one to 'delete' a
@@ -453,9 +466,7 @@ unsigned Module::getDwarfVersion() const {
 }
 
 Comdat *Module::getOrInsertComdat(StringRef Name) {
-  Comdat C;
-  StringMapEntry<Comdat> &Entry =
-      ComdatSymTab.GetOrCreateValue(Name, std::move(C));
+  auto &Entry = *ComdatSymTab.insert(std::make_pair(Name, Comdat())).first;
   Entry.second.Name = &Entry;
   return &Entry.second;
 }
