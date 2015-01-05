@@ -13,7 +13,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Transforms/Scalar.h"
-#include "llvm/Analysis/AssumptionTracker.h"
+#include "llvm/Analysis/AssumptionCache.h"
 #include "llvm/Analysis/CodeMetrics.h"
 #include "llvm/Analysis/FunctionTargetTransformInfo.h"
 #include "llvm/Analysis/LoopPass.h"
@@ -104,7 +104,7 @@ namespace {
     /// loop preheaders be inserted into the CFG...
     ///
     void getAnalysisUsage(AnalysisUsage &AU) const override {
-      AU.addRequired<AssumptionTracker>();
+      AU.addRequired<AssumptionCacheTracker>();
       AU.addRequired<LoopInfo>();
       AU.addPreserved<LoopInfo>();
       AU.addRequiredID(LoopSimplifyID);
@@ -186,7 +186,7 @@ namespace {
 char LoopUnroll::ID = 0;
 INITIALIZE_PASS_BEGIN(LoopUnroll, "loop-unroll", "Unroll loops", false, false)
 INITIALIZE_AG_DEPENDENCY(TargetTransformInfo)
-INITIALIZE_PASS_DEPENDENCY(AssumptionTracker)
+INITIALIZE_PASS_DEPENDENCY(AssumptionCacheTracker)
 INITIALIZE_PASS_DEPENDENCY(FunctionTargetTransformInfo)
 INITIALIZE_PASS_DEPENDENCY(LoopInfo)
 INITIALIZE_PASS_DEPENDENCY(LoopSimplify)
@@ -207,9 +207,9 @@ Pass *llvm::createSimpleLoopUnrollPass() {
 static unsigned ApproximateLoopSize(const Loop *L, unsigned &NumCalls,
                                     bool &NotDuplicatable,
                                     const TargetTransformInfo &TTI,
-                                    AssumptionTracker *AT) {
+                                    AssumptionCache *AC) {
   SmallPtrSet<const Value *, 32> EphValues;
-  CodeMetrics::collectEphemeralValues(L, AT, EphValues);
+  CodeMetrics::collectEphemeralValues(L, AC, EphValues);
 
   CodeMetrics Metrics;
   for (Loop::block_iterator I = L->block_begin(), E = L->block_end();
@@ -272,7 +272,8 @@ static unsigned UnrollCountPragmaValue(const Loop *L) {
   if (MD) {
     assert(MD->getNumOperands() == 2 &&
            "Unroll count hint metadata should have two operands.");
-    unsigned Count = cast<ConstantInt>(MD->getOperand(1))->getZExtValue();
+    unsigned Count =
+        mdconst::extract<ConstantInt>(MD->getOperand(1))->getZExtValue();
     assert(Count >= 1 && "Unroll count must be positive.");
     return Count;
   }
@@ -288,9 +289,9 @@ static void SetLoopAlreadyUnrolled(Loop *L) {
   if (!LoopID) return;
 
   // First remove any existing loop unrolling metadata.
-  SmallVector<Value *, 4> Vals;
+  SmallVector<Metadata *, 4> MDs;
   // Reserve first location for self reference to the LoopID metadata node.
-  Vals.push_back(nullptr);
+  MDs.push_back(nullptr);
   for (unsigned i = 1, ie = LoopID->getNumOperands(); i < ie; ++i) {
     bool IsUnrollMetadata = false;
     MDNode *MD = dyn_cast<MDNode>(LoopID->getOperand(i));
@@ -298,17 +299,18 @@ static void SetLoopAlreadyUnrolled(Loop *L) {
       const MDString *S = dyn_cast<MDString>(MD->getOperand(0));
       IsUnrollMetadata = S && S->getString().startswith("llvm.loop.unroll.");
     }
-    if (!IsUnrollMetadata) Vals.push_back(LoopID->getOperand(i));
+    if (!IsUnrollMetadata)
+      MDs.push_back(LoopID->getOperand(i));
   }
 
   // Add unroll(disable) metadata to disable future unrolling.
   LLVMContext &Context = L->getHeader()->getContext();
-  SmallVector<Value *, 1> DisableOperands;
+  SmallVector<Metadata *, 1> DisableOperands;
   DisableOperands.push_back(MDString::get(Context, "llvm.loop.unroll.disable"));
   MDNode *DisableNode = MDNode::get(Context, DisableOperands);
-  Vals.push_back(DisableNode);
+  MDs.push_back(DisableNode);
 
-  MDNode *NewLoopID = MDNode::get(Context, Vals);
+  MDNode *NewLoopID = MDNode::get(Context, MDs);
   // Set operand 0 to refer to the loop id itself.
   NewLoopID->replaceOperandWith(0, NewLoopID);
   L->setLoopID(NewLoopID);
@@ -363,7 +365,8 @@ bool LoopUnroll::runOnLoop(Loop *L, LPPassManager &LPM) {
   const TargetTransformInfo &TTI = getAnalysis<TargetTransformInfo>();
   const FunctionTargetTransformInfo &FTTI =
       getAnalysis<FunctionTargetTransformInfo>();
-  AssumptionTracker *AT = &getAnalysis<AssumptionTracker>();
+  auto &AC = getAnalysis<AssumptionCacheTracker>().getAssumptionCache(
+      *L->getHeader()->getParent());
 
   BasicBlock *Header = L->getHeader();
   DEBUG(dbgs() << "Loop Unroll: F[" << Header->getParent()->getName()
@@ -402,7 +405,7 @@ bool LoopUnroll::runOnLoop(Loop *L, LPPassManager &LPM) {
   unsigned NumInlineCandidates;
   bool notDuplicatable;
   unsigned LoopSize =
-      ApproximateLoopSize(L, NumInlineCandidates, notDuplicatable, TTI, AT);
+      ApproximateLoopSize(L, NumInlineCandidates, notDuplicatable, TTI, &AC);
   DEBUG(dbgs() << "  Loop Size = " << LoopSize << "\n");
   uint64_t UnrolledSize = (uint64_t)LoopSize * Count;
   if (notDuplicatable) {
@@ -509,7 +512,7 @@ bool LoopUnroll::runOnLoop(Loop *L, LPPassManager &LPM) {
 
   // Unroll the loop.
   if (!UnrollLoop(L, Count, TripCount, AllowRuntime, TripMultiple, LI, this,
-                  &LPM, AT))
+                  &LPM, &AC))
     return false;
 
   return true;

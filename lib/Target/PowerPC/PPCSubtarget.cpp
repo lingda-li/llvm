@@ -108,6 +108,7 @@ void PPCSubtarget::initializeEnvironment() {
   HasFPCVT = false;
   HasISEL = false;
   HasPOPCNTD = false;
+  HasCMPB = false;
   HasLDBRX = false;
   IsBookE = false;
   HasOnlyMSYNC = false;
@@ -153,13 +154,6 @@ void PPCSubtarget::initSubtargetFeatures(StringRef CPU, StringRef FS) {
 
   // Determine endianness.
   IsLittleEndian = (TargetTriple.getArch() == Triple::ppc64le);
-
-  // FIXME: For now, we disable VSX in little-endian mode until endian
-  // issues in those instructions can be addressed.
-  if (IsLittleEndian) {
-    HasVSX = false;
-    HasP8Vector = false;
-  }
 
   // Determine default ABI.
   if (TargetABI == PPC_ABI_UNKNOWN) {

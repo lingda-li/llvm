@@ -116,6 +116,7 @@ class LLVMVectorSameWidth<int num, LLVMType elty>
   : LLVMMatchType<num> {
   ValueType ElTy = elty.VT;
 }
+class LLVMPointerTo<int num> : LLVMMatchType<num>;
 
 // Match the type of another intrinsic parameter that is expected to be a
 // vector type, but change the element count to be half as many
@@ -290,6 +291,12 @@ def int_assume        : Intrinsic<[], [llvm_i1_ty], []>;
 def int_stackprotector : Intrinsic<[], [llvm_ptr_ty, llvm_ptrptr_ty], []>;
 def int_stackprotectorcheck : Intrinsic<[], [llvm_ptrptr_ty],
                                         [IntrReadWriteArgMem]>;
+
+// A counter increment for instrumentation based profiling.
+def int_instrprof_increment : Intrinsic<[],
+                                        [llvm_ptr_ty, llvm_i64_ty,
+                                         llvm_i32_ty, llvm_i32_ty],
+                                        []>;
 
 //===------------------- Standard C Library Intrinsics --------------------===//
 //
@@ -561,14 +568,14 @@ def int_clear_cache : Intrinsic<[], [llvm_ptr_ty, llvm_ptr_ty],
 
 //===-------------------------- Masked Intrinsics -------------------------===//
 //
-def int_masked_store : Intrinsic<[], [llvm_ptr_ty, llvm_anyvector_ty,
+def int_masked_store : Intrinsic<[], [llvm_anyvector_ty, LLVMPointerTo<0>,
                                       llvm_i32_ty,
                                       LLVMVectorSameWidth<0, llvm_i1_ty>],
                                  [IntrReadWriteArgMem]>;
 
 def int_masked_load  : Intrinsic<[llvm_anyvector_ty],
-                                 [llvm_ptr_ty, LLVMMatchType<0>, llvm_i32_ty,
-                                  LLVMVectorSameWidth<0, llvm_i1_ty>],
+                                 [LLVMPointerTo<0>, llvm_i32_ty,
+                                  LLVMVectorSameWidth<0, llvm_i1_ty>, LLVMMatchType<0>],
                                  [IntrReadArgMem]>;
 //===----------------------------------------------------------------------===//
 // Target-specific intrinsics
