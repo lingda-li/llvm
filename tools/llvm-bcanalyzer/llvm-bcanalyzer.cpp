@@ -28,10 +28,10 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Bitcode/BitstreamReader.h"
+#include "llvm/ADT/Optional.h"
 #include "llvm/Bitcode/LLVMBitCodes.h"
 #include "llvm/Bitcode/ReaderWriter.h"
 #include "llvm/IR/Verifier.h"
-#include "llvm/ADT/Optional.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Format.h"
 #include "llvm/Support/ManagedStatic.h"
@@ -247,7 +247,7 @@ static const char *GetCodeName(unsigned CodeID, unsigned BlockID,
     case bitc::FUNC_CODE_INST_VSELECT:      return "INST_VSELECT";
     case bitc::FUNC_CODE_DEBUG_LOC_AGAIN:   return "DEBUG_LOC_AGAIN";
     case bitc::FUNC_CODE_INST_CALL:         return "INST_CALL";
-    case bitc::FUNC_CODE_DEBUG_LOC_OLD:     return "DEBUG_LOC_OLD";
+    case bitc::FUNC_CODE_DEBUG_LOC:         return "DEBUG_LOC";
     }
   case bitc::VALUE_SYMTAB_BLOCK_ID:
     switch (CodeID) {
