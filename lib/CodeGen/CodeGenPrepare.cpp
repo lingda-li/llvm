@@ -18,6 +18,7 @@
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/Analysis/InstructionSimplify.h"
+#include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/IR/CallSite.h"
 #include "llvm/IR/Constants.h"
@@ -39,7 +40,6 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Target/TargetLibraryInfo.h"
 #include "llvm/Target/TargetLowering.h"
 #include "llvm/Target/TargetSubtargetInfo.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
@@ -161,7 +161,7 @@ class TypePromotionTransaction;
 
     void getAnalysisUsage(AnalysisUsage &AU) const override {
       AU.addPreserved<DominatorTreeWrapperPass>();
-      AU.addRequired<TargetLibraryInfo>();
+      AU.addRequired<TargetLibraryInfoWrapperPass>();
       AU.addRequired<TargetTransformInfo>();
     }
 
@@ -212,7 +212,7 @@ bool CodeGenPrepare::runOnFunction(Function &F) {
   ModifiedDT = false;
   if (TM)
     TLI = TM->getSubtargetImpl()->getTargetLowering();
-  TLInfo = &getAnalysis<TargetLibraryInfo>();
+  TLInfo = &getAnalysis<TargetLibraryInfoWrapperPass>().getTLI();
   TTI = &getAnalysis<TargetTransformInfo>();
   DominatorTreeWrapperPass *DTWP =
       getAnalysisIfAvailable<DominatorTreeWrapperPass>();
