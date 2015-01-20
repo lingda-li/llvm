@@ -337,7 +337,8 @@ void DIDescriptor::replaceAllUsesWith(LLVMContext &VMContext, DIDescriptor D) {
     DN = MDNode::get(VMContext, Ops);
   }
 
-  auto *Node = cast<MDNodeFwdDecl>(const_cast<MDNode *>(DbgNode));
+  assert(DbgNode->isTemporary() && "Expected temporary node");
+  auto *Node = const_cast<MDNode *>(DbgNode);
   Node->replaceAllUsesWith(const_cast<MDNode *>(DN));
   MDNode::deleteTemporary(Node);
   DbgNode = DN;
@@ -346,7 +347,8 @@ void DIDescriptor::replaceAllUsesWith(LLVMContext &VMContext, DIDescriptor D) {
 void DIDescriptor::replaceAllUsesWith(MDNode *D) {
   assert(DbgNode && "Trying to replace an unverified type!");
   assert(DbgNode != D && "This replacement should always happen");
-  auto *Node = cast<MDNodeFwdDecl>(const_cast<MDNode *>(DbgNode));
+  assert(DbgNode->isTemporary() && "Expected temporary node");
+  auto *Node = const_cast<MDNode *>(DbgNode);
   Node->replaceAllUsesWith(D);
   MDNode::deleteTemporary(Node);
 }
@@ -525,12 +527,15 @@ bool DISubprogram::Verify() const {
         while ((IA = DL.getInlinedAt()))
           DL = DebugLoc::getFromDILocation(IA);
         DL.getScopeAndInlinedAt(Scope, IA);
+        assert(Scope && "debug location has no scope");
         assert(!IA);
         while (!DIDescriptor(Scope).isSubprogram()) {
           DILexicalBlockFile D(Scope);
           Scope = D.isLexicalBlockFile()
                       ? D.getScope()
                       : DebugLoc::getFromDILexicalBlock(Scope).getScope();
+          if (!Scope)
+            llvm_unreachable("lexical block file has no scope");
         }
         if (!DISubprogram(Scope).describes(F))
           return false;
