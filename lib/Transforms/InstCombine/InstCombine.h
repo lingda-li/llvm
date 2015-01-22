@@ -22,7 +22,6 @@
 #include "llvm/IR/Operator.h"
 #include "llvm/IR/PatternMatch.h"
 #include "llvm/Pass.h"
-#include "llvm/Transforms/Utils/SimplifyLibCalls.h"
 
 #define DEBUG_TYPE "instcombine"
 
@@ -104,45 +103,50 @@ public:
 /// combine them, as well as the pass infrastructure for running this as part
 /// of the LLVM pass pipeline.
 class LLVM_LIBRARY_VISIBILITY InstCombiner
-    : public FunctionPass,
-      public InstVisitor<InstCombiner, Instruction *> {
-  AssumptionCache *AC;
-  const DataLayout *DL;
-  TargetLibraryInfo *TLI;
-  DominatorTree *DT;
-  LoopInfo *LI;
-  bool MadeIRChange;
-  LibCallSimplifier *Simplifier;
-  bool MinimizeSize;
-
+    : public InstVisitor<InstCombiner, Instruction *> {
+  // FIXME: These members shouldn't be public.
 public:
   /// \brief A worklist of the instructions that need to be simplified.
-  InstCombineWorklist Worklist;
+  InstCombineWorklist &Worklist;
 
   /// \brief An IRBuilder that automatically inserts new instructions into the
   /// worklist.
   typedef IRBuilder<true, TargetFolder, InstCombineIRInserter> BuilderTy;
   BuilderTy *Builder;
 
-  static char ID; // Pass identification, replacement for typeid
-  InstCombiner()
-      : FunctionPass(ID), DL(nullptr), DT(nullptr), LI(nullptr),
-        Builder(nullptr) {
-    MinimizeSize = false;
-    initializeInstCombinerPass(*PassRegistry::getPassRegistry());
-  }
+private:
+  // Mode in which we are running the combiner.
+  const bool MinimizeSize;
+
+  // Required analyses.
+  // FIXME: These can never be null and should be references.
+  AssumptionCache *AC;
+  TargetLibraryInfo *TLI;
+  DominatorTree *DT;
+
+  // Optional analyses. When non-null, these can both be used to do better
+  // combining and will be updated to reflect any changes.
+  const DataLayout *DL;
+  LoopInfo *LI;
+
+  bool MadeIRChange;
 
 public:
-  bool runOnFunction(Function &F) override;
+  InstCombiner(InstCombineWorklist &Worklist, BuilderTy *Builder,
+               bool MinimizeSize, AssumptionCache *AC, TargetLibraryInfo *TLI,
+               DominatorTree *DT, const DataLayout *DL, LoopInfo *LI)
+      : Worklist(Worklist), Builder(Builder), MinimizeSize(MinimizeSize),
+        AC(AC), TLI(TLI), DT(DT), DL(DL), LI(LI), MadeIRChange(false) {}
 
-  bool DoOneIteration(Function &F, unsigned ItNum);
-
-  void getAnalysisUsage(AnalysisUsage &AU) const override;
+  /// \brief Run the combiner over the entire worklist until it is empty.
+  ///
+  /// \returns true if the IR is changed.
+  bool run();
 
   AssumptionCache *getAssumptionCache() const { return AC; }
 
   const DataLayout *getDataLayout() const { return DL; }
-  
+
   DominatorTree *getDominatorTree() const { return DT; }
 
   LoopInfo *getLoopInfo() const { return LI; }
@@ -340,7 +344,7 @@ public:
       V = UndefValue::get(I.getType());
 
     DEBUG(dbgs() << "IC: Replacing " << I << "\n"
-                    "    with " << *V << '\n');
+                 << "    with " << *V << '\n');
 
     I.replaceAllUsesWith(V);
     return &I;
@@ -350,16 +354,16 @@ public:
   /// \p Result and a constant \p Overflow value. If \p ReUseName is true the
   /// \p Result's name is taken from \p II.
   Instruction *CreateOverflowTuple(IntrinsicInst *II, Value *Result,
-                                    bool Overflow, bool ReUseName = true) {
+                                   bool Overflow, bool ReUseName = true) {
     if (ReUseName)
       Result->takeName(II);
-    Constant *V[] = { UndefValue::get(Result->getType()),
-                      Overflow ? Builder->getTrue() : Builder->getFalse() };
+    Constant *V[] = {UndefValue::get(Result->getType()),
+                     Overflow ? Builder->getTrue() : Builder->getFalse()};
     StructType *ST = cast<StructType>(II->getType());
     Constant *Struct = ConstantStruct::get(ST, V);
     return InsertValueInst::Create(Struct, Result, 0);
   }
-        
+
   /// \brief Combiner aware instruction erasure.
   ///
   /// When dealing with an instruction that has side effects or produces a void
@@ -388,8 +392,7 @@ public:
                                   DT);
   }
 
-  bool MaskedValueIsZero(Value *V, const APInt &Mask,
-                         unsigned Depth = 0,
+  bool MaskedValueIsZero(Value *V, const APInt &Mask, unsigned Depth = 0,
                          Instruction *CxtI = nullptr) const {
     return llvm::MaskedValueIsZero(V, Mask, DL, Depth, AC, CxtI, DT);
   }
@@ -416,7 +419,8 @@ private:
   /// or commutative.
   bool SimplifyAssociativeOrCommutative(BinaryOperator &I);
 
-  /// \brief Tries to simplify binary operations which some other binary operation distributes over.
+  /// \brief Tries to simplify binary operations which some other binary
+  /// operation distributes over.
   ///
   /// It does this by either by factorizing out common terms (eg "(A*B)+(A*C)"
   /// -> "A*(B+C)") or expanding out if this results in simplifications (eg: "A

@@ -148,17 +148,26 @@ uint64_t DIExpression::getElement(unsigned Idx) const {
 }
 
 bool DIExpression::isVariablePiece() const {
-  return getNumElements() && getElement(0) == dwarf::DW_OP_piece;
+  unsigned N = getNumElements();
+  return N >=3 && getElement(N-3) == dwarf::DW_OP_piece;
 }
 
 uint64_t DIExpression::getPieceOffset() const {
-  assert(isVariablePiece());
-  return getElement(1);
+  assert(isVariablePiece() && "not a piece");
+  return getElement(getNumElements()-2);
 }
 
 uint64_t DIExpression::getPieceSize() const {
-  assert(isVariablePiece());
-  return getElement(2);
+  assert(isVariablePiece() && "not a piece");
+  return getElement(getNumElements()-1);
+}
+
+DIExpressionIterator DIExpression::begin() const {
+  return DIExpressionIterator(*this);
+}
+
+DIExpressionIterator DIExpression::end() const {
+  return DIExpressionIterator();
 }
 
 //===----------------------------------------------------------------------===//
@@ -527,7 +536,8 @@ bool DISubprogram::Verify() const {
         while ((IA = DL.getInlinedAt()))
           DL = DebugLoc::getFromDILocation(IA);
         DL.getScopeAndInlinedAt(Scope, IA);
-        assert(Scope && "debug location has no scope");
+        if (!Scope)
+          return false;
         assert(!IA);
         while (!DIDescriptor(Scope).isSubprogram()) {
           DILexicalBlockFile D(Scope);
@@ -535,7 +545,7 @@ bool DISubprogram::Verify() const {
                       ? D.getScope()
                       : DebugLoc::getFromDILexicalBlock(Scope).getScope();
           if (!Scope)
-            llvm_unreachable("lexical block file has no scope");
+            return false;
         }
         if (!DISubprogram(Scope).describes(F))
           return false;
@@ -593,7 +603,25 @@ bool DIExpression::Verify() const {
   if (!DbgNode)
     return true;
 
-  return isExpression() && DbgNode->getNumOperands() == 1;
+  if (!(isExpression() && DbgNode->getNumOperands() == 1))
+    return false;
+
+  for (auto E = end(), I = begin(); I != E; ++I)
+    switch (*I) {
+    case DW_OP_piece:
+      // Must be the last element of the expression.
+      return std::distance(I.getBase(), DIHeaderFieldIterator()) == 3;
+    case DW_OP_plus:
+      if (std::distance(I.getBase(), DIHeaderFieldIterator()) < 2)
+        return false;
+      break;
+    case DW_OP_deref:
+      break;
+    default:
+      // Other operators are not yet supported by the backend.
+      return false;
+    }
+  return true;
 }
 
 bool DILocation::Verify() const {

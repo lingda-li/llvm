@@ -1136,6 +1136,21 @@ void X86TargetLowering::resetOperationActions() {
       setLoadExtAction(ISD::SEXTLOAD, VT, MVT::v2i32, Custom);
     }
 
+    // SSE41 also has vector sign/zero extending loads, PMOV[SZ]X
+    setLoadExtAction(ISD::SEXTLOAD, MVT::v8i16, MVT::v8i8,  Legal);
+    setLoadExtAction(ISD::SEXTLOAD, MVT::v4i32, MVT::v4i8,  Legal);
+    setLoadExtAction(ISD::SEXTLOAD, MVT::v2i64, MVT::v2i8,  Legal);
+    setLoadExtAction(ISD::SEXTLOAD, MVT::v4i32, MVT::v4i16, Legal);
+    setLoadExtAction(ISD::SEXTLOAD, MVT::v2i64, MVT::v2i16, Legal);
+    setLoadExtAction(ISD::SEXTLOAD, MVT::v2i64, MVT::v2i32, Legal);
+
+    setLoadExtAction(ISD::ZEXTLOAD, MVT::v8i16, MVT::v8i8,  Legal);
+    setLoadExtAction(ISD::ZEXTLOAD, MVT::v4i32, MVT::v4i8,  Legal);
+    setLoadExtAction(ISD::ZEXTLOAD, MVT::v2i64, MVT::v2i8,  Legal);
+    setLoadExtAction(ISD::ZEXTLOAD, MVT::v4i32, MVT::v4i16, Legal);
+    setLoadExtAction(ISD::ZEXTLOAD, MVT::v2i64, MVT::v2i16, Legal);
+    setLoadExtAction(ISD::ZEXTLOAD, MVT::v2i64, MVT::v2i32, Legal);
+
     // i8 and i16 vectors are custom because the source register and source
     // source memory operand types are not the same width.  f32 vectors are
     // custom since the immediate controlling the insert encodes additional
@@ -1315,6 +1330,21 @@ void X86TargetLowering::resetOperationActions() {
 
       // Custom CTPOP always performs better on natively supported v8i32
       setOperationAction(ISD::CTPOP,             MVT::v8i32, Custom);
+
+      // AVX2 also has wider vector sign/zero extending loads, VPMOV[SZ]X
+      setLoadExtAction(ISD::SEXTLOAD, MVT::v16i16, MVT::v16i8, Legal);
+      setLoadExtAction(ISD::SEXTLOAD, MVT::v8i32,  MVT::v8i8,  Legal);
+      setLoadExtAction(ISD::SEXTLOAD, MVT::v4i64,  MVT::v4i8,  Legal);
+      setLoadExtAction(ISD::SEXTLOAD, MVT::v8i32,  MVT::v8i16, Legal);
+      setLoadExtAction(ISD::SEXTLOAD, MVT::v4i64,  MVT::v4i16, Legal);
+      setLoadExtAction(ISD::SEXTLOAD, MVT::v4i64,  MVT::v4i32, Legal);
+
+      setLoadExtAction(ISD::ZEXTLOAD, MVT::v16i16, MVT::v16i8, Legal);
+      setLoadExtAction(ISD::ZEXTLOAD, MVT::v8i32,  MVT::v8i8,  Legal);
+      setLoadExtAction(ISD::ZEXTLOAD, MVT::v4i64,  MVT::v4i8,  Legal);
+      setLoadExtAction(ISD::ZEXTLOAD, MVT::v8i32,  MVT::v8i16, Legal);
+      setLoadExtAction(ISD::ZEXTLOAD, MVT::v4i64,  MVT::v4i16, Legal);
+      setLoadExtAction(ISD::ZEXTLOAD, MVT::v4i64,  MVT::v4i32, Legal);
     } else {
       setOperationAction(ISD::ADD,             MVT::v4i64, Custom);
       setOperationAction(ISD::ADD,             MVT::v8i32, Custom);
@@ -5501,11 +5531,16 @@ static bool getTargetShuffleMask(SDNode *N, MVT VT,
     break;
   case X86ISD::MOVSLDUP:
     DecodeMOVSLDUPMask(VT, Mask);
+    IsUnary = true;
     break;
   case X86ISD::MOVSHDUP:
     DecodeMOVSHDUPMask(VT, Mask);
+    IsUnary = true;
     break;
   case X86ISD::MOVDDUP:
+    DecodeMOVDDUPMask(VT, Mask);
+    IsUnary = true;
+    break;
   case X86ISD::MOVLHPD:
   case X86ISD::MOVLPD:
   case X86ISD::MOVLPS:
@@ -8254,6 +8289,11 @@ static SDValue lowerV2F64VectorShuffle(SDValue Op, SDValue V1, SDValue V2,
   assert(Mask.size() == 2 && "Unexpected mask size for v2 shuffle!");
 
   if (isSingleInputShuffleMask(Mask)) {
+    // Use low duplicate instructions for masks that match their pattern.
+    if (Subtarget->hasSSE3())
+      if (isShuffleEquivalent(Mask, 0, 0))
+        return DAG.getNode(X86ISD::MOVDDUP, DL, MVT::v2f64, V1);
+
     // Straight shuffle of a single input vector. Simulate this by using the
     // single input as both of the "inputs" to this instruction..
     unsigned SHUFPDMask = (Mask[0] == 1) | ((Mask[1] == 1) << 1);
@@ -8510,6 +8550,14 @@ static SDValue lowerV4F32VectorShuffle(SDValue Op, SDValue V1, SDValue V2,
     if (SDValue Broadcast = lowerVectorShuffleAsBroadcast(MVT::v4f32, DL, V1,
                                                           Mask, Subtarget, DAG))
       return Broadcast;
+
+    // Use even/odd duplicate instructions for masks that match their pattern.
+    if (Subtarget->hasSSE3()) {
+      if (isShuffleEquivalent(Mask, 0, 0, 2, 2))
+        return DAG.getNode(X86ISD::MOVSLDUP, DL, MVT::v4f32, V1);
+      if (isShuffleEquivalent(Mask, 1, 1, 3, 3))
+        return DAG.getNode(X86ISD::MOVSHDUP, DL, MVT::v4f32, V1);
+    }
 
     if (Subtarget->hasAVX()) {
       // If we have AVX, we can use VPERMILPS which will allow folding a load
@@ -10236,6 +10284,10 @@ static SDValue lowerV4F64VectorShuffle(SDValue Op, SDValue V1, SDValue V2,
                                                           Mask, Subtarget, DAG))
       return Broadcast;
 
+    // Use low duplicate instructions for masks that match their pattern.
+    if (isShuffleEquivalent(Mask, 0, 0, 2, 2))
+      return DAG.getNode(X86ISD::MOVDDUP, DL, MVT::v4f64, V1);
+
     if (!is128BitLaneCrossingShuffleMask(MVT::v4f64, Mask)) {
       // Non-half-crossing single input shuffles can be lowerid with an
       // interleaved permutation.
@@ -10419,6 +10471,13 @@ static SDValue lowerV8F32VectorShuffle(SDValue Op, SDValue V1, SDValue V2,
   if (is128BitLaneRepeatedShuffleMask(MVT::v8f32, Mask, RepeatedMask)) {
     assert(RepeatedMask.size() == 4 &&
            "Repeated masks must be half the mask width!");
+
+    // Use even/odd duplicate instructions for masks that match their pattern.
+    if (isShuffleEquivalent(Mask, 0, 0, 2, 2, 4, 4, 6, 6))
+      return DAG.getNode(X86ISD::MOVSLDUP, DL, MVT::v8f32, V1);
+    if (isShuffleEquivalent(Mask, 1, 1, 3, 3, 5, 5, 7, 7))
+      return DAG.getNode(X86ISD::MOVSHDUP, DL, MVT::v8f32, V1);
+
     if (isSingleInputShuffleMask(Mask))
       return DAG.getNode(X86ISD::VPERMILPI, DL, MVT::v8f32, V1,
                          getV4X86ShuffleImm8ForMask(RepeatedMask, DAG));
@@ -22808,7 +22867,8 @@ static SDValue XFormVExtractWithShuffleIntoLoad(SDNode *N, SelectionDAG &DAG,
                                          : InVec.getOperand(1);
 
   // If inputs to shuffle are the same for both ops, then allow 2 uses
-  unsigned AllowedUses = InVec.getOperand(0) == InVec.getOperand(1) ? 2 : 1;
+  unsigned AllowedUses = InVec.getNumOperands() > 1 &&
+                         InVec.getOperand(0) == InVec.getOperand(1) ? 2 : 1;
 
   if (LdNode.getOpcode() == ISD::BITCAST) {
     // Don't duplicate a load with other uses.
