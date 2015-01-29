@@ -1,9 +1,8 @@
 // Simple test for a fuzzer. The fuzzer must find the string "FUZZER".
+#include <cstdint>
 #include <cstdlib>
 #include <cstddef>
 #include <iostream>
-
-static volatile int Sink;
 
 extern "C" void TestOneInput(const uint8_t *Data, size_t Size) {
   int bits = 0;
