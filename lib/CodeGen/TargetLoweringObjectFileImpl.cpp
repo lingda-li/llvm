@@ -73,10 +73,9 @@ void TargetLoweringObjectFileELF::emitPersonalityValue(MCStreamer &Streamer,
                                                     Flags,
                                                     SectionKind::getDataRel(),
                                                     0, Label->getName());
-  unsigned Size = TM.getSubtargetImpl()->getDataLayout()->getPointerSize();
+  unsigned Size = TM.getDataLayout()->getPointerSize();
   Streamer.SwitchSection(Sec);
-  Streamer.EmitValueToAlignment(
-      TM.getSubtargetImpl()->getDataLayout()->getPointerABIAlignment());
+  Streamer.EmitValueToAlignment(TM.getDataLayout()->getPointerABIAlignment());
   Streamer.EmitSymbolAttribute(Label, MCSA_ELF_TypeObject);
   const MCExpr *E = MCConstantExpr::Create(Size, getContext());
   Streamer.EmitELFSize(Label, E);
@@ -277,16 +276,13 @@ SelectSectionForGlobal(const GlobalValue *GV, SectionKind Kind,
 
   if (Kind.isText()) return TextSection;
 
-  if (Kind.isMergeable1ByteCString() ||
-      Kind.isMergeable2ByteCString() ||
-      Kind.isMergeable4ByteCString()) {
+  if (Kind.isMergeableCString()) {
 
     // We also need alignment here.
     // FIXME: this is getting the alignment of the character, not the
     // alignment of the global!
     unsigned Align =
-        TM.getSubtargetImpl()->getDataLayout()->getPreferredAlignment(
-            cast<GlobalVariable>(GV));
+        TM.getDataLayout()->getPreferredAlignment(cast<GlobalVariable>(GV));
 
     const char *SizeSpec = ".rodata.str1.";
     if (Kind.isMergeable2ByteCString())
@@ -591,16 +587,14 @@ SelectSectionForGlobal(const GlobalValue *GV, SectionKind Kind,
 
   // FIXME: Alignment check should be handled by section classifier.
   if (Kind.isMergeable1ByteCString() &&
-      TM.getSubtargetImpl()->getDataLayout()->getPreferredAlignment(
-          cast<GlobalVariable>(GV)) < 32)
+      TM.getDataLayout()->getPreferredAlignment(cast<GlobalVariable>(GV)) < 32)
     return CStringSection;
 
   // Do not put 16-bit arrays in the UString section if they have an
   // externally visible label, this runs into issues with certain linker
   // versions.
   if (Kind.isMergeable2ByteCString() && !GV->hasExternalLinkage() &&
-      TM.getSubtargetImpl()->getDataLayout()->getPreferredAlignment(
-          cast<GlobalVariable>(GV)) < 32)
+      TM.getDataLayout()->getPreferredAlignment(cast<GlobalVariable>(GV)) < 32)
     return UStringSection;
 
   // With MachO only variables whose corresponding symbol starts with 'l' or
