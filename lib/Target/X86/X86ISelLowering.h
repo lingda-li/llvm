@@ -554,7 +554,8 @@ namespace llvm {
   //  X86 Implementation of the TargetLowering interface
   class X86TargetLowering final : public TargetLowering {
   public:
-    explicit X86TargetLowering(const X86TargetMachine &TM);
+    explicit X86TargetLowering(const X86TargetMachine &TM,
+                               const X86Subtarget &STI);
 
     unsigned getJumpTableEncoding() const override;
 
@@ -782,10 +783,6 @@ namespace llvm {
     bool shouldReduceLoadWidth(SDNode *Load, ISD::LoadExtType ExtTy,
                                EVT NewVT) const override;
 
-    const X86Subtarget* getSubtarget() const {
-      return Subtarget;
-    }
-
     /// Return true if the specified scalar FP type is computed in an SSE
     /// register, not on the X87 floating point stack.
     bool isScalarFPTypeInSSEReg(EVT VT) const {
@@ -834,9 +831,6 @@ namespace llvm {
 
     bool isNoopAddrSpaceCast(unsigned SrcAS, unsigned DestAS) const override;
 
-    /// \brief Reset the operation actions based on target options.
-    void resetOperationActions() override;
-
     bool useLoadStackGuardNode() const override;
     /// \brief Customize the preferred legalization strategy for certain types.
     LegalizeTypeAction getPreferredVectorAction(EVT VT) const override;
@@ -850,10 +844,6 @@ namespace llvm {
     /// make the right decision when generating code for different targets.
     const X86Subtarget *Subtarget;
     const DataLayout *TD;
-
-    /// Used to store the TargetOptions so that we don't waste time resetting
-    /// the operation actions unless we have to.
-    TargetOptions TO;
 
     /// Select between SSE or x87 floating point ops.
     /// When SSE is available, use it for f32 operations.
