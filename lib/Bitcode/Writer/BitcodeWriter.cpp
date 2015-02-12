@@ -654,7 +654,8 @@ static void WriteModuleInfo(const Module *M, const ValueEnumerator &VE,
 
     // GLOBALVAR: [type, isconst, initid,
     //             linkage, alignment, section, visibility, threadlocal,
-    //             unnamed_addr, externally_initialized, dllstorageclass]
+    //             unnamed_addr, externally_initialized, dllstorageclass,
+    //             comdat]
     Vals.push_back(VE.getTypeID(GV.getType()));
     Vals.push_back(GV.isConstant());
     Vals.push_back(GV.isDeclaration() ? 0 :
@@ -792,10 +793,120 @@ static void WriteMDLocation(const MDLocation *N, const ValueEnumerator &VE,
   Record.clear();
 }
 
-static void WriteGenericDebugNode(const GenericDebugNode *,
+static void WriteGenericDebugNode(const GenericDebugNode *N,
+                                  const ValueEnumerator &VE,
+                                  BitstreamWriter &Stream,
+                                  SmallVectorImpl<uint64_t> &Record,
+                                  unsigned Abbrev) {
+  Record.push_back(N->isDistinct());
+  Record.push_back(N->getTag());
+  Record.push_back(0); // Per-tag version field; unused for now.
+
+  for (auto &I : N->operands())
+    Record.push_back(VE.getMetadataOrNullID(I));
+
+  Stream.EmitRecord(bitc::METADATA_GENERIC_DEBUG, Record, Abbrev);
+  Record.clear();
+}
+
+static void WriteMDSubrange(const MDSubrange *, const ValueEnumerator &,
+                            BitstreamWriter &, SmallVectorImpl<uint64_t> &,
+                            unsigned) {
+  llvm_unreachable("write not implemented");
+}
+static void WriteMDEnumerator(const MDEnumerator *, const ValueEnumerator &,
+                              BitstreamWriter &, SmallVectorImpl<uint64_t> &,
+                              unsigned) {
+  llvm_unreachable("write not implemented");
+}
+static void WriteMDBasicType(const MDBasicType *, const ValueEnumerator &,
+                             BitstreamWriter &, SmallVectorImpl<uint64_t> &,
+                             unsigned) {
+  llvm_unreachable("write not implemented");
+}
+static void WriteMDDerivedType(const MDDerivedType *, const ValueEnumerator &,
+                               BitstreamWriter &, SmallVectorImpl<uint64_t> &,
+                               unsigned) {
+  llvm_unreachable("write not implemented");
+}
+static void WriteMDCompositeType(const MDCompositeType *,
+                                 const ValueEnumerator &, BitstreamWriter &,
+                                 SmallVectorImpl<uint64_t> &, unsigned) {
+  llvm_unreachable("write not implemented");
+}
+static void WriteMDSubroutineType(const MDSubroutineType *,
                                   const ValueEnumerator &, BitstreamWriter &,
                                   SmallVectorImpl<uint64_t> &, unsigned) {
-  llvm_unreachable("unimplemented");
+  llvm_unreachable("write not implemented");
+}
+static void WriteMDFile(const MDFile *, const ValueEnumerator &,
+                        BitstreamWriter &, SmallVectorImpl<uint64_t> &,
+                        unsigned) {
+  llvm_unreachable("write not implemented");
+}
+static void WriteMDCompileUnit(const MDCompileUnit *, const ValueEnumerator &,
+                               BitstreamWriter &, SmallVectorImpl<uint64_t> &,
+                               unsigned) {
+  llvm_unreachable("write not implemented");
+}
+static void WriteMDSubprogram(const MDSubprogram *, const ValueEnumerator &,
+                              BitstreamWriter &, SmallVectorImpl<uint64_t> &,
+                              unsigned) {
+  llvm_unreachable("write not implemented");
+}
+static void WriteMDLexicalBlock(const MDLexicalBlock *, const ValueEnumerator &,
+                                BitstreamWriter &, SmallVectorImpl<uint64_t> &,
+                                unsigned) {
+  llvm_unreachable("write not implemented");
+}
+static void WriteMDLexicalBlockFile(const MDLexicalBlockFile *,
+                                    const ValueEnumerator &, BitstreamWriter &,
+                                    SmallVectorImpl<uint64_t> &, unsigned) {
+  llvm_unreachable("write not implemented");
+}
+static void WriteMDNamespace(const MDNamespace *, const ValueEnumerator &,
+                             BitstreamWriter &, SmallVectorImpl<uint64_t> &,
+                             unsigned) {
+  llvm_unreachable("write not implemented");
+}
+static void WriteMDTemplateTypeParameter(const MDTemplateTypeParameter *,
+                                         const ValueEnumerator &,
+                                         BitstreamWriter &,
+                                         SmallVectorImpl<uint64_t> &,
+                                         unsigned) {
+  llvm_unreachable("write not implemented");
+}
+static void WriteMDTemplateValueParameter(const MDTemplateValueParameter *,
+                                          const ValueEnumerator &,
+                                          BitstreamWriter &,
+                                          SmallVectorImpl<uint64_t> &,
+                                          unsigned) {
+  llvm_unreachable("write not implemented");
+}
+static void WriteMDGlobalVariable(const MDGlobalVariable *,
+                                  const ValueEnumerator &, BitstreamWriter &,
+                                  SmallVectorImpl<uint64_t> &, unsigned) {
+  llvm_unreachable("write not implemented");
+}
+static void WriteMDLocalVariable(const MDLocalVariable *,
+                                 const ValueEnumerator &, BitstreamWriter &,
+                                 SmallVectorImpl<uint64_t> &, unsigned) {
+  llvm_unreachable("write not implemented");
+}
+static void WriteMDExpression(const MDExpression *, const ValueEnumerator &,
+                              BitstreamWriter &, SmallVectorImpl<uint64_t> &,
+                              unsigned) {
+  llvm_unreachable("write not implemented");
+}
+static void WriteMDObjCProperty(const MDObjCProperty *, const ValueEnumerator &,
+                                BitstreamWriter &, SmallVectorImpl<uint64_t> &,
+                                unsigned) {
+  llvm_unreachable("write not implemented");
+}
+static void WriteMDImportedEntity(const MDImportedEntity *,
+                                  const ValueEnumerator &, BitstreamWriter &,
+                                  SmallVectorImpl<uint64_t> &, unsigned) {
+  llvm_unreachable("write not implemented");
 }
 
 static void WriteModuleMetadata(const Module *M,
@@ -817,7 +928,10 @@ static void WriteModuleMetadata(const Module *M,
     MDSAbbrev = Stream.EmitAbbrev(Abbv);
   }
 
-  unsigned MDLocationAbbrev = 0;
+  // Initialize MDNode abbreviations.
+#define HANDLE_MDNODE_LEAF(CLASS) unsigned CLASS##Abbrev = 0;
+#include "llvm/IR/Metadata.def"
+
   if (VE.hasMDLocation()) {
     // Abbrev for METADATA_LOCATION.
     //
@@ -833,6 +947,22 @@ static void WriteModuleMetadata(const Module *M,
     MDLocationAbbrev = Stream.EmitAbbrev(Abbv);
   }
 
+  if (VE.hasGenericDebugNode()) {
+    // Abbrev for METADATA_GENERIC_DEBUG.
+    //
+    // Assume the column is usually under 128, and always output the inlined-at
+    // location (it's never more expensive than building an array size 1).
+    BitCodeAbbrev *Abbv = new BitCodeAbbrev();
+    Abbv->Add(BitCodeAbbrevOp(bitc::METADATA_GENERIC_DEBUG));
+    Abbv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1));
+    Abbv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::VBR, 6));
+    Abbv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1));
+    Abbv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::VBR, 6));
+    Abbv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Array));
+    Abbv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::VBR, 6));
+    GenericDebugNodeAbbrev = Stream.EmitAbbrev(Abbv);
+  }
+
   unsigned NameAbbrev = 0;
   if (!M->named_metadata_empty()) {
     // Abbrev for METADATA_NAME.
@@ -843,8 +973,6 @@ static void WriteModuleMetadata(const Module *M,
     NameAbbrev = Stream.EmitAbbrev(Abbv);
   }
 
-  unsigned MDTupleAbbrev = 0;
-  unsigned GenericDebugNodeAbbrev = 0;
   SmallVector<uint64_t, 64> Record;
   for (const Metadata *MD : MDs) {
     if (const MDNode *N = dyn_cast<MDNode>(MD)) {

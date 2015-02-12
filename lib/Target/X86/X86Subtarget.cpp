@@ -257,15 +257,13 @@ void X86Subtarget::initializeEnvironment() {
   HasVLX = false;
   HasADX = false;
   HasSHA = false;
-  HasSGX = false;
   HasPRFCHW = false;
   HasRDSEED = false;
-  HasSMAP = false;
   IsBTMemSlow = false;
   IsSHLDSlow = false;
   IsUAMemFast = false;
   IsUAMem32Slow = false;
-  HasVectorUAMem = false;
+  HasSSEUnalignedMem = false;
   HasCmpxchg16b = false;
   UseLeaForSP = false;
   HasSlowDivide32 = false;

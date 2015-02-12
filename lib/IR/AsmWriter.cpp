@@ -1286,10 +1286,46 @@ raw_ostream &operator<<(raw_ostream &OS, FieldSeparator &FS) {
 }
 } // end namespace
 
-static void writeGenericDebugNode(raw_ostream &, const GenericDebugNode *,
-                                  TypePrinting *, SlotTracker *,
-                                  const Module *) {
-  llvm_unreachable("Unimplemented write");
+static void writeMetadataAsOperand(raw_ostream &Out, const Metadata *MD,
+                                   TypePrinting *TypePrinter,
+                                   SlotTracker *Machine,
+                                   const Module *Context) {
+  if (!MD) {
+    Out << "null";
+    return;
+  }
+  WriteAsOperandInternal(Out, MD, TypePrinter, Machine, Context);
+}
+
+static void writeTag(raw_ostream &Out, FieldSeparator &FS, const DebugNode *N) {
+  Out << FS << "tag: ";
+  if (const char *Tag = dwarf::TagString(N->getTag()))
+    Out << Tag;
+  else
+    Out << N->getTag();
+}
+
+static void writeGenericDebugNode(raw_ostream &Out, const GenericDebugNode *N,
+                                  TypePrinting *TypePrinter,
+                                  SlotTracker *Machine, const Module *Context) {
+  Out << "!GenericDebugNode(";
+  FieldSeparator FS;
+  writeTag(Out, FS, N);
+  if (!N->getHeader().empty()) {
+    Out << FS << "header: \"";
+    PrintEscapedString(N->getHeader(), Out);
+    Out << "\"";
+  }
+  if (N->getNumDwarfOperands()) {
+    Out << FS << "operands: {";
+    FieldSeparator IFS;
+    for (auto &I : N->dwarf_operands()) {
+      Out << IFS;
+      writeMetadataAsOperand(Out, I, TypePrinter, Machine, Context);
+    }
+    Out << "}";
+  }
+  Out << ")";
 }
 
 static void writeMDLocation(raw_ostream &Out, const MDLocation *DL,
@@ -1309,6 +1345,93 @@ static void writeMDLocation(raw_ostream &Out, const MDLocation *DL,
                            Context);
   }
   Out << ")";
+}
+
+static void writeMDSubrange(raw_ostream &, const MDSubrange *, TypePrinting *,
+                            SlotTracker *, const Module *) {
+  llvm_unreachable("write not implemented");
+}
+static void writeMDEnumerator(raw_ostream &, const MDEnumerator *,
+                              TypePrinting *, SlotTracker *, const Module *) {
+  llvm_unreachable("write not implemented");
+}
+static void writeMDBasicType(raw_ostream &, const MDBasicType *, TypePrinting *,
+                             SlotTracker *, const Module *) {
+  llvm_unreachable("write not implemented");
+}
+static void writeMDDerivedType(raw_ostream &, const MDDerivedType *,
+                               TypePrinting *, SlotTracker *, const Module *) {
+  llvm_unreachable("write not implemented");
+}
+static void writeMDCompositeType(raw_ostream &, const MDCompositeType *,
+                                 TypePrinting *, SlotTracker *,
+                                 const Module *) {
+  llvm_unreachable("write not implemented");
+}
+static void writeMDSubroutineType(raw_ostream &, const MDSubroutineType *,
+                                  TypePrinting *, SlotTracker *,
+                                  const Module *) {
+  llvm_unreachable("write not implemented");
+}
+static void writeMDFile(raw_ostream &, const MDFile *, TypePrinting *,
+                        SlotTracker *, const Module *) {
+  llvm_unreachable("write not implemented");
+}
+static void writeMDCompileUnit(raw_ostream &, const MDCompileUnit *,
+                               TypePrinting *, SlotTracker *, const Module *) {
+  llvm_unreachable("write not implemented");
+}
+static void writeMDSubprogram(raw_ostream &, const MDSubprogram *,
+                              TypePrinting *, SlotTracker *, const Module *) {
+  llvm_unreachable("write not implemented");
+}
+static void writeMDLexicalBlock(raw_ostream &, const MDLexicalBlock *,
+                                TypePrinting *, SlotTracker *, const Module *) {
+  llvm_unreachable("write not implemented");
+}
+static void writeMDLexicalBlockFile(raw_ostream &, const MDLexicalBlockFile *,
+                                    TypePrinting *, SlotTracker *,
+                                    const Module *) {
+  llvm_unreachable("write not implemented");
+}
+static void writeMDNamespace(raw_ostream &, const MDNamespace *, TypePrinting *,
+                             SlotTracker *, const Module *) {
+  llvm_unreachable("write not implemented");
+}
+static void writeMDTemplateTypeParameter(raw_ostream &,
+                                         const MDTemplateTypeParameter *,
+                                         TypePrinting *, SlotTracker *,
+                                         const Module *) {
+  llvm_unreachable("write not implemented");
+}
+static void writeMDTemplateValueParameter(raw_ostream &,
+                                          const MDTemplateValueParameter *,
+                                          TypePrinting *, SlotTracker *,
+                                          const Module *) {
+  llvm_unreachable("write not implemented");
+}
+static void writeMDGlobalVariable(raw_ostream &, const MDGlobalVariable *,
+                                  TypePrinting *, SlotTracker *,
+                                  const Module *) {
+  llvm_unreachable("write not implemented");
+}
+static void writeMDLocalVariable(raw_ostream &, const MDLocalVariable *,
+                                 TypePrinting *, SlotTracker *,
+                                 const Module *) {
+  llvm_unreachable("write not implemented");
+}
+static void writeMDExpression(raw_ostream &, const MDExpression *,
+                              TypePrinting *, SlotTracker *, const Module *) {
+  llvm_unreachable("write not implemented");
+}
+static void writeMDObjCProperty(raw_ostream &, const MDObjCProperty *,
+                                TypePrinting *, SlotTracker *, const Module *) {
+  llvm_unreachable("write not implemented");
+}
+static void writeMDImportedEntity(raw_ostream &, const MDImportedEntity *,
+                                  TypePrinting *, SlotTracker *,
+                                  const Module *) {
+  llvm_unreachable("write not implemented");
 }
 
 static void WriteMDNodeBodyInternal(raw_ostream &Out, const MDNode *Node,

@@ -239,6 +239,8 @@ public:
 
   bool haveFastSqrt(Type *Ty) { return false; }
 
+  unsigned getFPOpCost(Type *Ty) { return TargetTransformInfo::TCC_Basic; }
+
   unsigned getIntImmCost(const APInt &Imm, Type *Ty) { return TTI::TCC_Basic; }
 
   unsigned getIntImmCost(unsigned Opcode, unsigned Idx, const APInt &Imm,
@@ -419,8 +421,7 @@ public:
         return TTI::TCC_Free;
     }
 
-    // Otherwise delegate to the fully generic implementations.
-    return getOperationCost(
+    return static_cast<T *>(this)->getOperationCost(
         Operator::getOpcode(U), U->getType(),
         U->getNumOperands() == 1 ? U->getOperand(0)->getType() : nullptr);
   }

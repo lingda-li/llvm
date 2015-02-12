@@ -199,6 +199,7 @@ void initializeMachineTraceMetricsPass(PassRegistry&);
 void initializeMachineVerifierPassPass(PassRegistry&);
 void initializeMemCpyOptPass(PassRegistry&);
 void initializeMemDepPrinterPass(PassRegistry&);
+void initializeMemDerefPrinterPass(PassRegistry&);
 void initializeMemoryDependenceAnalysisPass(PassRegistry&);
 void initializeMergedLoadStoreMotionPass(PassRegistry &);
 void initializeMetaRenamerPass(PassRegistry&);
@@ -254,6 +255,7 @@ void initializeSpillPlacementPass(PassRegistry&);
 void initializeStackProtectorPass(PassRegistry&);
 void initializeStackColoringPass(PassRegistry&);
 void initializeStackSlotColoringPass(PassRegistry&);
+void initializeStraightLineStrengthReducePass(PassRegistry &);
 void initializeStripDeadDebugInfoPass(PassRegistry&);
 void initializeStripDeadPrototypesPassPass(PassRegistry&);
 void initializeStripDebugDeclarePass(PassRegistry&);
@@ -287,6 +289,8 @@ void initializeMachineCombinerPass(PassRegistry &);
 void initializeLoadCombinePass(PassRegistry&);
 void initializeRewriteSymbolsPass(PassRegistry&);
 void initializeWinEHPreparePass(PassRegistry&);
+void initializePlaceBackedgeSafepointsImplPass(PassRegistry&);
+void initializePlaceSafepointsPass(PassRegistry&);
 }
 
 #endif
