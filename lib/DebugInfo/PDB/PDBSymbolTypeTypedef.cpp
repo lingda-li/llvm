@@ -8,12 +8,11 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include <utility>
-
 #include "llvm/DebugInfo/PDB/IPDBSession.h"
 #include "llvm/DebugInfo/PDB/PDBSymbol.h"
 #include "llvm/DebugInfo/PDB/PDBSymbolTypeTypedef.h"
 #include "llvm/DebugInfo/PDB/PDBSymbolTypeUDT.h"
+#include <utility>
 using namespace llvm;
 
 PDBSymbolTypeTypedef::PDBSymbolTypeTypedef(
@@ -23,11 +22,16 @@ PDBSymbolTypeTypedef::PDBSymbolTypeTypedef(
 void PDBSymbolTypeTypedef::dump(raw_ostream &OS, int Indent,
                                 PDB_DumpLevel Level) const {
   OS.indent(Indent);
-  OS << "typedef:" << getName() << " -> ";
-  std::string TargetTypeName;
-  auto TypeSymbol = Session.getSymbolById(getTypeId());
-  if (PDBSymbolTypeUDT *UDT = dyn_cast<PDBSymbolTypeUDT>(TypeSymbol.get())) {
-    TargetTypeName = UDT->getName();
+  if (Level >= PDB_DumpLevel::Normal) {
+    std::string Name = getName();
+    OS << "typedef:" << Name << " -> ";
+    std::string TargetTypeName;
+    uint32_t TargetId = getTypeId();
+    if (auto TypeSymbol = Session.getSymbolById(TargetId)) {
+      TypeSymbol->dump(OS, 0, PDB_DumpLevel::Compact);
+    }
+    OS << TargetTypeName;
+  } else {
+    OS << getName();
   }
-  OS << TargetTypeName << "\n";
 }

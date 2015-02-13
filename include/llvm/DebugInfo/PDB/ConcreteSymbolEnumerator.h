@@ -10,8 +10,9 @@
 #ifndef LLVM_DEBUGINFO_PDB_CONCRETESYMBOLENUMERATOR_H
 #define LLVM_DEBUGINFO_PDB_CONCRETESYMBOLENUMERATOR_H
 
-#include <memory>
 #include "IPDBEnumChildren.h"
+#include "llvm/Support/Casting.h"
+#include <memory>
 
 namespace llvm {
 

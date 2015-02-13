@@ -16,20 +16,20 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Config/config.h"
-#include "llvm/DebugInfo/PDB/PDB.h"
 #include "llvm/DebugInfo/PDB/IPDBEnumChildren.h"
-#include "llvm/DebugInfo/PDB/IPDBSession.h"
 #include "llvm/DebugInfo/PDB/IPDBRawSymbol.h"
-#include "llvm/DebugInfo/PDB/PDBSymbolExe.h"
+#include "llvm/DebugInfo/PDB/IPDBSession.h"
+#include "llvm/DebugInfo/PDB/PDB.h"
 #include "llvm/DebugInfo/PDB/PDBSymbolCompiland.h"
+#include "llvm/DebugInfo/PDB/PDBSymbolExe.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ConvertUTF.h"
 #include "llvm/Support/Format.h"
 #include "llvm/Support/ManagedStatic.h"
-#include "llvm/Support/raw_ostream.h"
-#include "llvm/Support/Process.h"
 #include "llvm/Support/PrettyStackTrace.h"
+#include "llvm/Support/Process.h"
 #include "llvm/Support/Signals.h"
+#include "llvm/Support/raw_ostream.h"
 
 #if defined(HAVE_DIA_SDK)
 #include <Windows.h>
@@ -65,7 +65,8 @@ static void dumpInput(StringRef Path) {
   if (opts::Compilands) {
     auto Compilands = GlobalScope->findAllChildren<PDBSymbolCompiland>();
     while (auto Compiland = Compilands->getNext()) {
-      Compiland->dump(outs(), 0, PDB_DumpLevel::Normal);
+      Compiland->dump(outs(), 0, PDB_DumpLevel::Detailed);
+      outs() << "\n";
     }
   }
   outs().flush();
