@@ -22,6 +22,8 @@ public:
   PDBSymbolData(const IPDBSession &PDBSession,
                 std::unique_ptr<IPDBRawSymbol> DataSymbol);
 
+  DECLARE_PDB_SYMBOL_CONCRETE_TYPE(PDB_SymType::Data)
+
   void dump(raw_ostream &OS, int Indent, PDB_DumpLevel Level) const override;
 
   FORWARD_SYMBOL_METHOD(getAccess)
@@ -47,13 +49,9 @@ public:
   FORWARD_SYMBOL_METHOD(getToken)
   FORWARD_SYMBOL_METHOD(getTypeId)
   FORWARD_SYMBOL_METHOD(isUnalignedType)
-  // FORWARD_SYMBOL_METHOD(getValue)
+  FORWARD_SYMBOL_METHOD(getValue)
   FORWARD_SYMBOL_METHOD(getVirtualAddress)
   FORWARD_SYMBOL_METHOD(isVolatileType)
-
-  static bool classof(const PDBSymbol *S) {
-    return S->getSymTag() == PDB_SymType::Data;
-  }
 };
 
 } // namespace llvm

@@ -23,6 +23,9 @@ class PPCSubtarget;
 
 class PPCFrameLowering: public TargetFrameLowering {
   const PPCSubtarget &Subtarget;
+  const unsigned ReturnSaveOffset;
+  const unsigned TOCSaveOffset;
+  const unsigned FramePointerSaveOffset;
 
 public:
   PPCFrameLowering(const PPCSubtarget &STI);
@@ -67,33 +70,15 @@ public:
 
   /// getReturnSaveOffset - Return the previous frame offset to save the
   /// return address.
-  static unsigned getReturnSaveOffset(bool isPPC64, bool isDarwinABI) {
-    if (isDarwinABI)
-      return isPPC64 ? 16 : 8;
-    // SVR4 ABI:
-    return isPPC64 ? 16 : 4;
-  }
+  unsigned getReturnSaveOffset() const { return ReturnSaveOffset; }
 
   /// getTOCSaveOffset - Return the previous frame offset to save the
   /// TOC register -- 64-bit SVR4 ABI only.
-  static unsigned getTOCSaveOffset(bool isELFv2ABI) {
-    return isELFv2ABI ? 24 : 40;
-  }
+  unsigned getTOCSaveOffset() const { return TOCSaveOffset; }
 
   /// getFramePointerSaveOffset - Return the previous frame offset to save the
   /// frame pointer.
-  static unsigned getFramePointerSaveOffset(bool isPPC64, bool isDarwinABI) {
-    // For the Darwin ABI:
-    // We cannot use the TOC save slot (offset +20) in the PowerPC linkage area
-    // for saving the frame pointer (if needed.)  While the published ABI has
-    // not used this slot since at least MacOSX 10.2, there is older code
-    // around that does use it, and that needs to continue to work.
-    if (isDarwinABI)
-      return isPPC64 ? -8U : -4U;
-
-    // SVR4 ABI: First slot in the general register save area.
-    return isPPC64 ? -8U : -4U;
-  }
+  unsigned getFramePointerSaveOffset() const { return FramePointerSaveOffset; }
 
   /// getBasePointerSaveOffset - Return the previous frame offset to save the
   /// base pointer.
