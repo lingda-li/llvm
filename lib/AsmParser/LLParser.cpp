@@ -16,6 +16,7 @@
 #include "llvm/IR/AutoUpgrade.h"
 #include "llvm/IR/CallingConv.h"
 #include "llvm/IR/Constants.h"
+#include "llvm/IR/DebugInfo.h"
 #include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/InlineAsm.h"
@@ -2269,13 +2270,13 @@ bool LLParser::PerFunctionState::SetInstName(int NameID,
 /// forward reference record if needed.
 BasicBlock *LLParser::PerFunctionState::GetBB(const std::string &Name,
                                               LocTy Loc) {
-  return cast_or_null<BasicBlock>(GetVal(Name,
-                                        Type::getLabelTy(F.getContext()), Loc));
+  return dyn_cast_or_null<BasicBlock>(GetVal(Name,
+                                      Type::getLabelTy(F.getContext()), Loc));
 }
 
 BasicBlock *LLParser::PerFunctionState::GetBB(unsigned ID, LocTy Loc) {
-  return cast_or_null<BasicBlock>(GetVal(ID,
-                                        Type::getLabelTy(F.getContext()), Loc));
+  return dyn_cast_or_null<BasicBlock>(GetVal(ID,
+                                      Type::getLabelTy(F.getContext()), Loc));
 }
 
 /// DefineBB - Define the specified basic block, which is either named or
@@ -2511,7 +2512,12 @@ bool LLParser::ParseValID(ValID &ID, PerFunctionState *PFS) {
 
     if (!F) {
       // Make a global variable as a placeholder for this reference.
-      GlobalValue *&FwdRef = ForwardRefBlockAddresses[Fn][Label];
+      GlobalValue *&FwdRef =
+          ForwardRefBlockAddresses.insert(std::make_pair(
+                                              std::move(Fn),
+                                              std::map<ValID, GlobalValue *>()))
+              .first->second.insert(std::make_pair(std::move(Label), nullptr))
+              .first->second;
       if (!FwdRef)
         FwdRef = new GlobalVariable(*M, Type::getInt8Ty(Context), false,
                                     GlobalValue::InternalLinkage, nullptr, "");
@@ -2608,8 +2614,15 @@ bool LLParser::ParseValID(ValID &ID, PerFunctionState *PFS) {
       return true;
     if (!Val0->getType()->isAggregateType())
       return Error(ID.Loc, "insertvalue operand must be aggregate type");
-    if (!ExtractValueInst::getIndexedType(Val0->getType(), Indices))
+    Type *IndexedType =
+        ExtractValueInst::getIndexedType(Val0->getType(), Indices);
+    if (!IndexedType)
       return Error(ID.Loc, "invalid indices for insertvalue");
+    if (IndexedType != Val1->getType())
+      return Error(ID.Loc, "insertvalue operand and field disagree in type: '" +
+                               getTypeString(Val1->getType()) +
+                               "' instead of '" + getTypeString(IndexedType) +
+                               "'");
     ID.ConstantVal = ConstantExpr::getInsertValue(Val0, Val1, Indices);
     ID.Kind = ValID::t_Constant;
     return false;
@@ -2775,11 +2788,33 @@ bool LLParser::ParseValID(ValID &ID, PerFunctionState *PFS) {
     if (Opc == Instruction::GetElementPtr) {
       if (Elts.size() == 0 ||
           !Elts[0]->getType()->getScalarType()->isPointerTy())
-        return Error(ID.Loc, "getelementptr requires pointer operand");
+        return Error(ID.Loc, "base of getelementptr must be a pointer");
+
+      Type *BaseType = Elts[0]->getType();
+      auto *BasePointerType = cast<PointerType>(BaseType->getScalarType());
 
       ArrayRef<Constant *> Indices(Elts.begin() + 1, Elts.end());
+      for (Constant *Val : Indices) {
+        Type *ValTy = Val->getType();
+        if (!ValTy->getScalarType()->isIntegerTy())
+          return Error(ID.Loc, "getelementptr index must be an integer");
+        if (ValTy->isVectorTy() != BaseType->isVectorTy())
+          return Error(ID.Loc, "getelementptr index type missmatch");
+        if (ValTy->isVectorTy()) {
+          unsigned ValNumEl = cast<VectorType>(ValTy)->getNumElements();
+          unsigned PtrNumEl = cast<VectorType>(BaseType)->getNumElements();
+          if (ValNumEl != PtrNumEl)
+            return Error(
+                ID.Loc,
+                "getelementptr vector index has a wrong number of elements");
+        }
+      }
+
+      if (!Indices.empty() && !BasePointerType->getElementType()->isSized())
+        return Error(ID.Loc, "base element of getelementptr must be sized");
+
       if (!GetElementPtrInst::getIndexedType(Elts[0]->getType(), Indices))
-        return Error(ID.Loc, "invalid indices for getelementptr");
+        return Error(ID.Loc, "invalid getelementptr indices");
       ID.ConstantVal = ConstantExpr::getGetElementPtr(Elts[0], Indices,
                                                       InBounds);
     } else if (Opc == Instruction::Select) {
@@ -2946,6 +2981,8 @@ struct ColumnField : public MDUnsignedField {
 };
 struct DwarfTagField : public MDUnsignedField {
   DwarfTagField() : MDUnsignedField(0, dwarf::DW_TAG_hi_user) {}
+  DwarfTagField(dwarf::Tag DefaultTag)
+      : MDUnsignedField(DefaultTag, dwarf::DW_TAG_hi_user) {}
 };
 struct DwarfAttEncodingField : public MDUnsignedField {
   DwarfAttEncodingField() : MDUnsignedField(0, dwarf::DW_ATE_hi_user) {}
@@ -2955,6 +2992,10 @@ struct DwarfVirtualityField : public MDUnsignedField {
 };
 struct DwarfLangField : public MDUnsignedField {
   DwarfLangField() : MDUnsignedField(0, dwarf::DW_LANG_hi_user) {}
+};
+
+struct DIFlagField : public MDUnsignedField {
+  DIFlagField() : MDUnsignedField(0, UINT32_MAX) {}
 };
 
 struct MDSignedField : public MDFieldImpl<int64_t> {
@@ -3083,6 +3124,43 @@ bool LLParser::ParseMDField(LocTy Loc, StringRef Name,
   assert(Encoding <= Result.Max && "Expected valid DWARF language");
   Result.assign(Encoding);
   Lex.Lex();
+  return false;
+}
+
+/// DIFlagField
+///  ::= uint32
+///  ::= DIFlagVector
+///  ::= DIFlagVector '|' DIFlagFwdDecl '|' uint32 '|' DIFlagPublic
+template <>
+bool LLParser::ParseMDField(LocTy Loc, StringRef Name, DIFlagField &Result) {
+  assert(Result.Max == UINT32_MAX && "Expected only 32-bits");
+
+  // Parser for a single flag.
+  auto parseFlag = [&](unsigned &Val) {
+    if (Lex.getKind() == lltok::APSInt && !Lex.getAPSIntVal().isSigned())
+      return ParseUInt32(Val);
+
+    if (Lex.getKind() != lltok::DIFlag)
+      return TokError("expected debug info flag");
+
+    Val = DIDescriptor::getFlag(Lex.getStrVal());
+    if (!Val)
+      return TokError(Twine("invalid debug info flag flag '") +
+                      Lex.getStrVal() + "'");
+    Lex.Lex();
+    return false;
+  };
+
+  // Parse the flags and combine them together.
+  unsigned Combined = 0;
+  do {
+    unsigned Val;
+    if (parseFlag(Val))
+      return true;
+    Combined |= Val;
+  } while (EatIfPresent(lltok::bar));
+
+  Result.assign(Combined);
   return false;
 }
 
@@ -3302,7 +3380,7 @@ bool LLParser::ParseMDEnumerator(MDNode *&Result, bool IsDistinct) {
 ///   ::= !MDBasicType(tag: DW_TAG_base_type, name: "int", size: 32, align: 32)
 bool LLParser::ParseMDBasicType(MDNode *&Result, bool IsDistinct) {
 #define VISIT_MD_FIELDS(OPTIONAL, REQUIRED)                                    \
-  REQUIRED(tag, DwarfTagField, );                                              \
+  OPTIONAL(tag, DwarfTagField, (dwarf::DW_TAG_base_type));                     \
   OPTIONAL(name, MDStringField, );                                             \
   OPTIONAL(size, MDUnsignedField, (0, UINT64_MAX));                            \
   OPTIONAL(align, MDUnsignedField, (0, UINT64_MAX));                           \
@@ -3330,7 +3408,7 @@ bool LLParser::ParseMDDerivedType(MDNode *&Result, bool IsDistinct) {
   OPTIONAL(size, MDUnsignedField, (0, UINT64_MAX));                            \
   OPTIONAL(align, MDUnsignedField, (0, UINT64_MAX));                           \
   OPTIONAL(offset, MDUnsignedField, (0, UINT64_MAX));                          \
-  OPTIONAL(flags, MDUnsignedField, (0, UINT32_MAX));                           \
+  OPTIONAL(flags, DIFlagField, );                                              \
   OPTIONAL(extraData, MDField, );
   PARSE_MD_FIELDS();
 #undef VISIT_MD_FIELDS
@@ -3353,7 +3431,7 @@ bool LLParser::ParseMDCompositeType(MDNode *&Result, bool IsDistinct) {
   OPTIONAL(size, MDUnsignedField, (0, UINT64_MAX));                            \
   OPTIONAL(align, MDUnsignedField, (0, UINT64_MAX));                           \
   OPTIONAL(offset, MDUnsignedField, (0, UINT64_MAX));                          \
-  OPTIONAL(flags, MDUnsignedField, (0, UINT32_MAX));                           \
+  OPTIONAL(flags, DIFlagField, );                                              \
   OPTIONAL(elements, MDField, );                                               \
   OPTIONAL(runtimeLang, DwarfLangField, );                                     \
   OPTIONAL(vtableHolder, MDField, );                                           \
@@ -3372,7 +3450,7 @@ bool LLParser::ParseMDCompositeType(MDNode *&Result, bool IsDistinct) {
 
 bool LLParser::ParseMDSubroutineType(MDNode *&Result, bool IsDistinct) {
 #define VISIT_MD_FIELDS(OPTIONAL, REQUIRED)                                    \
-  OPTIONAL(flags, MDUnsignedField, (0, UINT32_MAX));                           \
+  OPTIONAL(flags, DIFlagField, );                                              \
   REQUIRED(types, MDField, );
   PARSE_MD_FIELDS();
 #undef VISIT_MD_FIELDS
@@ -3449,7 +3527,7 @@ bool LLParser::ParseMDSubprogram(MDNode *&Result, bool IsDistinct) {
   OPTIONAL(containingType, MDField, );                                         \
   OPTIONAL(virtuality, DwarfVirtualityField, );                                \
   OPTIONAL(virtualIndex, MDUnsignedField, (0, UINT32_MAX));                    \
-  OPTIONAL(flags, MDUnsignedField, (0, UINT32_MAX));                           \
+  OPTIONAL(flags, DIFlagField, );                                              \
   OPTIONAL(isOptimized, MDBoolField, );                                        \
   OPTIONAL(function, MDConstant, );                                            \
   OPTIONAL(templateParams, MDField, );                                         \
@@ -3533,9 +3611,9 @@ bool LLParser::ParseMDTemplateTypeParameter(MDNode *&Result, bool IsDistinct) {
 ///                                 name: "V", type: !1, value: i32 7)
 bool LLParser::ParseMDTemplateValueParameter(MDNode *&Result, bool IsDistinct) {
 #define VISIT_MD_FIELDS(OPTIONAL, REQUIRED)                                    \
-  REQUIRED(tag, DwarfTagField, );                                              \
+  OPTIONAL(tag, DwarfTagField, (dwarf::DW_TAG_template_value_parameter));      \
   OPTIONAL(name, MDStringField, );                                             \
-  REQUIRED(type, MDField, );                                                   \
+  OPTIONAL(type, MDField, );                                                   \
   REQUIRED(value, MDField, );
   PARSE_MD_FIELDS();
 #undef VISIT_MD_FIELDS
@@ -3585,7 +3663,7 @@ bool LLParser::ParseMDLocalVariable(MDNode *&Result, bool IsDistinct) {
   OPTIONAL(line, LineField, );                                                 \
   OPTIONAL(type, MDField, );                                                   \
   OPTIONAL(arg, MDUnsignedField, (0, UINT8_MAX));                              \
-  OPTIONAL(flags, MDUnsignedField, (0, UINT32_MAX));                           \
+  OPTIONAL(flags, DIFlagField, );                                              \
   OPTIONAL(inlinedAt, MDField, );
   PARSE_MD_FIELDS();
 #undef VISIT_MD_FIELDS
@@ -4226,7 +4304,9 @@ bool LLParser::ParseBasicBlock(PerFunctionState &PFS) {
   }
 
   BasicBlock *BB = PFS.DefineBB(Name, NameLoc);
-  if (!BB) return true;
+  if (!BB)
+    return Error(NameLoc,
+                 "unable to create block named '" + Name + "'");
 
   std::string NameStr;
 
@@ -4668,10 +4748,14 @@ bool LLParser::ParseInvoke(Instruction *&Inst, PerFunctionState &PFS) {
   if (I != E)
     return Error(CallLoc, "not enough parameters specified for call");
 
-  if (FnAttrs.hasAttributes())
+  if (FnAttrs.hasAttributes()) {
+    if (FnAttrs.hasAlignmentAttr())
+      return Error(CallLoc, "invoke instructions may not have an alignment");
+
     Attrs.push_back(AttributeSet::get(RetType->getContext(),
                                       AttributeSet::FunctionIndex,
                                       FnAttrs));
+  }
 
   // Finish off the Attribute and check them
   AttributeSet PAL = AttributeSet::get(Context, Attrs);
@@ -4957,7 +5041,7 @@ bool LLParser::ParseLandingPad(Instruction *&Inst, PerFunctionState &PFS) {
       ParseTypeAndValue(PersFn, PersFnLoc, PFS))
     return true;
 
-  LandingPadInst *LP = LandingPadInst::Create(Ty, PersFn, 0);
+  std::unique_ptr<LandingPadInst> LP(LandingPadInst::Create(Ty, PersFn, 0));
   LP->setCleanup(EatIfPresent(lltok::kw_cleanup));
 
   while (Lex.getKind() == lltok::kw_catch || Lex.getKind() == lltok::kw_filter){
@@ -4971,10 +5055,8 @@ bool LLParser::ParseLandingPad(Instruction *&Inst, PerFunctionState &PFS) {
 
     Value *V;
     LocTy VLoc;
-    if (ParseTypeAndValue(V, VLoc, PFS)) {
-      delete LP;
+    if (ParseTypeAndValue(V, VLoc, PFS))
       return true;
-    }
 
     // A 'catch' type expects a non-array constant. A filter clause expects an
     // array constant.
@@ -4986,10 +5068,13 @@ bool LLParser::ParseLandingPad(Instruction *&Inst, PerFunctionState &PFS) {
         Error(VLoc, "'filter' clause has an invalid type");
     }
 
-    LP->addClause(cast<Constant>(V));
+    Constant *CV = dyn_cast<Constant>(V);
+    if (!CV)
+      return Error(VLoc, "clause argument must be a constant");
+    LP->addClause(CV);
   }
 
-  Inst = LP;
+  Inst = LP.release();
   return false;
 }
 
@@ -5081,10 +5166,14 @@ bool LLParser::ParseCall(Instruction *&Inst, PerFunctionState &PFS,
   if (I != E)
     return Error(CallLoc, "not enough parameters specified for call");
 
-  if (FnAttrs.hasAttributes())
+  if (FnAttrs.hasAttributes()) {
+    if (FnAttrs.hasAlignmentAttr())
+      return Error(CallLoc, "call instructions may not have an alignment");
+
     Attrs.push_back(AttributeSet::get(RetType->getContext(),
                                       AttributeSet::FunctionIndex,
                                       FnAttrs));
+  }
 
   // Finish off the Attribute and check them
   AttributeSet PAL = AttributeSet::get(Context, Attrs);
@@ -5162,7 +5251,11 @@ int LLParser::ParseLoad(Instruction *&Inst, PerFunctionState &PFS) {
     Lex.Lex();
   }
 
-  if (ParseTypeAndValue(Val, Loc, PFS) ||
+  Type *Ty = nullptr;
+  LocTy ExplicitTypeLoc = Lex.getLoc();
+  if (ParseType(Ty) ||
+      ParseToken(lltok::comma, "expected comma after load's type") ||
+      ParseTypeAndValue(Val, Loc, PFS) ||
       ParseScopeAndOrdering(isAtomic, Scope, Ordering) ||
       ParseOptionalCommaAlign(Alignment, AteExtraComma))
     return true;
@@ -5174,6 +5267,10 @@ int LLParser::ParseLoad(Instruction *&Inst, PerFunctionState &PFS) {
     return Error(Loc, "atomic load must have explicit non-zero alignment");
   if (Ordering == Release || Ordering == AcquireRelease)
     return Error(Loc, "atomic load cannot use Release ordering");
+
+  if (Ty != cast<PointerType>(Val->getType())->getElementType())
+    return Error(ExplicitTypeLoc,
+                 "explicit pointee type doesn't match operand's pointee type");
 
   Inst = new LoadInst(Val, "", isVolatile, Alignment, Ordering, Scope);
   return AteExtraComma ? InstExtraComma : InstNormal;
@@ -5361,7 +5458,22 @@ int LLParser::ParseGetElementPtr(Instruction *&Inst, PerFunctionState &PFS) {
 
   bool InBounds = EatIfPresent(lltok::kw_inbounds);
 
-  if (ParseTypeAndValue(Ptr, Loc, PFS)) return true;
+  Type *Ty = nullptr;
+  LocTy ExplicitTypeLoc = Lex.getLoc();
+  if (ParseType(Ty) ||
+      ParseToken(lltok::comma, "expected comma after getelementptr's type") ||
+      ParseTypeAndValue(Ptr, Loc, PFS))
+    return true;
+
+  Type *PtrTy = Ptr->getType();
+  if (VectorType *VT = dyn_cast<VectorType>(PtrTy))
+    PtrTy = VT->getElementType();
+  SequentialType *SeqPtrTy = dyn_cast<SequentialType>(PtrTy);
+  if (!SeqPtrTy)
+    return Error(Loc, "pointer type is not valid");
+  if (Ty != SeqPtrTy->getElementType())
+    return Error(ExplicitTypeLoc,
+                 "explicit pointee type doesn't match operand's pointee type");
 
   Type *BaseType = Ptr->getType();
   PointerType *BasePointerType = dyn_cast<PointerType>(BaseType->getScalarType());

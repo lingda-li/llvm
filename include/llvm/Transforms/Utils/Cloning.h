@@ -147,12 +147,15 @@ public:
     StopCloningBB
   };
 
-  virtual ~CloningDirector() = default;
+  virtual ~CloningDirector() {}
 
   /// Subclasses must override this function to customize cloning behavior.
   virtual CloningAction handleInstruction(ValueToValueMapTy &VMap,
                                           const Instruction *Inst,
                                           BasicBlock *NewBB) = 0;
+
+  virtual ValueMapTypeRemapper *getTypeRemapper() { return nullptr; }
+  virtual ValueMaterializer *getValueMaterializer() { return nullptr; }
 };
 
 void CloneAndPruneIntoFromInst(Function *NewFunc, const Function *OldFunc,
@@ -189,15 +192,13 @@ void CloneAndPruneFunctionInto(Function *NewFunc, const Function *OldFunc,
 class InlineFunctionInfo {
 public:
   explicit InlineFunctionInfo(CallGraph *cg = nullptr,
-                              const DataLayout *DL = nullptr,
                               AliasAnalysis *AA = nullptr,
                               AssumptionCacheTracker *ACT = nullptr)
-      : CG(cg), DL(DL), AA(AA), ACT(ACT) {}
+      : CG(cg), AA(AA), ACT(ACT) {}
 
   /// CG - If non-null, InlineFunction will update the callgraph to reflect the
   /// changes it makes.
   CallGraph *CG;
-  const DataLayout *DL;
   AliasAnalysis *AA;
   AssumptionCacheTracker *ACT;
 

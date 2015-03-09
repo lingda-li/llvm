@@ -90,6 +90,7 @@ protected:
   bool HasVSX;
   bool HasP8Vector;
   bool HasP8Altivec;
+  bool HasP8Crypto;
   bool HasFCPSGN;
   bool HasFSQRT;
   bool HasFRE, HasFRES, HasFRSQRTE, HasFRSQRTES;
@@ -113,6 +114,11 @@ protected:
   bool IsLittleEndian;
   bool HasICBT;
   bool HasInvariantFunctionDescriptors;
+
+  /// When targeting QPX running a stock PPC64 Linux kernel where the stack
+  /// alignment has not been changed, we need to keep the 16-byte alignment
+  /// of the stack.
+  bool IsQPXStackUnaligned;
 
   const PPCTargetMachine &TM;
   PPCFrameLowering FrameLowering;
@@ -213,6 +219,7 @@ public:
   bool hasVSX() const { return HasVSX; }
   bool hasP8Vector() const { return HasP8Vector; }
   bool hasP8Altivec() const { return HasP8Altivec; }
+  bool hasP8Crypto() const { return HasP8Crypto; }
   bool hasMFOCRF() const { return HasMFOCRF; }
   bool hasISEL() const { return HasISEL; }
   bool hasPOPCNTD() const { return HasPOPCNTD; }
@@ -228,6 +235,14 @@ public:
   bool hasICBT() const { return HasICBT; }
   bool hasInvariantFunctionDescriptors() const {
     return HasInvariantFunctionDescriptors;
+  }
+
+  bool isQPXStackUnaligned() const { return IsQPXStackUnaligned; }
+  unsigned getPlatformStackAlignment() const {
+    if ((hasQPX() || isBGQ()) && !isQPXStackUnaligned())
+      return 32;
+
+    return 16;
   }
 
   const Triple &getTargetTriple() const { return TargetTriple; }

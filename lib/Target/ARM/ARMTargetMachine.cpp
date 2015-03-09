@@ -326,7 +326,12 @@ void ARMPassConfig::addIRPasses() {
 
 bool ARMPassConfig::addPreISel() {
   if (TM->getOptLevel() != CodeGenOpt::None)
-    addPass(createGlobalMergePass(TM));
+    // FIXME: This is using the thumb1 only constant value for
+    // maximal global offset for merging globals. We may want
+    // to look into using the old value for non-thumb1 code of
+    // 4095 based on the TargetMachine, but this starts to become
+    // tricky when doing code gen per function.
+    addPass(createGlobalMergePass(TM, 127));
 
   return false;
 }
@@ -334,8 +339,7 @@ bool ARMPassConfig::addPreISel() {
 bool ARMPassConfig::addInstSelector() {
   addPass(createARMISelDag(getARMTargetMachine(), getOptLevel()));
 
-  const ARMSubtarget *Subtarget = &getARMSubtarget();
-  if (Subtarget->isTargetELF() && !Subtarget->isThumb1Only() &&
+  if (Triple(TM->getTargetTriple()).isOSBinFormatELF() &&
       TM->Options.EnableFastISel)
     addPass(createARMGlobalBaseRegPass());
   return false;
@@ -344,12 +348,9 @@ bool ARMPassConfig::addInstSelector() {
 void ARMPassConfig::addPreRegAlloc() {
   if (getOptLevel() != CodeGenOpt::None)
     addPass(createARMLoadStoreOptimizationPass(true));
-  if (getOptLevel() != CodeGenOpt::None && getARMSubtarget().isCortexA9())
+  if (getOptLevel() != CodeGenOpt::None)
     addPass(createMLxExpansionPass());
-  // Since the A15SDOptimizer pass can insert VDUP instructions, it can only be
-  // enabled when NEON is available.
-  if (getOptLevel() != CodeGenOpt::None && getARMSubtarget().isCortexA15() &&
-    getARMSubtarget().hasNEON() && !DisableA15SDOptimization) {
+  if (getOptLevel() != CodeGenOpt::None && !DisableA15SDOptimization) {
     addPass(createA15SDOptimizerPass());
   }
 }
@@ -357,9 +358,7 @@ void ARMPassConfig::addPreRegAlloc() {
 void ARMPassConfig::addPreSched2() {
   if (getOptLevel() != CodeGenOpt::None) {
     addPass(createARMLoadStoreOptimizationPass());
-
-    if (getARMSubtarget().hasNEON())
-      addPass(createExecutionDependencyFixPass(&ARM::DPRRegClass));
+    addPass(createExecutionDependencyFixPass(&ARM::DPRRegClass));
   }
 
   // Expand some pseudo instructions into multiple instructions to allow
@@ -367,26 +366,21 @@ void ARMPassConfig::addPreSched2() {
   addPass(createARMExpandPseudoPass());
 
   if (getOptLevel() != CodeGenOpt::None) {
-    if (!getARMSubtarget().isThumb1Only()) {
-      // in v8, IfConversion depends on Thumb instruction widths
-      if (getARMSubtarget().restrictIT() &&
-          !getARMSubtarget().prefers32BitThumb())
-        addPass(createThumb2SizeReductionPass());
+    // in v8, IfConversion depends on Thumb instruction widths
+    if (getARMSubtarget().restrictIT())
+      addPass(createThumb2SizeReductionPass());
+    if (!getARMSubtarget().isThumb1Only())
       addPass(&IfConverterID);
-    }
-  }
-  if (getARMSubtarget().isThumb2())
-    addPass(createThumb2ITBlockPass());
+   }
+  addPass(createThumb2ITBlockPass());
 }
 
 void ARMPassConfig::addPreEmitPass() {
-  if (getARMSubtarget().isThumb2()) {
-    if (!getARMSubtarget().prefers32BitThumb())
-      addPass(createThumb2SizeReductionPass());
+  addPass(createThumb2SizeReductionPass());
 
-    // Constant island pass work on unbundled instructions.
+  // Constant island pass work on unbundled instructions.
+  if (getARMSubtarget().isThumb2())
     addPass(&UnpackMachineBundlesID);
-  }
 
   addPass(createARMOptimizeBarriersPass());
   addPass(createARMConstantIslandPass());

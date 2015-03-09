@@ -160,11 +160,8 @@ PPCRegisterInfo::getNoPreservedMask() const {
 }
 
 void PPCRegisterInfo::adjustStackMapLiveOutMask(uint32_t *Mask) const {
-  unsigned PseudoRegs[] = { PPC::ZERO, PPC::ZERO8, PPC::RM };
-  for (unsigned i = 0, ie = array_lengthof(PseudoRegs); i != ie; ++i) {
-    unsigned Reg = PseudoRegs[i];
-    Mask[Reg / 32] &= ~(1u << (Reg % 32));
-  }
+  for (unsigned PseudoReg : {PPC::ZERO, PPC::ZERO8, PPC::RM})
+    Mask[PseudoReg / 32] &= ~(1u << (PseudoReg % 32));
 }
 
 BitVector PPCRegisterInfo::getReservedRegs(const MachineFunction &MF) const {
@@ -275,6 +272,9 @@ unsigned PPCRegisterInfo::getRegPressureLimit(const TargetRegisterClass *RC,
   }
   case PPC::F8RCRegClassID:
   case PPC::F4RCRegClassID:
+  case PPC::QFRCRegClassID:
+  case PPC::QSRCRegClassID:
+  case PPC::QBRCRegClassID:
   case PPC::VRRCRegClassID:
   case PPC::VFRCRegClassID:
   case PPC::VSLRCRegClassID:

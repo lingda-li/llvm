@@ -1,8 +1,8 @@
-; RUN: llc < %s -mtriple=x86_64-unknown-unknown -mcpu=x86-64 -x86-experimental-vector-shuffle-legality | FileCheck %s --check-prefix=ALL --check-prefix=SSE --check-prefix=SSE2
-; RUN: llc < %s -mtriple=x86_64-unknown-unknown -mcpu=x86-64 -mattr=+ssse3 -x86-experimental-vector-shuffle-legality | FileCheck %s --check-prefix=ALL --check-prefix=SSE --check-prefix=SSSE3
-; RUN: llc < %s -mtriple=x86_64-unknown-unknown -mcpu=x86-64 -mattr=+sse4.1 -x86-experimental-vector-shuffle-legality | FileCheck %s --check-prefix=ALL --check-prefix=SSE --check-prefix=SSE41
-; RUN: llc < %s -mtriple=x86_64-unknown-unknown -mcpu=x86-64 -mattr=+avx -x86-experimental-vector-shuffle-legality | FileCheck %s --check-prefix=ALL --check-prefix=AVX --check-prefix=AVX1
-; RUN: llc < %s -mtriple=x86_64-unknown-unknown -mcpu=x86-64 -mattr=+avx2 -x86-experimental-vector-shuffle-legality | FileCheck %s --check-prefix=ALL --check-prefix=AVX --check-prefix=AVX2
+; RUN: llc < %s -mtriple=x86_64-unknown-unknown -mcpu=x86-64 | FileCheck %s --check-prefix=ALL --check-prefix=SSE --check-prefix=SSE2
+; RUN: llc < %s -mtriple=x86_64-unknown-unknown -mcpu=x86-64 -mattr=+ssse3 | FileCheck %s --check-prefix=ALL --check-prefix=SSE --check-prefix=SSSE3
+; RUN: llc < %s -mtriple=x86_64-unknown-unknown -mcpu=x86-64 -mattr=+sse4.1 | FileCheck %s --check-prefix=ALL --check-prefix=SSE --check-prefix=SSE41
+; RUN: llc < %s -mtriple=x86_64-unknown-unknown -mcpu=x86-64 -mattr=+avx | FileCheck %s --check-prefix=ALL --check-prefix=AVX --check-prefix=AVX1
+; RUN: llc < %s -mtriple=x86_64-unknown-unknown -mcpu=x86-64 -mattr=+avx2 | FileCheck %s --check-prefix=ALL --check-prefix=AVX --check-prefix=AVX2
 
 target datalayout = "e-m:e-i64:64-f80:128-n8:16:32:64-S128"
 target triple = "x86_64-unknown-unknown"
@@ -1335,4 +1335,23 @@ define <16 x i8> @shuffle_v16i8_uu_02_03_zz_uu_06_07_zz_uu_10_11_zz_uu_14_15_zz(
 ; AVX-NEXT:    retq
   %shuffle = shufflevector <16 x i8> %a, <16 x i8> zeroinitializer, <16 x i32> <i32 undef, i32 2, i32 3, i32 16, i32 undef, i32 6, i32 7, i32 16, i32 undef, i32 10, i32 11, i32 16, i32 undef, i32 14, i32 15, i32 16>
   ret <16 x i8> %shuffle
+}
+
+define <16 x i8> @shuffle_v16i8_bitcast_unpack(<16 x i8> %a, <16 x i8> %b) {
+; SSE-LABEL: shuffle_v16i8_bitcast_unpack:
+; SSE:       # BB#0:
+; SSE-NEXT:    punpcklbw {{.*#+}} xmm0 = xmm0[0],xmm1[0],xmm0[1],xmm1[1]
+; SSE-NEXT:    retq
+;
+; AVX-LABEL: shuffle_v16i8_bitcast_unpack:
+; AVX:       # BB#0:
+; AVX-NEXT:    punpcklbw {{.*#+}} xmm0 = xmm0[0],xmm1[0],xmm0[1],xmm1[1]
+; AVX-NEXT:    retq
+  %shuffle8  = shufflevector <16 x i8> %a, <16 x i8> %b, <16 x i32> <i32 7, i32 23, i32 6, i32 22, i32 5, i32 21, i32 4, i32 20, i32 3, i32 19, i32 2, i32 18, i32 1, i32 17, i32 0, i32 16>
+  %bitcast32 = bitcast <16 x i8> %shuffle8 to <4 x float>
+  %shuffle32 = shufflevector <4 x float> %bitcast32, <4 x float> undef, <4 x i32> <i32 3, i32 2, i32 1, i32 0>
+  %bitcast16 = bitcast <4 x float> %shuffle32 to <8 x i16>
+  %shuffle16 = shufflevector <8 x i16> %bitcast16, <8 x i16> undef, <8 x i32> <i32 1, i32 0, i32 3, i32 2, i32 5, i32 4, i32 7, i32 6>
+  %bitcast8  = bitcast <8 x i16> %shuffle16 to <16 x i8>
+  ret <16 x i8> %bitcast8
 }

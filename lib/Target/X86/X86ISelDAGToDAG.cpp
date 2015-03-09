@@ -231,7 +231,7 @@ namespace {
                                       char ConstraintCode,
                                       std::vector<SDValue> &OutOps) override;
 
-    void EmitSpecialCodeForMain(MachineBasicBlock *BB, MachineFrameInfo *MFI);
+    void EmitSpecialCodeForMain();
 
     inline void getAddressOperands(X86ISelAddressMode &AM, SDValue &Base,
                                    SDValue &Scale, SDValue &Index,
@@ -565,14 +565,18 @@ void X86DAGToDAGISel::PreprocessISelDAG() {
 
 /// EmitSpecialCodeForMain - Emit any code that needs to be executed only in
 /// the main function.
-void X86DAGToDAGISel::EmitSpecialCodeForMain(MachineBasicBlock *BB,
-                                             MachineFrameInfo *MFI) {
-  const TargetInstrInfo *TII = getInstrInfo();
+void X86DAGToDAGISel::EmitSpecialCodeForMain() {
   if (Subtarget->isTargetCygMing()) {
-    unsigned CallOp =
-      Subtarget->is64Bit() ? X86::CALL64pcrel32 : X86::CALLpcrel32;
-    BuildMI(BB, DebugLoc(),
-            TII->get(CallOp)).addExternalSymbol("__main");
+    TargetLowering::ArgListTy Args;
+
+    TargetLowering::CallLoweringInfo CLI(*CurDAG);
+    CLI.setChain(CurDAG->getRoot())
+        .setCallee(CallingConv::C, Type::getVoidTy(*CurDAG->getContext()),
+                   CurDAG->getExternalSymbol("__main", TLI->getPointerTy()),
+                   std::move(Args), 0);
+    const TargetLowering &TLI = CurDAG->getTargetLoweringInfo();
+    std::pair<SDValue, SDValue> Result = TLI.LowerCallTo(CLI);
+    CurDAG->setRoot(Result.second);
   }
 }
 
@@ -580,7 +584,7 @@ void X86DAGToDAGISel::EmitFunctionEntryCode() {
   // If this is main, emit special code for main.
   if (const Function *Fn = MF->getFunction())
     if (Fn->hasExternalLinkage() && Fn->getName() == "main")
-      EmitSpecialCodeForMain(MF->begin(), MF->getFrameInfo());
+      EmitSpecialCodeForMain();
 }
 
 static bool isDispSafeForFrameIndex(int64_t Val) {
@@ -1000,6 +1004,15 @@ bool X86DAGToDAGISel::MatchAddressRecursively(SDValue N, X86ISelAddressMode &AM,
 
   switch (N.getOpcode()) {
   default: break;
+  case ISD::FRAME_ALLOC_RECOVER: {
+    if (!AM.hasSymbolicDisplacement())
+      if (const auto *ESNode = dyn_cast<ExternalSymbolSDNode>(N.getOperand(0)))
+        if (ESNode->getOpcode() == ISD::TargetExternalSymbol) {
+          AM.ES = ESNode->getSymbol();
+          return false;
+        }
+    break;
+  }
   case ISD::Constant: {
     uint64_t Val = cast<ConstantSDNode>(N)->getSExtValue();
     if (!FoldOffsetIntoAddress(Val, AM))

@@ -24,10 +24,14 @@ public:
 
   DECLARE_PDB_SYMBOL_CONCRETE_TYPE(PDB_SymType::Enum)
 
-  void dump(raw_ostream &OS, int Indent, PDB_DumpLevel Level, PDB_DumpFlags Flags) const override;
+  void dump(PDBSymDumper &Dumper) const override;
+
+  std::unique_ptr<PDBSymbolTypeUDT> getClassParent() const;
+  std::unique_ptr<PDBSymbolTypeBuiltin> getUnderlyingType() const;
 
   FORWARD_SYMBOL_METHOD(getBuiltinType)
   FORWARD_SYMBOL_METHOD(getClassParentId)
+  FORWARD_SYMBOL_METHOD(getUnmodifiedTypeId)
   FORWARD_SYMBOL_METHOD(hasConstructor)
   FORWARD_SYMBOL_METHOD(isConstType)
   FORWARD_SYMBOL_METHOD(hasAssignmentOperator)

@@ -77,6 +77,10 @@ static cl::opt<bool>
 EnableMLSM("mlsm", cl::init(true), cl::Hidden,
            cl::desc("Enable motion of merged load and store"));
 
+static cl::opt<bool> EnableLoopInterchange(
+    "enable-loopinterchange", cl::init(false), cl::Hidden,
+    cl::desc("Enable the new, experimental LoopInterchange Pass"));
+
 PassManagerBuilder::PassManagerBuilder() {
     OptLevel = 2;
     SizeLevel = 0;
@@ -239,6 +243,8 @@ void PassManagerBuilder::populateModulePassManager(
   MPM.add(createIndVarSimplifyPass());        // Canonicalize indvars
   MPM.add(createLoopIdiomPass());             // Recognize idioms like memset.
   MPM.add(createLoopDeletionPass());          // Delete dead loops
+  if (EnableLoopInterchange)
+    MPM.add(createLoopInterchangePass()); // Interchange loops
 
   if (!DisableUnrollLoops)
     MPM.add(createSimpleLoopUnrollPass());    // Unroll small loops
@@ -454,6 +460,9 @@ void PassManagerBuilder::addLTOOptimizationPasses(legacy::PassManagerBase &PM) {
   // More loops are countable; try to optimize them.
   PM.add(createIndVarSimplifyPass());
   PM.add(createLoopDeletionPass());
+  if (EnableLoopInterchange)
+    PM.add(createLoopInterchangePass());
+
   PM.add(createLoopVectorizePass(true, LoopVectorize));
 
   // More scalar chains could be vectorized due to more alias information
@@ -473,6 +482,9 @@ void PassManagerBuilder::addLTOOptimizationPasses(legacy::PassManagerBase &PM) {
   addExtensionsToPM(EP_Peephole, PM);
 
   PM.add(createJumpThreadingPass());
+
+  // Lower bitset metadata to bitsets.
+  PM.add(createLowerBitSetsPass());
 
   // Delete basic blocks, which optimization passes may have killed.
   PM.add(createCFGSimplificationPass());

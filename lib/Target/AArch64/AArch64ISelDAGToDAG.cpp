@@ -299,7 +299,7 @@ static AArch64_AM::ShiftExtendType getShiftTypeForNode(SDValue N) {
   }
 }
 
-/// \brief Determine wether it is worth to fold V into an extended register.
+/// \brief Determine whether it is worth to fold V into an extended register.
 bool AArch64DAGToDAGISel::isWorthFolding(SDValue V) const {
   // it hurts if the value is used at least twice, unless we are optimizing
   // for code size.
@@ -1055,7 +1055,7 @@ SDNode *AArch64DAGToDAGISel::SelectLoad(SDNode *N, unsigned NumVecs,
   SDValue Ops[] = {N->getOperand(2), // Mem operand;
                    Chain};
 
-  EVT ResTys[] = {MVT::Untyped, MVT::Other};
+  const EVT ResTys[] = {MVT::Untyped, MVT::Other};
 
   SDNode *Ld = CurDAG->getMachineNode(Opc, dl, ResTys, Ops);
   SDValue SuperReg = SDValue(Ld, 0);
@@ -1077,8 +1077,8 @@ SDNode *AArch64DAGToDAGISel::SelectPostLoad(SDNode *N, unsigned NumVecs,
                    N->getOperand(2), // Incremental
                    Chain};
 
-  EVT ResTys[] = {MVT::i64, // Type of the write back register
-                  MVT::Untyped, MVT::Other};
+  const EVT ResTys[] = {MVT::i64, // Type of the write back register
+                        MVT::Untyped, MVT::Other};
 
   SDNode *Ld = CurDAG->getMachineNode(Opc, dl, ResTys, Ops);
 
@@ -1119,8 +1119,8 @@ SDNode *AArch64DAGToDAGISel::SelectPostStore(SDNode *N, unsigned NumVecs,
                                              unsigned Opc) {
   SDLoc dl(N);
   EVT VT = N->getOperand(2)->getValueType(0);
-  EVT ResTys[] = {MVT::i64,    // Type of the write back register
-                  MVT::Other}; // Type for the Chain
+  const EVT ResTys[] = {MVT::i64,    // Type of the write back register
+                        MVT::Other}; // Type for the Chain
 
   // Form a REG_SEQUENCE to force register allocation.
   bool Is128Bit = VT.getSizeInBits() == 128;
@@ -1184,7 +1184,7 @@ SDNode *AArch64DAGToDAGISel::SelectLoadLane(SDNode *N, unsigned NumVecs,
 
   SDValue RegSeq = createQTuple(Regs);
 
-  EVT ResTys[] = {MVT::Untyped, MVT::Other};
+  const EVT ResTys[] = {MVT::Untyped, MVT::Other};
 
   unsigned LaneNo =
       cast<ConstantSDNode>(N->getOperand(NumVecs + 2))->getZExtValue();
@@ -1224,8 +1224,8 @@ SDNode *AArch64DAGToDAGISel::SelectPostLoadLane(SDNode *N, unsigned NumVecs,
 
   SDValue RegSeq = createQTuple(Regs);
 
-  EVT ResTys[] = {MVT::i64, // Type of the write back register
-                  MVT::Untyped, MVT::Other};
+  const EVT ResTys[] = {MVT::i64, // Type of the write back register
+                        MVT::Untyped, MVT::Other};
 
   unsigned LaneNo =
       cast<ConstantSDNode>(N->getOperand(NumVecs + 1))->getZExtValue();
@@ -1309,8 +1309,8 @@ SDNode *AArch64DAGToDAGISel::SelectPostStoreLane(SDNode *N, unsigned NumVecs,
 
   SDValue RegSeq = createQTuple(Regs);
 
-  EVT ResTys[] = {MVT::i64, // Type of the write back register
-                  MVT::Other};
+  const EVT ResTys[] = {MVT::i64, // Type of the write back register
+                        MVT::Other};
 
   unsigned LaneNo =
       cast<ConstantSDNode>(N->getOperand(NumVecs + 1))->getZExtValue();
@@ -1397,8 +1397,13 @@ static bool isBitfieldExtractOpFromAnd(SelectionDAG *CurDAG, SDNode *N,
   } else
     return false;
 
-  assert((BiggerPattern || (Srl_imm > 0 && Srl_imm < VT.getSizeInBits())) &&
-         "bad amount in shift node!");
+  // Bail out on large immediates. This happens when no proper
+  // combining/constant folding was performed.
+  if (!BiggerPattern && (Srl_imm <= 0 || Srl_imm >= VT.getSizeInBits())) {
+    DEBUG((dbgs() << N
+           << ": Found large shift immediate, this should not happen\n"));
+    return false;
+  }
 
   LSB = Srl_imm;
   MSB = Srl_imm + (VT == MVT::i32 ? countTrailingOnes<uint32_t>(And_imm)
@@ -1502,7 +1507,14 @@ static bool isBitfieldExtractOpFromShr(SDNode *N, unsigned &Opc, SDValue &Opd0,
   } else
     return false;
 
-  assert(Shl_imm < VT.getSizeInBits() && "bad amount in shift node!");
+  // Missing combines/constant folding may have left us with strange
+  // constants.
+  if (Shl_imm >= VT.getSizeInBits()) {
+    DEBUG((dbgs() << N
+           << ": Found large shift immediate, this should not happen\n"));
+    return false;
+  }
+
   uint64_t Srl_imm = 0;
   if (!isIntImmediate(N->getOperand(1), Srl_imm))
     return false;

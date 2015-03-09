@@ -218,6 +218,15 @@ public:
                          R.getInstr()) {}
 };
 
+/// A helper function for converting Scalar types to vector types.
+/// If the incoming type is void, we return void. If the VF is 1, we return
+/// the scalar type.
+static Type* ToVectorTy(Type *Scalar, unsigned VF) {
+  if (Scalar->isVoidTy() || VF == 1)
+    return Scalar;
+  return VectorType::get(Scalar, VF);
+}
+
 /// InnerLoopVectorizer vectorizes loops which contain only one basic
 /// block to a specified vectorization factor (VF).
 /// This class performs the widening of scalars into vectors, or multiple
@@ -241,7 +250,7 @@ public:
       : OrigLoop(OrigLoop), SE(SE), LI(LI), DT(DT), DL(DL), TLI(TLI),
         VF(VecWidth), UF(UnrollFactor), Builder(SE->getContext()),
         Induction(nullptr), OldInduction(nullptr), WidenMap(UnrollFactor),
-        Legal(nullptr) {}
+        Legal(nullptr), AddedSafetyChecks(false) {}
 
   // Perform the actual loop widening (vectorization).
   void vectorize(LoopVectorizationLegality *L) {
@@ -253,6 +262,11 @@ public:
     vectorizeLoop();
     // Register the new loop and update the analysis passes.
     updateAnalysis();
+  }
+
+  // Return true if any runtime check is added.
+  bool IsSafetyChecksAdded() {
+    return AddedSafetyChecks;
   }
 
   virtual ~InnerLoopVectorizer() {}
@@ -434,6 +448,9 @@ protected:
   EdgeMaskCache MaskCache;
 
   LoopVectorizationLegality *Legal;
+
+  // Record whether runtime check is added.
+  bool AddedSafetyChecks;
 };
 
 class InnerLoopUnroller : public InnerLoopVectorizer {
@@ -488,7 +505,7 @@ static std::string getDebugLocString(const Loop *L) {
     raw_string_ostream OS(Result);
     const DebugLoc LoopDbgLoc = L->getStartLoc();
     if (!LoopDbgLoc.isUnknown())
-      LoopDbgLoc.print(L->getHeader()->getContext(), OS);
+      LoopDbgLoc.print(OS);
     else
       // Just print the module name.
       OS << L->getHeader()->getParent()->getParent()->getModuleIdentifier();
@@ -884,7 +901,7 @@ private:
 
   ValueToValueMap Strides;
   SmallPtrSet<Value *, 8> StrideSet;
-  
+
   /// While vectorizing these instructions we have to generate a
   /// call to the appropriate masked intrinsic
   SmallPtrSet<const Instruction*, 8> MaskedOp;
@@ -957,11 +974,6 @@ private:
   /// Returns the execution time cost of an instruction for a given vector
   /// width. Vector width of one means scalar.
   unsigned getInstructionCost(Instruction *I, unsigned VF);
-
-  /// A helper function for converting Scalar types to vector types.
-  /// If the incoming type is void, we return void. If the VF is 1, we return
-  /// the scalar type.
-  static Type* ToVectorTy(Type *Scalar, unsigned VF);
 
   /// Returns whether the instruction is a load or store and will be a emitted
   /// as a vector operation.
@@ -1270,8 +1282,7 @@ struct LoopVectorize : public FunctionPass {
 
   bool runOnFunction(Function &F) override {
     SE = &getAnalysis<ScalarEvolution>();
-    DataLayoutPass *DLP = getAnalysisIfAvailable<DataLayoutPass>();
-    DL = DLP ? &DLP->getDataLayout() : nullptr;
+    DL = &F.getParent()->getDataLayout();
     LI = &getAnalysis<LoopInfoWrapperPass>().getLoopInfo();
     TTI = &getAnalysis<TargetTransformInfoWrapperPass>().getTTI(F);
     DT = &getAnalysis<DominatorTreeWrapperPass>().getDomTree();
@@ -1315,6 +1326,40 @@ struct LoopVectorize : public FunctionPass {
 
     // Process each loop nest in the function.
     return Changed;
+  }
+
+  static void AddRuntimeUnrollDisableMetaData(Loop *L) {
+    SmallVector<Metadata *, 4> MDs;
+    // Reserve first location for self reference to the LoopID metadata node.
+    MDs.push_back(nullptr);
+    bool IsUnrollMetadata = false;
+    MDNode *LoopID = L->getLoopID();
+    if (LoopID) {
+      // First find existing loop unrolling disable metadata.
+      for (unsigned i = 1, ie = LoopID->getNumOperands(); i < ie; ++i) {
+        MDNode *MD = dyn_cast<MDNode>(LoopID->getOperand(i));
+        if (MD) {
+          const MDString *S = dyn_cast<MDString>(MD->getOperand(0));
+          IsUnrollMetadata =
+              S && S->getString().startswith("llvm.loop.unroll.disable");
+        }
+        MDs.push_back(LoopID->getOperand(i));
+      }
+    }
+
+    if (!IsUnrollMetadata) {
+      // Add runtime unroll disable metadata.
+      LLVMContext &Context = L->getHeader()->getContext();
+      SmallVector<Metadata *, 1> DisableOperands;
+      DisableOperands.push_back(
+          MDString::get(Context, "llvm.loop.unroll.runtime.disable"));
+      MDNode *DisableNode = MDNode::get(Context, DisableOperands);
+      MDs.push_back(DisableNode);
+      MDNode *NewLoopID = MDNode::get(Context, MDs);
+      // Set operand 0 to refer to the loop id itself.
+      NewLoopID->replaceOperandWith(0, NewLoopID);
+      L->setLoopID(NewLoopID);
+    }
   }
 
   bool processLoop(Loop *L) {
@@ -1471,6 +1516,12 @@ struct LoopVectorize : public FunctionPass {
       InnerLoopVectorizer LB(L, SE, LI, DT, DL, TLI, VF.Width, UF);
       LB.vectorize(&LVL);
       ++LoopsVectorized;
+
+      // Add metadata to disable runtime unrolling scalar loop when there's no
+      // runtime check about strides and memory. Because at this situation,
+      // scalar loop is rarely used not worthy to be unrolled.
+      if (!LB.IsSafetyChecksAdded())
+        AddRuntimeUnrollDisableMetaData(L);
 
       // Report the vectorization decision.
       emitOptimizationRemark(
@@ -2218,6 +2269,7 @@ void InnerLoopVectorizer::createEmptyLoop() {
   std::tie(FirstCheckInst, StrideCheck) =
       addStrideCheck(LastBypassBlock->getTerminator());
   if (StrideCheck) {
+    AddedSafetyChecks = true;
     // Create a new block containing the stride check.
     BasicBlock *CheckBlock =
         LastBypassBlock->splitBasicBlock(FirstCheckInst, "vector.stridecheck");
@@ -2242,6 +2294,7 @@ void InnerLoopVectorizer::createEmptyLoop() {
   std::tie(FirstCheckInst, MemRuntimeCheck) =
     Legal->getLAI()->addRuntimeCheck(LastBypassBlock->getTerminator());
   if (MemRuntimeCheck) {
+    AddedSafetyChecks = true;
     // Create a new block containing the memory check.
     BasicBlock *CheckBlock =
         LastBypassBlock->splitBasicBlock(FirstCheckInst, "vector.memcheck");
@@ -2480,10 +2533,9 @@ getReductionBinOp(LoopVectorizationLegality::ReductionKind Kind) {
   }
 }
 
-Value *createMinMaxOp(IRBuilder<> &Builder,
-                      LoopVectorizationLegality::MinMaxReductionKind RK,
-                      Value *Left,
-                      Value *Right) {
+static Value *createMinMaxOp(IRBuilder<> &Builder,
+                             LoopVectorizationLegality::MinMaxReductionKind RK,
+                             Value *Left, Value *Right) {
   CmpInst::Predicate P = CmpInst::ICMP_NE;
   switch (RK) {
   default:
@@ -4561,6 +4613,14 @@ LoopVectorizationCostModel::selectUnrollFactor(bool OptForSize,
     return SmallUF;
   }
 
+  // Unroll if this is a large loop (small loops are already dealt with by this
+  // point) that could benefit from interleaved unrolling.
+  bool HasReductions = (Legal->getReductionVars()->size() > 0);
+  if (TTI.enableAggressiveInterleaving(HasReductions)) {
+    DEBUG(dbgs() << "LV: Unrolling to expose ILP.\n");
+    return UF;
+  }
+
   DEBUG(dbgs() << "LV: Not Unrolling.\n");
   return 1;
 }
@@ -4992,12 +5052,6 @@ LoopVectorizationCostModel::getInstructionCost(Instruction *I, unsigned VF) {
     return Cost;
   }
   }// end of switch.
-}
-
-Type* LoopVectorizationCostModel::ToVectorTy(Type *Scalar, unsigned VF) {
-  if (Scalar->isVoidTy() || VF == 1)
-    return Scalar;
-  return VectorType::get(Scalar, VF);
 }
 
 char LoopVectorize::ID = 0;

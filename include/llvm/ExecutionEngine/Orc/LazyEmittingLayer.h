@@ -19,9 +19,12 @@
 #include "llvm/ExecutionEngine/RTDyldMemoryManager.h"
 #include "llvm/IR/GlobalValue.h"
 #include "llvm/IR/Mangler.h"
+#include "llvm/IR/Module.h"
+#include "llvm/ADT/StringMap.h"
 #include <list>
 
 namespace llvm {
+namespace orc {
 
 /// @brief Lazy-emitting IR layer.
 ///
@@ -180,7 +183,7 @@ private:
       auto Names = llvm::make_unique<StringMap<bool>>();
 
       for (const auto &M : Ms) {
-        Mangler Mang(M->getDataLayout());
+        Mangler Mang(&M->getDataLayout());
 
         for (const auto &GV : M->globals())
           if (addGlobalValue(*Names, GV, Mang, SearchName, ExportedSymbolsOnly))
@@ -273,6 +276,8 @@ LazyEmittingLayer<BaseLayerT>::EmissionDeferredSet::create(
   return llvm::make_unique<EmissionDeferredSetImpl<ModuleSetT>>(std::move(Ms),
                                                                 std::move(MM));
 }
-}
+
+} // End namespace orc.
+} // End namespace llvm.
 
 #endif // LLVM_EXECUTIONENGINE_ORC_LAZYEMITTINGLAYER_H

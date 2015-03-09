@@ -845,6 +845,13 @@ public:
     return cast<SequentialType>(Instruction::getType());
   }
 
+  Type *getSourceElementType() const {
+    SequentialType *Ty = cast<SequentialType>(getPointerOperandType());
+    if (VectorType *VTy = dyn_cast<VectorType>(Ty))
+      Ty = cast<SequentialType>(VTy->getElementType());
+    return Ty->getElementType();
+  }
+
   /// \brief Returns the address space of this instruction's pointer type.
   unsigned getAddressSpace() const {
     // Note that this is always the same as the pointer operand's address space
@@ -1194,10 +1201,14 @@ public:
 
   /// @returns true if the predicate of this instruction is EQ or NE.
   /// \brief Determine if this is an equality predicate.
-  bool isEquality() const {
-    return getPredicate() == FCMP_OEQ || getPredicate() == FCMP_ONE ||
-           getPredicate() == FCMP_UEQ || getPredicate() == FCMP_UNE;
+  static bool isEquality(Predicate Pred) {
+    return Pred == FCMP_OEQ || Pred == FCMP_ONE || Pred == FCMP_UEQ ||
+           Pred == FCMP_UNE;
   }
+
+  /// @returns true if the predicate of this instruction is EQ or NE.
+  /// \brief Determine if this is an equality predicate.
+  bool isEquality() const { return isEquality(getPredicate()); }
 
   /// @returns true if the predicate of this instruction is commutative.
   /// \brief Determine if this is a commutative predicate.
@@ -1901,6 +1912,9 @@ public:
   typedef const unsigned* idx_iterator;
   inline idx_iterator idx_begin() const { return Indices.begin(); }
   inline idx_iterator idx_end()   const { return Indices.end(); }
+  inline iterator_range<idx_iterator> indices() const {
+    return iterator_range<idx_iterator>(idx_begin(), idx_end());
+  }
 
   Value *getAggregateOperand() {
     return getOperand(0);
@@ -2012,6 +2026,9 @@ public:
   typedef const unsigned* idx_iterator;
   inline idx_iterator idx_begin() const { return Indices.begin(); }
   inline idx_iterator idx_end()   const { return Indices.end(); }
+  inline iterator_range<idx_iterator> indices() const {
+    return iterator_range<idx_iterator>(idx_begin(), idx_end());
+  }
 
   Value *getAggregateOperand() {
     return getOperand(0);
@@ -2165,6 +2182,8 @@ public:
   const_block_iterator block_end() const {
     return block_begin() + getNumOperands();
   }
+
+  op_range incoming_values() { return operands(); }
 
   /// getNumIncomingValues - Return the number of incoming edges
   ///
