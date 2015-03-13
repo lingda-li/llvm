@@ -1014,7 +1014,8 @@ void Verifier::VerifyParameterAttrs(AttributeSet Attrs, unsigned Idx, Type *Ty,
          V);
 
   if (PointerType *PTy = dyn_cast<PointerType>(Ty)) {
-    if (!PTy->getElementType()->isSized()) {
+    SmallPtrSet<const Type*, 4> Visited;
+    if (!PTy->getElementType()->isSized(&Visited)) {
       Assert(!Attrs.hasAttribute(Idx, Attribute::ByVal) &&
                  !Attrs.hasAttribute(Idx, Attribute::InAlloca),
              "Attributes 'byval' and 'inalloca' do not support unsized types!",
@@ -2969,8 +2970,17 @@ void Verifier::visitIntrinsicFunctionCall(Intrinsic::ID ID, CallInst &CI) {
 
     // Check that BaseIndex and DerivedIndex fall within the 'gc parameters'
     // section of the statepoint's argument
-    const int NumCallArgs =
+    Assert(StatepointCS.arg_size() > 0,
+           "gc.statepoint: insufficient arguments");
+    Assert(isa<ConstantInt>(StatepointCS.getArgument(1)),
+           "gc.statement: number of call arguments must be constant integer");
+    const unsigned NumCallArgs =
       cast<ConstantInt>(StatepointCS.getArgument(1))->getZExtValue();
+    Assert(StatepointCS.arg_size() > NumCallArgs+3,
+           "gc.statepoint: mismatch in number of call arguments");
+    Assert(isa<ConstantInt>(StatepointCS.getArgument(NumCallArgs+3)),
+           "gc.statepoint: number of deoptimization arguments must be "
+           "a constant integer");
     const int NumDeoptArgs =
       cast<ConstantInt>(StatepointCS.getArgument(NumCallArgs + 3))->getZExtValue();
     const int GCParamArgsStart = NumCallArgs + NumDeoptArgs + 4;

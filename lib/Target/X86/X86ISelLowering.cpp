@@ -3161,7 +3161,7 @@ X86TargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
 
   // Add a register mask operand representing the call-preserved registers.
   const TargetRegisterInfo *TRI = Subtarget->getRegisterInfo();
-  const uint32_t *Mask = TRI->getCallPreservedMask(CallConv);
+  const uint32_t *Mask = TRI->getCallPreservedMask(MF, CallConv);
   assert(Mask && "Missing call preserved mask for calling convention");
   Ops.push_back(DAG.getRegisterMask(Mask));
 
@@ -9021,12 +9021,12 @@ static SDValue lowerV2X128VectorShuffle(SDLoc DL, MVT VT, SDValue V1,
                                VT.getVectorNumElements() / 2);
   // Check for patterns which can be matched with a single insert of a 128-bit
   // subvector.
-  if (isShuffleEquivalent(V1, V2, Mask, {0, 1, 0, 1}) ||
-      isShuffleEquivalent(V1, V2, Mask, {0, 1, 4, 5})) {
+  bool OnlyUsesV1 = isShuffleEquivalent(V1, V2, Mask, {0, 1, 0, 1});
+  if (OnlyUsesV1 || isShuffleEquivalent(V1, V2, Mask, {0, 1, 4, 5})) {
     SDValue LoV = DAG.getNode(ISD::EXTRACT_SUBVECTOR, DL, SubVT, V1,
                               DAG.getIntPtrConstant(0));
     SDValue HiV = DAG.getNode(ISD::EXTRACT_SUBVECTOR, DL, SubVT,
-                              Mask[2] < 4 ? V1 : V2, DAG.getIntPtrConstant(0));
+                              OnlyUsesV1 ? V1 : V2, DAG.getIntPtrConstant(0));
     return DAG.getNode(ISD::CONCAT_VECTORS, DL, VT, LoV, HiV);
   }
   if (isShuffleEquivalent(V1, V2, Mask, {0, 1, 6, 7})) {
@@ -14711,6 +14711,13 @@ static SDValue LowerINTRINSIC_WO_CHAIN(SDValue Op, const X86Subtarget *Subtarget
   switch (IntNo) {
   default: return SDValue();    // Don't custom lower most intrinsics.
 
+  case Intrinsic::x86_avx2_permd:
+  case Intrinsic::x86_avx2_permps:
+    // Operands intentionally swapped. Mask is last operand to intrinsic,
+    // but second operand for node/instruction.
+    return DAG.getNode(X86ISD::VPERMV, dl, Op.getValueType(),
+                       Op.getOperand(2), Op.getOperand(1));
+
   case Intrinsic::x86_avx512_mask_valign_q_512:
   case Intrinsic::x86_avx512_mask_valign_d_512:
     // Vector source operands are swapped.
@@ -18453,7 +18460,7 @@ X86TargetLowering::EmitLoweredSegAlloca(MachineInstr *MI,
 
   // Calls into a routine in libgcc to allocate more space from the heap.
   const uint32_t *RegMask =
-      Subtarget->getRegisterInfo()->getCallPreservedMask(CallingConv::C);
+      Subtarget->getRegisterInfo()->getCallPreservedMask(*MF, CallingConv::C);
   if (IsLP64) {
     BuildMI(mallocMBB, DL, TII->get(X86::MOV64rr), X86::RDI)
       .addReg(sizeVReg);
@@ -18538,7 +18545,7 @@ X86TargetLowering::EmitLoweredTLSCall(MachineInstr *MI,
   // FIXME: The 32-bit calls have non-standard calling conventions. Use a
   // proper register mask.
   const uint32_t *RegMask =
-      Subtarget->getRegisterInfo()->getCallPreservedMask(CallingConv::C);
+      Subtarget->getRegisterInfo()->getCallPreservedMask(*F, CallingConv::C);
   if (Subtarget->is64Bit()) {
     MachineInstrBuilder MIB = BuildMI(*BB, MI, DL,
                                       TII->get(X86::MOV64rm), X86::RDI)
@@ -23178,44 +23185,50 @@ static SDValue PerformISDSETCCCombine(SDNode *N, SelectionDAG &DAG,
   if ((CC == ISD::SETNE || CC == ISD::SETEQ) && LHS.getOpcode() == ISD::SUB)
     if (ConstantSDNode *C = dyn_cast<ConstantSDNode>(LHS.getOperand(0)))
       if (C->getAPIntValue() == 0 && LHS.hasOneUse()) {
-        SDValue addV = DAG.getNode(ISD::ADD, SDLoc(N),
-                                   LHS.getValueType(), RHS, LHS.getOperand(1));
-        return DAG.getSetCC(SDLoc(N), N->getValueType(0),
-                            addV, DAG.getConstant(0, addV.getValueType()), CC);
+        SDValue addV = DAG.getNode(ISD::ADD, SDLoc(N), LHS.getValueType(), RHS,
+                                   LHS.getOperand(1));
+        return DAG.getSetCC(SDLoc(N), N->getValueType(0), addV,
+                            DAG.getConstant(0, addV.getValueType()), CC);
       }
   if ((CC == ISD::SETNE || CC == ISD::SETEQ) && RHS.getOpcode() == ISD::SUB)
     if (ConstantSDNode *C = dyn_cast<ConstantSDNode>(RHS.getOperand(0)))
       if (C->getAPIntValue() == 0 && RHS.hasOneUse()) {
-        SDValue addV = DAG.getNode(ISD::ADD, SDLoc(N),
-                                   RHS.getValueType(), LHS, RHS.getOperand(1));
-        return DAG.getSetCC(SDLoc(N), N->getValueType(0),
-                            addV, DAG.getConstant(0, addV.getValueType()), CC);
+        SDValue addV = DAG.getNode(ISD::ADD, SDLoc(N), RHS.getValueType(), LHS,
+                                   RHS.getOperand(1));
+        return DAG.getSetCC(SDLoc(N), N->getValueType(0), addV,
+                            DAG.getConstant(0, addV.getValueType()), CC);
       }
 
-  if (VT.getScalarType() == MVT::i1) {
-    bool IsSEXT0 = (LHS.getOpcode() == ISD::SIGN_EXTEND) &&
-      (LHS.getOperand(0).getValueType().getScalarType() ==  MVT::i1);
-    bool IsVZero0 = ISD::isBuildVectorAllZeros(LHS.getNode());
-    if (!IsSEXT0 && !IsVZero0)
-      return SDValue();
-    bool IsSEXT1 = (RHS.getOpcode() == ISD::SIGN_EXTEND) &&
-      (RHS.getOperand(0).getValueType().getScalarType() ==  MVT::i1);
+  if (VT.getScalarType() == MVT::i1 &&
+      (CC == ISD::SETNE || CC == ISD::SETEQ || ISD::isSignedIntSetCC(CC))) {
+    bool IsSEXT0 =
+        (LHS.getOpcode() == ISD::SIGN_EXTEND) &&
+        (LHS.getOperand(0).getValueType().getScalarType() == MVT::i1);
     bool IsVZero1 = ISD::isBuildVectorAllZeros(RHS.getNode());
 
-    if (!IsSEXT1 && !IsVZero1)
-      return SDValue();
+    if (!IsSEXT0 || !IsVZero1) {
+      // Swap the operands and update the condition code.
+      std::swap(LHS, RHS);
+      CC = ISD::getSetCCSwappedOperands(CC);
+
+      IsSEXT0 = (LHS.getOpcode() == ISD::SIGN_EXTEND) &&
+                (LHS.getOperand(0).getValueType().getScalarType() == MVT::i1);
+      IsVZero1 = ISD::isBuildVectorAllZeros(RHS.getNode());
+    }
 
     if (IsSEXT0 && IsVZero1) {
-      assert(VT == LHS.getOperand(0).getValueType() && "Uexpected operand type");
-      if (CC == ISD::SETEQ)
+      assert(VT == LHS.getOperand(0).getValueType() &&
+             "Uexpected operand type");
+      if (CC == ISD::SETGT)
+        return DAG.getConstant(0, VT);
+      if (CC == ISD::SETLE)
+        return DAG.getConstant(1, VT);
+      if (CC == ISD::SETEQ || CC == ISD::SETGE)
         return DAG.getNOT(DL, LHS.getOperand(0), VT);
+      
+      assert((CC == ISD::SETNE || CC == ISD::SETLT) &&
+             "Unexpected condition code!");
       return LHS.getOperand(0);
-    }
-    if (IsSEXT1 && IsVZero0) {
-      assert(VT == RHS.getOperand(0).getValueType() && "Uexpected operand type");
-      if (CC == ISD::SETEQ)
-        return DAG.getNOT(DL, RHS.getOperand(0), VT);
-      return RHS.getOperand(0);
     }
   }
 

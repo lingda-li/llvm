@@ -351,8 +351,8 @@ public:
   }
 
   /// \brief Fetch the type representing a pointer to an integer value.
-  IntegerType* getIntPtrTy(const DataLayout *DL, unsigned AddrSpace = 0) {
-    return DL->getIntPtrType(Context, AddrSpace);
+  IntegerType *getIntPtrTy(const DataLayout &DL, unsigned AddrSpace = 0) {
+    return DL.getIntPtrType(Context, AddrSpace);
   }
 
   //===--------------------------------------------------------------------===//
@@ -1486,6 +1486,16 @@ public:
     return Insert(new ShuffleVectorInst(V1, V2, Mask), Name);
   }
 
+  Value *CreateShuffleVector(Value *V1, Value *V2, ArrayRef<int> IntMask,
+                             const Twine &Name = "") {
+    size_t MaskSize = IntMask.size();
+    SmallVector<Constant*, 8> MaskVec(MaskSize);
+    for (size_t i = 0; i != MaskSize; ++i)
+      MaskVec[i] = getInt32(IntMask[i]);
+    Value *Mask = ConstantVector::get(MaskVec);
+    return CreateShuffleVector(V1, V2, Mask, Name);
+  }
+
   Value *CreateExtractValue(Value *Agg,
                             ArrayRef<unsigned> Idxs,
                             const Twine &Name = "") {
@@ -1595,7 +1605,7 @@ public:
            "trying to create an alignment assumption on a non-pointer?");
 
     PointerType *PtrTy = cast<PointerType>(PtrValue->getType());
-    Type *IntPtrTy = getIntPtrTy(&DL, PtrTy->getAddressSpace());
+    Type *IntPtrTy = getIntPtrTy(DL, PtrTy->getAddressSpace());
     Value *PtrIntValue = CreatePtrToInt(PtrValue, IntPtrTy, "ptrint");
 
     Value *Mask = ConstantInt::get(IntPtrTy,

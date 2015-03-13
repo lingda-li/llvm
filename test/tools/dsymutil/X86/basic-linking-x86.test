@@ -17,6 +17,7 @@ CHECK:    DW_AT_producer [DW_FORM_strp]     ( .debug_str[0x00000001] = "Apple LL
 CHECK:    DW_AT_language [DW_FORM_data2]	(DW_LANG_C99)
 CHECK:    DW_AT_name [DW_FORM_strp] ( .debug_str[0x00000040] = "basic1.c")
 CHECK:    DW_AT_comp_dir [DW_FORM_strp]     ( .debug_str[0x00000049] = "/Inputs")
+CHECK:    DW_AT_low_pc [DW_FORM_addr]       (0x0000000100000ea0)
 CHECK:    DW_TAG_subprogram [2] *
 CHECK:    DW_AT_name [DW_FORM_strp]       ( .debug_str[0x00000051] = "main")
 CHECK:      DW_AT_decl_line [DW_FORM_data1]	(23)
@@ -25,6 +26,7 @@ CHECK:      DW_AT_type [DW_FORM_ref4]       (cu + 0x0063 => {0x00000063})
 CHECK:      DW_AT_external [DW_FORM_flag]	(0x01)
 CHECK:      DW_AT_accessibility [DW_FORM_data1]	(DW_ACCESS_public)
 CHECK:      DW_AT_low_pc [DW_FORM_addr]     (0x0000000100000ea0)
+CHECK:      DW_AT_high_pc [DW_FORM_addr]    (0x0000000100000ec4)
 CHECK:      DW_AT_frame_base [DW_FORM_block1]	(<0x01> 56 )
 CHECK:      DW_TAG_formal_parameter [3]
 CHECK:        DW_AT_name [DW_FORM_strp]     ( .debug_str[0x00000056] = "argc")
@@ -60,6 +62,7 @@ CHECK:  DW_TAG_compile_unit [1] *
 CHECK:   DW_AT_producer [DW_FORM_strp]     ( .debug_str[0x00000001] = "Apple LLVM version 6.0 (clang-600.0.39) (based on LLVM 3.5svn)")
 CHECK:   DW_AT_name [DW_FORM_strp] ( .debug_str[0x00000069] = "basic2.c")
 CHECK:   DW_AT_comp_dir [DW_FORM_strp]     ( .debug_str[0x00000049] = "/Inputs")
+CHECK:   DW_AT_low_pc [DW_FORM_addr]       (0x0000000100000ed0)
 CHECK:    DW_TAG_base_type [4]
 CHECK:      DW_AT_name [DW_FORM_strp]       ( .debug_str[0x00000060] = "int")
 CHECK:    DW_TAG_variable [7]
@@ -75,6 +78,7 @@ CHECK:    DW_TAG_subprogram [2] *
 CHECK:      DW_AT_name [DW_FORM_strp]       ( .debug_str[0x00000082] = "foo")
 CHECK:      DW_AT_type [DW_FORM_ref4]       (cu + 0x0026 => {0x000000a7})
 CHECK:      DW_AT_low_pc [DW_FORM_addr]     (0x0000000100000ed0)
+CHECK:      DW_AT_high_pc [DW_FORM_addr]    (0x0000000100000f19)
 CHECK:      DW_AT_frame_base [DW_FORM_block1]	(<0x01> 56 )
 CHECK:      DW_TAG_formal_parameter [3]
 CHECK:        DW_AT_name [DW_FORM_strp]     ( .debug_str[0x00000086] = "arg")
@@ -85,6 +89,7 @@ CHECK:    DW_TAG_subprogram [8]
 CHECK:      DW_AT_name [DW_FORM_strp]       ( .debug_str[0x0000008a] = "inc")
 CHECK:      DW_AT_type [DW_FORM_ref4]       (cu + 0x0026 => {0x000000a7})
 CHECK:      DW_AT_low_pc [DW_FORM_addr]     (0x0000000100000f20)
+CHECK:      DW_AT_high_pc [DW_FORM_addr]    (0x0000000100000f37)
 CHECK:      DW_AT_frame_base [DW_FORM_block1]	(<0x01> 56 )
 CHECK:    NULL
 
@@ -94,6 +99,7 @@ CHECK:  DW_TAG_compile_unit [1] *
 CHECK:    DW_AT_producer [DW_FORM_strp]     ( .debug_str[0x00000001] = "Apple LLVM version 6.0 (clang-600.0.39) (based on LLVM 3.5svn)")
 CHECK:    DW_AT_name [DW_FORM_strp] ( .debug_str[0x0000008e] = "basic3.c")
 CHECK:    DW_AT_comp_dir [DW_FORM_strp]     ( .debug_str[0x00000049] = "/Inputs")
+CHECK:    DW_AT_low_pc [DW_FORM_addr]       (0x0000000100000f40)
 CHECK:    DW_TAG_variable [9]
 CHECK:      DW_AT_name [DW_FORM_strp]       ( .debug_str[0x00000097] = "val")
 CHECK:      DW_AT_type [DW_FORM_ref4]       (cu + 0x003c => {0x00000162})
@@ -107,6 +113,7 @@ CHECK:    DW_TAG_subprogram [2] *
 CHECK:      DW_AT_name [DW_FORM_strp]       ( .debug_str[0x0000009b] = "bar")
 CHECK:      DW_AT_type [DW_FORM_ref4]       (cu + 0x0041 => {0x00000167})
 CHECK:      DW_AT_low_pc [DW_FORM_addr]     (0x0000000100000f40)
+CHECK:      DW_AT_high_pc [DW_FORM_addr]    (0x0000000100000f84)
 CHECK:      DW_AT_frame_base [DW_FORM_block1]	(<0x01> 56 )
 CHECK:      DW_TAG_formal_parameter [3]
 CHECK:        DW_AT_name [DW_FORM_strp]     ( .debug_str[0x00000086] = "arg")
@@ -117,6 +124,7 @@ CHECK:    DW_TAG_subprogram [8]
 CHECK:      DW_AT_name [DW_FORM_strp]       ( .debug_str[0x0000008a] = "inc")
 CHECK:      DW_AT_type [DW_FORM_ref4]       (cu + 0x0041 => {0x00000167})
 CHECK:      DW_AT_low_pc [DW_FORM_addr]     (0x0000000100000f90)
+CHECK:      DW_AT_high_pc [DW_FORM_addr]    (0x0000000100000fa9)
 CHECK:      DW_AT_frame_base [DW_FORM_block1]	(<0x01> 56 )
 
 CHECK:    NULL

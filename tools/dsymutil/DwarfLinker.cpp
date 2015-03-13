@@ -10,6 +10,9 @@
 #include "BinaryHolder.h"
 #include "DebugMap.h"
 #include "dsymutil.h"
+#include "llvm/ADT/IntervalMap.h"
+#include "llvm/ADT/StringMap.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/CodeGen/AsmPrinter.h"
 #include "llvm/CodeGen/DIE.h"
 #include "llvm/DebugInfo/DWARF/DWARFContext.h"
@@ -30,6 +33,7 @@
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Target/TargetOptions.h"
 #include <string>
+#include <tuple>
 
 namespace llvm {
 namespace dsymutil {
@@ -47,6 +51,11 @@ bool error(const Twine &Error, const Twine &Context) {
   return false;
 }
 
+template <typename KeyT, typename ValT>
+using HalfOpenIntervalMap =
+    IntervalMap<KeyT, ValT, IntervalMapImpl::NodeSizer<KeyT, ValT>::LeafSize,
+                IntervalMapHalfOpenInfo<KeyT>>;
+
 /// \brief Stores all information relating to a compile unit, be it in
 /// its original instance in the object file to its brand new cloned
 /// and linked DIE tree.
@@ -54,22 +63,27 @@ class CompileUnit {
 public:
   /// \brief Information gathered about a DIE in the object file.
   struct DIEInfo {
-    uint64_t Address;   ///< Linked address of the described entity.
+    int64_t AddrAdjust; ///< Address offset to apply to the described entity.
     DIE *Clone;         ///< Cloned version of that DIE.
     uint32_t ParentIdx; ///< The index of this DIE's parent.
     bool Keep;          ///< Is the DIE part of the linked output?
     bool InDebugMap;    ///< Was this DIE's entity found in the map?
   };
 
-  CompileUnit(DWARFUnit &OrigUnit) : OrigUnit(OrigUnit) {
+  CompileUnit(DWARFUnit &OrigUnit)
+      : OrigUnit(OrigUnit), LowPc(UINT64_MAX), HighPc(0), RangeAlloc(),
+        Ranges(RangeAlloc) {
     Info.resize(OrigUnit.getNumDIEs());
   }
 
-  // Workaround MSVC not supporting implicit move ops
   CompileUnit(CompileUnit &&RHS)
       : OrigUnit(RHS.OrigUnit), Info(std::move(RHS.Info)),
         CUDie(std::move(RHS.CUDie)), StartOffset(RHS.StartOffset),
-        NextUnitOffset(RHS.NextUnitOffset) {}
+        NextUnitOffset(RHS.NextUnitOffset), RangeAlloc(), Ranges(RangeAlloc) {
+    // The CompileUnit container has been 'reserve()'d with the right
+    // size. We cannot move the IntervalMap anyway.
+    llvm_unreachable("CompileUnits should not be moved.");
+  }
 
   DWARFUnit &getOrigUnit() const { return OrigUnit; }
 
@@ -82,6 +96,9 @@ public:
   uint64_t getStartOffset() const { return StartOffset; }
   uint64_t getNextUnitOffset() const { return NextUnitOffset; }
 
+  uint64_t getLowPc() const { return LowPc; }
+  uint64_t getHighPc() const { return HighPc; }
+
   void setStartOffset(uint64_t DebugInfoSize) { StartOffset = DebugInfoSize; }
 
   /// \brief Compute the end offset for this unit. Must be
@@ -90,13 +107,18 @@ public:
   /// debug_info section size).
   uint64_t computeNextUnitOffset();
 
-  /// \brief Keep track of a forward reference to DIE \p Die by
-  /// \p Attr. The attribute should be fixed up later to point to the
-  /// absolute offset of \p Die in the debug_info section.
-  void noteForwardReference(DIE *Die, DIEInteger *Attr);
+  /// \brief Keep track of a forward reference to DIE \p Die in \p
+  /// RefUnit by \p Attr. The attribute should be fixed up later to
+  /// point to the absolute offset of \p Die in the debug_info section.
+  void noteForwardReference(DIE *Die, const CompileUnit *RefUnit,
+                            DIEInteger *Attr);
 
   /// \brief Apply all fixups recored by noteForwardReference().
   void fixupForwardReferences();
+
+  /// \brief Add a function range [\p LowPC, \p HighPC) that is
+  /// relocatad by applying offset \p PCOffset.
+  void addFunctionRange(uint64_t LowPC, uint64_t HighPC, int64_t PCOffset);
 
 private:
   DWARFUnit &OrigUnit;
@@ -106,13 +128,23 @@ private:
   uint64_t StartOffset;
   uint64_t NextUnitOffset;
 
+  uint64_t LowPc;
+  uint64_t HighPc;
+
   /// \brief A list of attributes to fixup with the absolute offset of
   /// a DIE in the debug_info section.
   ///
   /// The offsets for the attributes in this array couldn't be set while
-  /// cloning because for forward refences the target DIE's offset isn't
-  /// known you emit the reference attribute.
-  std::vector<std::pair<DIE *, DIEInteger *>> ForwardDIEReferences;
+  /// cloning because for cross-cu forward refences the target DIE's
+  /// offset isn't known you emit the reference attribute.
+  std::vector<std::tuple<DIE *, const CompileUnit *, DIEInteger *>>
+      ForwardDIEReferences;
+
+  HalfOpenIntervalMap<uint64_t, int64_t>::Allocator RangeAlloc;
+  /// \brief The ranges in that interval map are the PC ranges for
+  /// functions in this unit, associated with the PC offset to apply
+  /// to the addresses to get the linked address.
+  HalfOpenIntervalMap<uint64_t, int64_t> Ranges;
 };
 
 uint64_t CompileUnit::computeNextUnitOffset() {
@@ -125,15 +157,29 @@ uint64_t CompileUnit::computeNextUnitOffset() {
   return NextUnitOffset;
 }
 
-/// \brief Keep track of a forward reference to \p Die.
-void CompileUnit::noteForwardReference(DIE *Die, DIEInteger *Attr) {
-  ForwardDIEReferences.emplace_back(Die, Attr);
+/// \brief Keep track of a forward cross-cu reference from this unit
+/// to \p Die that lives in \p RefUnit.
+void CompileUnit::noteForwardReference(DIE *Die, const CompileUnit *RefUnit,
+                                       DIEInteger *Attr) {
+  ForwardDIEReferences.emplace_back(Die, RefUnit, Attr);
 }
 
 /// \brief Apply all fixups recorded by noteForwardReference().
 void CompileUnit::fixupForwardReferences() {
-  for (const auto &Ref : ForwardDIEReferences)
-    Ref.second->setValue(Ref.first->getOffset() + getStartOffset());
+  for (const auto &Ref : ForwardDIEReferences) {
+    DIE *RefDie;
+    const CompileUnit *RefUnit;
+    DIEInteger *Attr;
+    std::tie(RefDie, RefUnit, Attr) = Ref;
+    Attr->setValue(RefDie->getOffset() + RefUnit->getStartOffset());
+  }
+}
+
+void CompileUnit::addFunctionRange(uint64_t FuncLowPc, uint64_t FuncHighPc,
+                                   int64_t PcOffset) {
+  Ranges.insert(FuncLowPc, FuncHighPc, PcOffset);
+  this->LowPc = std::min(LowPc, FuncLowPc + PcOffset);
+  this->HighPc = std::max(HighPc, FuncHighPc + PcOffset);
 }
 
 /// \brief A string table that doesn't need relocations.
@@ -316,7 +362,7 @@ bool DwarfStreamer::init(Triple TheTriple, StringRef OutputFilename) {
   if (!MSTI)
     return error("no subtarget info for target " + TripleName, Context);
 
-  MCE = TheTarget->createMCCodeEmitter(*MII, *MRI, *MSTI, *MC);
+  MCE = TheTarget->createMCCodeEmitter(*MII, *MRI, *MC);
   if (!MCE)
     return error("no code emitter for target " + TripleName, Context);
 
@@ -529,17 +575,29 @@ private:
   ///
   /// \param OutOffset is the offset the cloned DIE in the output
   /// compile unit.
+  /// \param PCOffset (while cloning a function scope) is the offset
+  /// applied to the entry point of the function to get the linked address.
   ///
   /// \returns the root of the cloned tree.
   DIE *cloneDIE(const DWARFDebugInfoEntryMinimal &InputDIE, CompileUnit &U,
-                uint32_t OutOffset);
+                int64_t PCOffset, uint32_t OutOffset);
 
   typedef DWARFAbbreviationDeclaration::AttributeSpec AttributeSpec;
+
+  /// \brief Information gathered and exchanged between the various
+  /// clone*Attributes helpers about the attributes of a particular DIE.
+  struct AttributesInfo {
+    uint64_t OrigHighPc; ///< Value of AT_high_pc in the input DIE
+    int64_t PCOffset;    ///< Offset to apply to PC addresses inside a function.
+
+    AttributesInfo() : OrigHighPc(0), PCOffset(0) {}
+  };
 
   /// \brief Helper for cloneDIE.
   unsigned cloneAttribute(DIE &Die, const DWARFDebugInfoEntryMinimal &InputDIE,
                           CompileUnit &U, const DWARFFormValue &Val,
-                          const AttributeSpec AttrSpec, unsigned AttrSize);
+                          const AttributeSpec AttrSpec, unsigned AttrSize,
+                          AttributesInfo &AttrInfo);
 
   /// \brief Helper for cloneDIE.
   unsigned cloneStringAttribute(DIE &Die, AttributeSpec AttrSpec,
@@ -550,16 +608,21 @@ private:
   cloneDieReferenceAttribute(DIE &Die,
                              const DWARFDebugInfoEntryMinimal &InputDIE,
                              AttributeSpec AttrSpec, unsigned AttrSize,
-                             const DWARFFormValue &Val, const DWARFUnit &U);
+                             const DWARFFormValue &Val, CompileUnit &Unit);
 
   /// \brief Helper for cloneDIE.
   unsigned cloneBlockAttribute(DIE &Die, AttributeSpec AttrSpec,
                                const DWARFFormValue &Val, unsigned AttrSize);
 
   /// \brief Helper for cloneDIE.
+  unsigned cloneAddressAttribute(DIE &Die, AttributeSpec AttrSpec,
+                                 const DWARFFormValue &Val,
+                                 const CompileUnit &Unit, AttributesInfo &Info);
+
+  /// \brief Helper for cloneDIE.
   unsigned cloneScalarAttribute(DIE &Die,
                                 const DWARFDebugInfoEntryMinimal &InputDIE,
-                                const DWARFUnit &U, AttributeSpec AttrSpec,
+                                const CompileUnit &U, AttributeSpec AttrSpec,
                                 const DWARFFormValue &Val, unsigned AttrSize);
 
   /// \brief Helper for cloneDIE.
@@ -831,8 +894,9 @@ bool DwarfLinker::hasValidRelocation(uint32_t StartOffset, uint32_t EndOffset,
                             ValidReloc.Mapping->getValue().ObjectAddress,
                             ValidReloc.Mapping->getValue().BinaryAddress);
 
-  Info.Address =
-      ValidReloc.Mapping->getValue().BinaryAddress + ValidReloc.Addend;
+  Info.AddrAdjust = int64_t(ValidReloc.Mapping->getValue().BinaryAddress) +
+                    ValidReloc.Addend -
+                    ValidReloc.Mapping->getValue().ObjectAddress;
   Info.InDebugMap = true;
   return true;
 }
@@ -924,7 +988,25 @@ unsigned DwarfLinker::shouldKeepSubprogramDIE(
   if (Options.Verbose)
     DIE.dump(outs(), const_cast<DWARFUnit *>(&OrigUnit), 0, 8 /* Indent */);
 
-  return Flags | TF_Keep;
+  Flags |= TF_Keep;
+
+  DWARFFormValue HighPcValue;
+  if (!DIE.getAttributeValue(&OrigUnit, dwarf::DW_AT_high_pc, HighPcValue)) {
+    reportWarning("Function without high_pc. Range will be discarded.\n",
+                  &OrigUnit, &DIE);
+    return Flags;
+  }
+
+  uint64_t HighPc;
+  if (HighPcValue.isFormClass(DWARFFormValue::FC_Address)) {
+    HighPc = *HighPcValue.getAsAddress(&OrigUnit);
+  } else {
+    assert(HighPcValue.isFormClass(DWARFFormValue::FC_Constant));
+    HighPc = LowPc + *HighPcValue.getAsUnsignedConstant();
+  }
+
+  Unit.addFunctionRange(LowPc, HighPc, MyInfo.AddrAdjust);
+  return Flags;
 }
 
 /// \brief Check if a DIE should be kept.
@@ -1097,8 +1179,8 @@ unsigned DwarfLinker::cloneStringAttribute(DIE &Die, AttributeSpec AttrSpec,
 unsigned DwarfLinker::cloneDieReferenceAttribute(
     DIE &Die, const DWARFDebugInfoEntryMinimal &InputDIE,
     AttributeSpec AttrSpec, unsigned AttrSize, const DWARFFormValue &Val,
-    const DWARFUnit &U) {
-  uint32_t Ref = *Val.getAsReference(&U);
+    CompileUnit &Unit) {
+  uint32_t Ref = *Val.getAsReference(&Unit.getOrigUnit());
   DIE *NewRefDie = nullptr;
   CompileUnit *RefUnit = nullptr;
   const DWARFDebugInfoEntryMinimal *RefDie = nullptr;
@@ -1110,7 +1192,7 @@ unsigned DwarfLinker::cloneDieReferenceAttribute(
       AttributeString = "DW_AT_???";
     reportWarning(Twine("Missing DIE for ref in attribute ") + AttributeString +
                       ". Dropping.",
-                  &U, &InputDIE);
+                  &Unit.getOrigUnit(), &InputDIE);
     return 0;
   }
 
@@ -1139,7 +1221,7 @@ unsigned DwarfLinker::cloneDieReferenceAttribute(
     } else {
       // A forward reference. Note and fixup later.
       Attr = new (DIEAlloc) DIEInteger(0xBADDEF);
-      RefUnit->noteForwardReference(NewRefDie, Attr);
+      Unit.noteForwardReference(NewRefDie, RefUnit, Attr);
     }
     Die.addValue(dwarf::Attribute(AttrSpec.Attr), dwarf::DW_FORM_ref_addr,
                  Attr);
@@ -1162,7 +1244,7 @@ unsigned DwarfLinker::cloneBlockAttribute(DIE &Die, AttributeSpec AttrSpec,
   DIELoc *Loc = nullptr;
   DIEBlock *Block = nullptr;
   // Just copy the block data over.
-  if (AttrSpec.Attr == dwarf::DW_FORM_exprloc) {
+  if (AttrSpec.Form == dwarf::DW_FORM_exprloc) {
     Loc = new (DIEAlloc) DIELoc();
     DIELocs.push_back(Loc);
   } else {
@@ -1189,23 +1271,63 @@ unsigned DwarfLinker::cloneBlockAttribute(DIE &Die, AttributeSpec AttrSpec,
   return AttrSize;
 }
 
+/// \brief Clone an address attribute and add it to \p Die.
+/// \returns the size of the new attribute.
+unsigned DwarfLinker::cloneAddressAttribute(DIE &Die, AttributeSpec AttrSpec,
+                                            const DWARFFormValue &Val,
+                                            const CompileUnit &Unit,
+                                            AttributesInfo &Info) {
+  uint64_t Addr = *Val.getAsAddress(&Unit.getOrigUnit());
+  if (AttrSpec.Attr == dwarf::DW_AT_low_pc) {
+    if (Die.getTag() == dwarf::DW_TAG_inlined_subroutine ||
+        Die.getTag() == dwarf::DW_TAG_lexical_block)
+      Addr += Info.PCOffset;
+    else if (Die.getTag() == dwarf::DW_TAG_compile_unit) {
+      Addr = Unit.getLowPc();
+      if (Addr == UINT64_MAX)
+        return 0;
+    }
+  } else if (AttrSpec.Attr == dwarf::DW_AT_high_pc) {
+    if (Die.getTag() == dwarf::DW_TAG_compile_unit) {
+      if (uint64_t HighPc = Unit.getHighPc())
+        Addr = HighPc;
+      else
+        return 0;
+    } else
+      // If we have a high_pc recorded for the input DIE, use
+      // it. Otherwise (when no relocations where applied) just use the
+      // one we just decoded.
+      Addr = (Info.OrigHighPc ? Info.OrigHighPc : Addr) + Info.PCOffset;
+  }
+
+  Die.addValue(static_cast<dwarf::Attribute>(AttrSpec.Attr),
+               static_cast<dwarf::Form>(AttrSpec.Form),
+               new (DIEAlloc) DIEInteger(Addr));
+  return Unit.getOrigUnit().getAddressByteSize();
+}
+
 /// \brief Clone a scalar attribute  and add it to \p Die.
 /// \returns the size of the new attribute.
 unsigned DwarfLinker::cloneScalarAttribute(
-    DIE &Die, const DWARFDebugInfoEntryMinimal &InputDIE, const DWARFUnit &U,
-    AttributeSpec AttrSpec, const DWARFFormValue &Val, unsigned AttrSize) {
+    DIE &Die, const DWARFDebugInfoEntryMinimal &InputDIE,
+    const CompileUnit &Unit, AttributeSpec AttrSpec, const DWARFFormValue &Val,
+    unsigned AttrSize) {
   uint64_t Value;
-  if (AttrSpec.Form == dwarf::DW_FORM_sec_offset)
+  if (AttrSpec.Attr == dwarf::DW_AT_high_pc &&
+      Die.getTag() == dwarf::DW_TAG_compile_unit) {
+    if (Unit.getLowPc() == -1ULL)
+      return 0;
+    // Dwarf >= 4 high_pc is an size, not an address.
+    Value = Unit.getHighPc() - Unit.getLowPc();
+  } else if (AttrSpec.Form == dwarf::DW_FORM_sec_offset)
     Value = *Val.getAsSectionOffset();
   else if (AttrSpec.Form == dwarf::DW_FORM_sdata)
     Value = *Val.getAsSignedConstant();
-  else if (AttrSpec.Form == dwarf::DW_FORM_addr)
-    Value = *Val.getAsAddress(&U);
   else if (auto OptionalValue = Val.getAsUnsignedConstant())
     Value = *OptionalValue;
   else {
-    reportWarning("Unsupported scalar attribute form. Dropping attribute.", &U,
-                  &InputDIE);
+    reportWarning("Unsupported scalar attribute form. Dropping attribute.",
+                  &Unit.getOrigUnit(), &InputDIE);
     return 0;
   }
   Die.addValue(dwarf::Attribute(AttrSpec.Attr), dwarf::Form(AttrSpec.Form),
@@ -1221,7 +1343,7 @@ unsigned DwarfLinker::cloneAttribute(DIE &Die,
                                      CompileUnit &Unit,
                                      const DWARFFormValue &Val,
                                      const AttributeSpec AttrSpec,
-                                     unsigned AttrSize) {
+                                     unsigned AttrSize, AttributesInfo &Info) {
   const DWARFUnit &U = Unit.getOrigUnit();
 
   switch (AttrSpec.Form) {
@@ -1234,7 +1356,7 @@ unsigned DwarfLinker::cloneAttribute(DIE &Die,
   case dwarf::DW_FORM_ref4:
   case dwarf::DW_FORM_ref8:
     return cloneDieReferenceAttribute(Die, InputDIE, AttrSpec, AttrSize, Val,
-                                      U);
+                                      Unit);
   case dwarf::DW_FORM_block:
   case dwarf::DW_FORM_block1:
   case dwarf::DW_FORM_block2:
@@ -1242,6 +1364,7 @@ unsigned DwarfLinker::cloneAttribute(DIE &Die,
   case dwarf::DW_FORM_exprloc:
     return cloneBlockAttribute(Die, AttrSpec, Val, AttrSize);
   case dwarf::DW_FORM_addr:
+    return cloneAddressAttribute(Die, AttrSpec, Val, Unit, Info);
   case dwarf::DW_FORM_data1:
   case dwarf::DW_FORM_data2:
   case dwarf::DW_FORM_data4:
@@ -1251,7 +1374,7 @@ unsigned DwarfLinker::cloneAttribute(DIE &Die,
   case dwarf::DW_FORM_sec_offset:
   case dwarf::DW_FORM_flag:
   case dwarf::DW_FORM_flag_present:
-    return cloneScalarAttribute(Die, InputDIE, U, AttrSpec, Val, AttrSize);
+    return cloneScalarAttribute(Die, InputDIE, Unit, AttrSpec, Val, AttrSize);
   default:
     reportWarning("Unsupported attribute form in cloneAttribute. Dropping.", &U,
                   &InputDIE);
@@ -1271,8 +1394,8 @@ unsigned DwarfLinker::cloneAttribute(DIE &Die,
 bool DwarfLinker::applyValidRelocs(MutableArrayRef<char> Data,
                                    uint32_t BaseOffset, bool isLittleEndian) {
   assert((NextValidReloc == 0 ||
-         BaseOffset > ValidRelocs[NextValidReloc - 1].Offset) &&
-             "BaseOffset should only be increasing.");
+          BaseOffset > ValidRelocs[NextValidReloc - 1].Offset) &&
+         "BaseOffset should only be increasing.");
   if (NextValidReloc >= ValidRelocs.size())
     return false;
 
@@ -1312,7 +1435,8 @@ bool DwarfLinker::applyValidRelocs(MutableArrayRef<char> Data,
 ///
 /// \returns the cloned DIE object or null if nothing was selected.
 DIE *DwarfLinker::cloneDIE(const DWARFDebugInfoEntryMinimal &InputDIE,
-                           CompileUnit &Unit, uint32_t OutOffset) {
+                           CompileUnit &Unit, int64_t PCOffset,
+                           uint32_t OutOffset) {
   DWARFUnit &U = Unit.getOrigUnit();
   unsigned Idx = U.getDIEIndex(&InputDIE);
   CompileUnit::DIEInfo &Info = Unit.getInfo(Idx);
@@ -1333,6 +1457,7 @@ DIE *DwarfLinker::cloneDIE(const DWARFDebugInfoEntryMinimal &InputDIE,
   // Extract and clone every attribute.
   DataExtractor Data = U.getDebugInfoExtractor();
   uint32_t NextOffset = U.getDIEAtIndex(Idx + 1)->getOffset();
+  AttributesInfo AttrInfo;
 
   // We could copy the data only if we need to aply a relocation to
   // it. After testing, it seems there is no performance downside to
@@ -1340,7 +1465,17 @@ DIE *DwarfLinker::cloneDIE(const DWARFDebugInfoEntryMinimal &InputDIE,
   SmallString<40> DIECopy(Data.getData().substr(Offset, NextOffset - Offset));
   Data = DataExtractor(DIECopy, Data.isLittleEndian(), Data.getAddressSize());
   // Modify the copy with relocated addresses.
-  applyValidRelocs(DIECopy, Offset, Data.isLittleEndian());
+  if (applyValidRelocs(DIECopy, Offset, Data.isLittleEndian())) {
+    // If we applied relocations, we store the value of high_pc that was
+    // potentially stored in the input DIE. If high_pc is an address
+    // (Dwarf version == 2), then it might have been relocated to a
+    // totally unrelated value (because the end address in the object
+    // file might be start address of another function which got moved
+    // independantly by the linker). The computation of the actual
+    // high_pc value is done in cloneAddressAttribute().
+    AttrInfo.OrigHighPc =
+        InputDIE.getAttributeValueAsAddress(&U, dwarf::DW_AT_high_pc, 0);
+  }
 
   // Reset the Offset to 0 as we will be working on the local copy of
   // the data.
@@ -1349,13 +1484,19 @@ DIE *DwarfLinker::cloneDIE(const DWARFDebugInfoEntryMinimal &InputDIE,
   const auto *Abbrev = InputDIE.getAbbreviationDeclarationPtr();
   Offset += getULEB128Size(Abbrev->getCode());
 
+  // We are entering a subprogram. Get and propagate the PCOffset.
+  if (Die->getTag() == dwarf::DW_TAG_subprogram)
+    PCOffset = Info.AddrAdjust;
+  AttrInfo.PCOffset = PCOffset;
+
   for (const auto &AttrSpec : Abbrev->attributes()) {
     DWARFFormValue Val(AttrSpec.Form);
     uint32_t AttrSize = Offset;
     Val.extractValue(Data, &Offset, &U);
     AttrSize = Offset - AttrSize;
 
-    OutOffset += cloneAttribute(*Die, InputDIE, Unit, Val, AttrSpec, AttrSize);
+    OutOffset +=
+        cloneAttribute(*Die, InputDIE, Unit, Val, AttrSpec, AttrSize, AttrInfo);
   }
 
   DIEAbbrev &NewAbbrev = Die->getAbbrev();
@@ -1379,7 +1520,7 @@ DIE *DwarfLinker::cloneDIE(const DWARFDebugInfoEntryMinimal &InputDIE,
   // Recursively clone children.
   for (auto *Child = InputDIE.getFirstChild(); Child && !Child->isNULL();
        Child = Child->getSibling()) {
-    if (DIE *Clone = cloneDIE(*Child, Unit, OutOffset)) {
+    if (DIE *Clone = cloneDIE(*Child, Unit, PCOffset, OutOffset)) {
       Die->addChild(std::unique_ptr<DIE>(Clone));
       OutOffset = Clone->getOffset() + Clone->getSize();
     }
@@ -1460,8 +1601,8 @@ bool DwarfLinker::link(const DebugMap &Map) {
       for (auto &CurrentUnit : Units) {
         const auto *InputDIE = CurrentUnit.getOrigUnit().getCompileUnitDIE();
         CurrentUnit.setStartOffset(OutputDebugInfoSize);
-        DIE *OutputDIE =
-            cloneDIE(*InputDIE, CurrentUnit, 11 /* Unit Header size */);
+        DIE *OutputDIE = cloneDIE(*InputDIE, CurrentUnit, 0 /* PCOffset */,
+                                  11 /* Unit Header size */);
         CurrentUnit.setOutputUnitDIE(OutputDIE);
         OutputDebugInfoSize = CurrentUnit.computeNextUnitOffset();
       }

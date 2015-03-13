@@ -1010,7 +1010,7 @@ static void WriteConstantInternal(raw_ostream &Out, const Constant *CV,
              (StrVal[1] >= '0' && StrVal[1] <= '9'))) {
           // Reparse stringized version!
           if (APFloat(APFloat::IEEEdouble, StrVal).convertToDouble() == Val) {
-            Out << StrVal.str();
+            Out << StrVal;
             return;
           }
         }
@@ -1222,6 +1222,14 @@ static void WriteConstantInternal(raw_ostream &Out, const Constant *CV,
     if (CE->isCompare())
       Out << ' ' << getPredicateText(CE->getPredicate());
     Out << " (";
+
+    if (const GEPOperator *GEP = dyn_cast<GEPOperator>(CE)) {
+      TypePrinter.print(
+          cast<PointerType>(GEP->getPointerOperandType()->getScalarType())
+              ->getElementType(),
+          Out);
+      Out << ", ";
+    }
 
     for (User::const_op_iterator OI=CE->op_begin(); OI != CE->op_end(); ++OI) {
       TypePrinter.print((*OI)->getType(), Out);
@@ -2877,7 +2885,13 @@ void AssemblyWriter::printInstruction(const Instruction &I) {
     if (AI->isUsedWithInAlloca())
       Out << "inalloca ";
     TypePrinter.print(AI->getAllocatedType(), Out);
-    if (!AI->getArraySize() || AI->isArrayAllocation()) {
+
+    // Explicitly write the array size if the code is broken, if it's an array
+    // allocation, or if the type is not canonical for scalar allocations.  The
+    // latter case prevents the type from mutating when round-tripping through
+    // assembly.
+    if (!AI->getArraySize() || AI->isArrayAllocation() ||
+        !AI->getArraySize()->getType()->isIntegerTy(32)) {
       Out << ", ";
       writeOperand(AI->getArraySize(), true);
     }

@@ -77,11 +77,11 @@ static gcp_map_type &getGCMap(void *&P) {
 /// getGVAlignmentLog2 - Return the alignment to use for the specified global
 /// value in log2 form.  This rounds up to the preferred alignment if possible
 /// and legal.
-static unsigned getGVAlignmentLog2(const GlobalValue *GV, const DataLayout &TD,
+static unsigned getGVAlignmentLog2(const GlobalValue *GV, const DataLayout &DL,
                                    unsigned InBits = 0) {
   unsigned NumBits = 0;
   if (const GlobalVariable *GVar = dyn_cast<GlobalVariable>(GV))
-    NumBits = TD.getPreferredAlignmentLog(GVar);
+    NumBits = DL.getPreferredAlignmentLog(GVar);
 
   // If InBits is specified, round it to it.
   if (InBits > NumBits)
@@ -527,7 +527,8 @@ void AsmPrinter::EmitFunctionHeader() {
   EmitVisibility(CurrentFnSym, F->getVisibility());
 
   EmitLinkage(F, CurrentFnSym);
-  EmitAlignment(MF->getAlignment(), F);
+  if (MAI->hasFunctionAlignment())
+    EmitAlignment(MF->getAlignment(), F);
 
   if (MAI->hasDotTypeDotSizeDirective())
     OutStreamer.EmitSymbolAttribute(CurrentFnSym, MCSA_ELF_TypeFunction);
@@ -983,14 +984,17 @@ void AsmPrinter::emitGlobalGOTEquivs() {
   if (!getObjFileLowering().supportIndirectSymViaGOTPCRel())
     return;
 
-  while (!GlobalGOTEquivs.empty()) {
-    DenseMap<const MCSymbol *, GOTEquivUsePair>::iterator I =
-      GlobalGOTEquivs.begin();
-    const MCSymbol *S = I->first;
-    const GlobalVariable *GV = I->second.first;
-    GlobalGOTEquivs.erase(S);
-    EmitGlobalVariable(GV);
+  SmallVector<const GlobalVariable *, 8> FailedCandidates;
+  for (auto &I : GlobalGOTEquivs) {
+    const GlobalVariable *GV = I.second.first;
+    unsigned Cnt = I.second.second;
+    if (Cnt)
+      FailedCandidates.push_back(GV);
   }
+  GlobalGOTEquivs.clear();
+
+  for (auto *GV : FailedCandidates)
+    EmitGlobalVariable(GV);
 }
 
 bool AsmPrinter::doFinalization(Module &M) {
@@ -1642,8 +1646,7 @@ const MCExpr *AsmPrinter::lowerConstant(const Constant *CV) {
     // If the code isn't optimized, there may be outstanding folding
     // opportunities. Attempt to fold the expression using DataLayout as a
     // last resort before giving up.
-    if (Constant *C = ConstantFoldConstantExpression(
-            CE, TM.getDataLayout()))
+    if (Constant *C = ConstantFoldConstantExpression(CE, *TM.getDataLayout()))
       if (C != CE)
         return lowerConstant(C);
 
@@ -2115,7 +2118,7 @@ static void handleIndirectSymViaGOTPCRel(AsmPrinter &AP, const MCExpr **ME,
   //
   AsmPrinter::GOTEquivUsePair Result = AP.GlobalGOTEquivs[GOTEquivSym];
   const GlobalVariable *GV = Result.first;
-  unsigned NumUses = Result.second;
+  int NumUses = (int)Result.second;
   const GlobalValue *FinalGV = dyn_cast<GlobalValue>(GV->getOperand(0));
   const MCSymbol *FinalSym = AP.getSymbol(FinalGV);
   *ME = AP.getObjFileLowering().getIndirectSymViaGOTPCRel(
@@ -2123,10 +2126,8 @@ static void handleIndirectSymViaGOTPCRel(AsmPrinter &AP, const MCExpr **ME,
 
   // Update GOT equivalent usage information
   --NumUses;
-  if (NumUses)
+  if (NumUses >= 0)
     AP.GlobalGOTEquivs[GOTEquivSym] = std::make_pair(GV, NumUses);
-  else
-    AP.GlobalGOTEquivs.erase(GOTEquivSym);
 }
 
 static void emitGlobalConstantImpl(const Constant *CV, AsmPrinter &AP,
@@ -2187,7 +2188,7 @@ static void emitGlobalConstantImpl(const Constant *CV, AsmPrinter &AP,
       // If the constant expression's size is greater than 64-bits, then we have
       // to emit the value in chunks. Try to constant fold the value and emit it
       // that way.
-      Constant *New = ConstantFoldConstantExpression(CE, DL);
+      Constant *New = ConstantFoldConstantExpression(CE, *DL);
       if (New && New != CE)
         return emitGlobalConstantImpl(New, AP);
     }
