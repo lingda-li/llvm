@@ -108,7 +108,7 @@ AsmPrinter::AsmPrinter(TargetMachine &tm, std::unique_ptr<MCStreamer> Streamer)
   MMI = nullptr;
   LI = nullptr;
   MF = nullptr;
-  CurrentFnSym = CurrentFnSymForSize = nullptr;
+  CurExceptionSym = CurrentFnSym = CurrentFnSymForSize = nullptr;
   CurrentFnBegin = nullptr;
   CurrentFnEnd = nullptr;
   GCMetadataPrinters = nullptr;
@@ -782,6 +782,8 @@ void AsmPrinter::emitFrameAlloc(const MachineInstr &MI) {
 /// EmitFunctionBody - This method emits the body and trailer for a
 /// function.
 void AsmPrinter::EmitFunctionBody() {
+  EmitFunctionHeader();
+
   // Emit target-specific gunk before the function body.
   EmitFunctionBodyStart();
 
@@ -1129,12 +1131,19 @@ bool AsmPrinter::doFinalization(Module &M) {
   return false;
 }
 
+MCSymbol *AsmPrinter::getCurExceptionSym() {
+  if (!CurExceptionSym)
+    CurExceptionSym = createTempSymbol("exception", getFunctionNumber());
+  return CurExceptionSym;
+}
+
 void AsmPrinter::SetupMachineFunction(MachineFunction &MF) {
   this->MF = &MF;
   // Get the function symbol.
   CurrentFnSym = getSymbol(MF.getFunction());
   CurrentFnSymForSize = CurrentFnSym;
   CurrentFnBegin = nullptr;
+  CurExceptionSym = nullptr;
   bool NeedsLocalForSize = MAI->needsLocalForSize();
   if (!MMI->getLandingPads().empty() || MMI->hasDebugInfo() ||
       NeedsLocalForSize) {
@@ -1568,7 +1577,7 @@ void AsmPrinter::EmitLabelDifference(const MCSymbol *Hi, const MCSymbol *Lo,
   }
 
   // Otherwise, emit with .set (aka assignment).
-  MCSymbol *SetLabel = GetTempSymbol("set", SetCounter++);
+  MCSymbol *SetLabel = createTempSymbol("set", SetCounter++);
   OutStreamer.EmitAssignment(SetLabel, Diff);
   OutStreamer.EmitSymbolValue(SetLabel, Size);
 }
@@ -2242,22 +2251,6 @@ void AsmPrinter::printOffset(int64_t Offset, raw_ostream &OS) const {
 //===----------------------------------------------------------------------===//
 // Symbol Lowering Routines.
 //===----------------------------------------------------------------------===//
-
-/// GetTempSymbol - Return the MCSymbol corresponding to the assembler
-/// temporary label with the specified stem and unique ID.
-MCSymbol *AsmPrinter::GetTempSymbol(const Twine &Name, unsigned ID) const {
-  const DataLayout *DL = TM.getDataLayout();
-  return OutContext.GetOrCreateSymbol(Twine(DL->getPrivateGlobalPrefix()) +
-                                      Name + Twine(ID));
-}
-
-/// GetTempSymbol - Return an assembler temporary label with the specified
-/// stem.
-MCSymbol *AsmPrinter::GetTempSymbol(const Twine &Name) const {
-  const DataLayout *DL = TM.getDataLayout();
-  return OutContext.GetOrCreateSymbol(Twine(DL->getPrivateGlobalPrefix())+
-                                      Name);
-}
 
 MCSymbol *AsmPrinter::createTempSymbol(const Twine &Name, unsigned ID) const {
   return OutContext.createTempSymbol(Name + Twine(ID));

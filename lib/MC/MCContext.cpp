@@ -98,13 +98,15 @@ void MCContext::reset() {
 // Symbol Manipulation
 //===----------------------------------------------------------------------===//
 
-MCSymbol *MCContext::GetOrCreateSymbol(StringRef Name) {
-  assert(!Name.empty() && "Normal symbols cannot be unnamed!");
+MCSymbol *MCContext::GetOrCreateSymbol(const Twine &Name) {
+  SmallString<128> NameSV;
+  StringRef NameRef = Name.toStringRef(NameSV);
 
-  MCSymbol *&Sym = Symbols[Name];
+  assert(!NameRef.empty() && "Normal symbols cannot be unnamed!");
 
+  MCSymbol *&Sym = Symbols[NameRef];
   if (!Sym)
-    Sym = CreateSymbol(Name);
+    Sym = CreateSymbol(NameRef);
 
   return Sym;
 }
@@ -168,11 +170,6 @@ MCSymbol *MCContext::createTempSymbol(const Twine &Name) {
   return CreateSymbol(NameSV);
 }
 
-MCSymbol *MCContext::GetOrCreateSymbol(const Twine &Name) {
-  SmallString<128> NameSV;
-  return GetOrCreateSymbol(Name.toStringRef(NameSV));
-}
-
 MCSymbol *MCContext::CreateLinkerPrivateTempSymbol() {
   SmallString<128> NameSV;
   raw_svector_ostream(NameSV)
@@ -222,14 +219,10 @@ MCSymbol *MCContext::GetDirectionalLocalSymbol(unsigned LocalLabelVal,
   return getOrCreateDirectionalLocalSymbol(LocalLabelVal, Instance);
 }
 
-MCSymbol *MCContext::LookupSymbol(StringRef Name) const {
-  return Symbols.lookup(Name);
-}
-
 MCSymbol *MCContext::LookupSymbol(const Twine &Name) const {
   SmallString<128> NameSV;
-  Name.toVector(NameSV);
-  return LookupSymbol(NameSV.str());
+  StringRef NameRef = Name.toStringRef(NameSV);
+  return Symbols.lookup(NameRef);
 }
 
 //===----------------------------------------------------------------------===//
@@ -252,7 +245,7 @@ MCContext::getMachOSection(StringRef Segment, StringRef Section,
   Name += Section;
 
   // Do the lookup, if we have a hit, return it.
-  const MCSectionMachO *&Entry = MachOUniquingMap[Name.str()];
+  const MCSectionMachO *&Entry = MachOUniquingMap[Name];
   if (Entry)
     return Entry;
 
