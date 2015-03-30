@@ -15,6 +15,7 @@
 #include "llvm/Linker/Linker.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Bitcode/ReaderWriter.h"
+#include "llvm/IR/AutoUpgrade.h"
 #include "llvm/IR/DiagnosticInfo.h"
 #include "llvm/IR/DiagnosticPrinter.h"
 #include "llvm/IR/LLVMContext.h"
@@ -69,6 +70,9 @@ loadFile(const char *argv0, const std::string &FN, LLVMContext &Context) {
   if (!Result)
     Err.print(argv0, errs());
 
+  Result->materializeMetadata();
+  UpgradeDebugInfo(*Result);
+
   return Result;
 }
 
@@ -109,6 +113,12 @@ int main(int argc, char **argv) {
     std::unique_ptr<Module> M = loadFile(argv[0], InputFilenames[i], Context);
     if (!M.get()) {
       errs() << argv[0] << ": error loading file '" <<InputFilenames[i]<< "'\n";
+      return 1;
+    }
+
+    if (verifyModule(*M)) {
+      errs() << argv[0] << ": input module '" << InputFilenames[i]
+             << "' is broken!\n";
       return 1;
     }
 

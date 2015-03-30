@@ -25,6 +25,7 @@
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/Intrinsics.h"
+#include "llvm/IR/GVMaterializer.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/ValueHandle.h"
 #include "llvm/Support/Debug.h"
@@ -260,7 +261,7 @@ static bool isDescriptorRef(const Metadata *MD) {
 #endif
 
 bool DIType::Verify() const {
-  auto *N = getRaw();
+  auto *N = dyn_cast_or_null<MDType>(DbgNode);
   if (!N)
     return false;
   if (!isScopeRef(N->getScope()))
@@ -283,7 +284,9 @@ bool DIType::Verify() const {
         Tag != dwarf::DW_TAG_restrict_type && Tag != dwarf::DW_TAG_array_type &&
         Tag != dwarf::DW_TAG_enumeration_type &&
         Tag != dwarf::DW_TAG_subroutine_type &&
-        Tag != dwarf::DW_TAG_inheritance && Tag != dwarf::DW_TAG_friend)
+        Tag != dwarf::DW_TAG_inheritance && Tag != dwarf::DW_TAG_friend &&
+        Tag != dwarf::DW_TAG_structure_type && Tag != dwarf::DW_TAG_member &&
+        Tag != dwarf::DW_TAG_typedef)
       return false;
   }
 
@@ -294,10 +297,12 @@ bool DIType::Verify() const {
   return false;
 }
 
-bool DIBasicType::Verify() const { return getRaw(); }
+bool DIBasicType::Verify() const {
+  return dyn_cast_or_null<MDBasicType>(DbgNode);
+}
 
 bool DIDerivedType::Verify() const {
-  auto *N = getRaw();
+  auto *N = dyn_cast_or_null<MDDerivedTypeBase>(DbgNode);
   if (!N)
     return false;
   if (getTag() == dwarf::DW_TAG_ptr_to_member_type) {
@@ -311,13 +316,13 @@ bool DIDerivedType::Verify() const {
 }
 
 bool DICompositeType::Verify() const {
-  auto *N = getRaw();
+  auto *N = dyn_cast_or_null<MDCompositeTypeBase>(DbgNode);
   return N && isTypeRef(N->getBaseType()) && isTypeRef(N->getVTableHolder()) &&
          !(isLValueReference() && isRValueReference());
 }
 
 bool DISubprogram::Verify() const {
-  auto *N = getRaw();
+  auto *N = dyn_cast_or_null<MDSubprogram>(DbgNode);
   if (!N)
     return false;
 
@@ -339,24 +344,16 @@ bool DISubprogram::Verify() const {
   if (auto *F = getFunction()) {
     for (auto &BB : *F) {
       for (auto &I : BB) {
-        DebugLoc DL = I.getDebugLoc();
-        if (DL.isUnknown())
+        MDLocation *DL = I.getDebugLoc();
+        if (!DL)
           continue;
 
-        MDNode *Scope = nullptr;
-        MDNode *IA = nullptr;
         // walk the inlined-at scopes
-        while ((IA = DL.getInlinedAt()))
-          DL = DebugLoc::getFromDILocation(IA);
-        DL.getScopeAndInlinedAt(Scope, IA);
+        MDScope *Scope = DL->getInlinedAtScope();
         if (!Scope)
           return false;
-        assert(!IA);
-        while (!DIDescriptor(Scope).isSubprogram()) {
-          DILexicalBlockFile D(Scope);
-          Scope = D.isLexicalBlockFile()
-                      ? D.getScope()
-                      : DebugLoc::getFromDILexicalBlock(Scope).getScope();
+        while (!isa<MDSubprogram>(Scope)) {
+          Scope = cast<MDLexicalBlockBase>(Scope)->getScope();
           if (!Scope)
             return false;
         }
@@ -370,7 +367,7 @@ bool DISubprogram::Verify() const {
 }
 
 bool DIGlobalVariable::Verify() const {
-  auto *N = getRaw();
+  auto *N = dyn_cast_or_null<MDGlobalVariable>(DbgNode);
 
   if (!N)
     return false;
@@ -390,7 +387,7 @@ bool DIGlobalVariable::Verify() const {
 }
 
 bool DIVariable::Verify() const {
-  auto *N = getRaw();
+  auto *N = dyn_cast_or_null<MDLocalVariable>(DbgNode);
 
   if (!N)
     return false;
@@ -402,19 +399,37 @@ bool DIVariable::Verify() const {
   return isTypeRef(N->getType());
 }
 
-bool DILocation::Verify() const { return getRaw(); }
-bool DINameSpace::Verify() const { return getRaw(); }
-bool DIFile::Verify() const { return getRaw(); }
-bool DIEnumerator::Verify() const { return getRaw(); }
-bool DISubrange::Verify() const { return getRaw(); }
-bool DILexicalBlock::Verify() const { return getRaw(); }
-bool DILexicalBlockFile::Verify() const { return getRaw(); }
-bool DITemplateTypeParameter::Verify() const { return getRaw(); }
-bool DITemplateValueParameter::Verify() const { return getRaw(); }
-bool DIImportedEntity::Verify() const { return getRaw(); }
+bool DILocation::Verify() const {
+  return dyn_cast_or_null<MDLocation>(DbgNode);
+}
+bool DINameSpace::Verify() const {
+  return dyn_cast_or_null<MDNamespace>(DbgNode);
+}
+bool DIFile::Verify() const { return dyn_cast_or_null<MDFile>(DbgNode); }
+bool DIEnumerator::Verify() const {
+  return dyn_cast_or_null<MDEnumerator>(DbgNode);
+}
+bool DISubrange::Verify() const {
+  return dyn_cast_or_null<MDSubrange>(DbgNode);
+}
+bool DILexicalBlock::Verify() const {
+  return dyn_cast_or_null<MDLexicalBlock>(DbgNode);
+}
+bool DILexicalBlockFile::Verify() const {
+  return dyn_cast_or_null<MDLexicalBlockFile>(DbgNode);
+}
+bool DITemplateTypeParameter::Verify() const {
+  return dyn_cast_or_null<MDTemplateTypeParameter>(DbgNode);
+}
+bool DITemplateValueParameter::Verify() const {
+  return dyn_cast_or_null<MDTemplateValueParameter>(DbgNode);
+}
+bool DIImportedEntity::Verify() const {
+  return dyn_cast_or_null<MDImportedEntity>(DbgNode);
+}
 
 void DICompositeType::setArraysHelper(MDNode *Elements, MDNode *TParams) {
-  TypedTrackingMDRef<MDCompositeTypeBase> N(getRaw());
+  TypedTrackingMDRef<MDCompositeTypeBase> N(get());
   if (Elements)
     N->replaceElements(cast<MDTuple>(Elements));
   if (TParams)
@@ -432,7 +447,7 @@ DIScopeRef DIScope::getRef() const {
 }
 
 void DICompositeType::setContainingType(DICompositeType ContainingType) {
-  TypedTrackingMDRef<MDCompositeTypeBase> N(getRaw());
+  TypedTrackingMDRef<MDCompositeTypeBase> N(get());
   N->replaceVTableHolder(ContainingType.getRef());
   DbgNode = N;
 }
@@ -447,7 +462,7 @@ bool DIVariable::isInlinedFnArgument(const Function *CurFn) {
 }
 
 Function *DISubprogram::getFunction() const {
-  if (auto *N = getRaw())
+  if (auto *N = get())
     if (auto *C = dyn_cast_or_null<ConstantAsMetadata>(N->getFunction()))
       return dyn_cast<Function>(C->getValue());
   return nullptr;
@@ -504,26 +519,25 @@ StringRef DIScope::getName() const {
 }
 
 StringRef DIScope::getFilename() const {
-  if (auto *N = getRaw())
+  if (auto *N = get())
     return ::getStringField(dyn_cast_or_null<MDNode>(N->getFile()), 0);
   return "";
 }
 
 StringRef DIScope::getDirectory() const {
-  if (auto *N = getRaw())
+  if (auto *N = get())
     return ::getStringField(dyn_cast_or_null<MDNode>(N->getFile()), 1);
   return "";
 }
 
 void DICompileUnit::replaceSubprograms(DIArray Subprograms) {
   assert(Verify() && "Expected compile unit");
-  getRaw()->replaceSubprograms(cast_or_null<MDTuple>(Subprograms.get()));
+  get()->replaceSubprograms(cast_or_null<MDTuple>(Subprograms.get()));
 }
 
 void DICompileUnit::replaceGlobalVariables(DIArray GlobalVariables) {
   assert(Verify() && "Expected compile unit");
-  getRaw()->replaceGlobalVariables(
-      cast_or_null<MDTuple>(GlobalVariables.get()));
+  get()->replaceGlobalVariables(cast_or_null<MDTuple>(GlobalVariables.get()));
 }
 
 DILocation DILocation::copyWithNewScope(LLVMContext &Ctx,
@@ -571,12 +585,12 @@ DISubprogram llvm::getDISubprogram(const Function *F) {
   // We look for the first instr that has a debug annotation leading back to F.
   for (auto &BB : *F) {
     auto Inst = std::find_if(BB.begin(), BB.end(), [](const Instruction &Inst) {
-      return !Inst.getDebugLoc().isUnknown();
+      return Inst.getDebugLoc();
     });
     if (Inst == BB.end())
       continue;
     DebugLoc DLoc = Inst->getDebugLoc();
-    const MDNode *Scope = DLoc.getScopeNode();
+    const MDNode *Scope = DLoc.getInlinedAtScope();
     DISubprogram Subprogram = getDISubprogram(Scope);
     return Subprogram.describes(F) ? Subprogram : DISubprogram();
   }
@@ -674,6 +688,8 @@ void DebugInfoFinder::processModule(const Module &M) {
       DIArray Imports = CU.getImportedEntities();
       for (unsigned i = 0, e = Imports.getNumElements(); i != e; ++i) {
         DIImportedEntity Import = DIImportedEntity(Imports.getElement(i));
+        if (!Import)
+          continue;
         DIDescriptor Entity = Import.getEntity().resolve(TypeIdentifierMap);
         if (Entity.isType())
           processType(DIType(Entity));
@@ -873,21 +889,24 @@ void DIDescriptor::print(raw_ostream &OS) const {
 
 static void printDebugLoc(DebugLoc DL, raw_ostream &CommentOS,
                           const LLVMContext &Ctx) {
-  if (!DL.isUnknown()) { // Print source line info.
-    DIScope Scope(DL.getScope(Ctx));
-    assert(Scope.isScope() && "Scope of a DebugLoc should be a DIScope.");
-    // Omit the directory, because it's likely to be long and uninteresting.
-    CommentOS << Scope.getFilename();
-    CommentOS << ':' << DL.getLine();
-    if (DL.getCol() != 0)
-      CommentOS << ':' << DL.getCol();
-    DebugLoc InlinedAtDL = DebugLoc::getFromDILocation(DL.getInlinedAt(Ctx));
-    if (!InlinedAtDL.isUnknown()) {
-      CommentOS << " @[ ";
-      printDebugLoc(InlinedAtDL, CommentOS, Ctx);
-      CommentOS << " ]";
-    }
-  }
+  if (!DL)
+    return;
+
+  DIScope Scope(DL.getScope());
+  assert(Scope.isScope() && "Scope of a DebugLoc should be a DIScope.");
+  // Omit the directory, because it's likely to be long and uninteresting.
+  CommentOS << Scope.getFilename();
+  CommentOS << ':' << DL.getLine();
+  if (DL.getCol() != 0)
+    CommentOS << ':' << DL.getCol();
+
+  DebugLoc InlinedAtDL = DL.getInlinedAt();
+  if (!InlinedAtDL)
+    return;
+
+  CommentOS << " @[ ";
+  printDebugLoc(InlinedAtDL, CommentOS, Ctx);
+  CommentOS << " ]";
 }
 
 void DIVariable::printExtendedName(raw_ostream &OS) const {
@@ -895,9 +914,8 @@ void DIVariable::printExtendedName(raw_ostream &OS) const {
   StringRef Res = getName();
   if (!Res.empty())
     OS << Res << "," << getLineNumber();
-  if (MDNode *InlinedAt = getInlinedAt()) {
-    DebugLoc InlinedAtDL = DebugLoc::getFromDILocation(InlinedAt);
-    if (!InlinedAtDL.isUnknown()) {
+  if (auto *InlinedAt = get()->getInlinedAt()) {
+    if (DebugLoc InlinedAtDL = InlinedAt) {
       OS << " @[";
       printDebugLoc(InlinedAtDL, OS, Ctx);
       OS << "]";
@@ -926,6 +944,19 @@ DIScopeRef DIDescriptor::getFieldAs<DIScopeRef>(unsigned Elt) const {
 }
 template <> DITypeRef DIDescriptor::getFieldAs<DITypeRef>(unsigned Elt) const {
   return DITypeRef(cast_or_null<Metadata>(getField(DbgNode, Elt)));
+}
+
+bool llvm::stripDebugInfo(Function &F) {
+  bool Changed = false;
+  for (BasicBlock &BB : F) {
+    for (Instruction &I : BB) {
+      if (I.getDebugLoc()) {
+        Changed = true;
+        I.setDebugLoc(DebugLoc());
+      }
+    }
+  }
+  return Changed;
 }
 
 bool llvm::StripDebugInfo(Module &M) {
@@ -961,16 +992,11 @@ bool llvm::StripDebugInfo(Module &M) {
     }
   }
 
-  for (Module::iterator MI = M.begin(), ME = M.end(); MI != ME; ++MI)
-    for (Function::iterator FI = MI->begin(), FE = MI->end(); FI != FE;
-         ++FI)
-      for (BasicBlock::iterator BI = FI->begin(), BE = FI->end(); BI != BE;
-           ++BI) {
-        if (!BI->getDebugLoc().isUnknown()) {
-          Changed = true;
-          BI->setDebugLoc(DebugLoc());
-        }
-      }
+  for (Function &F : M)
+    Changed |= stripDebugInfo(F);
+
+  if ( GVMaterializer *Materializer = M.getMaterializer())
+    Materializer->setStripDebugInfo();
 
   return Changed;
 }

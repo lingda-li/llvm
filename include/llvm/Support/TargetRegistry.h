@@ -28,8 +28,6 @@
 
 namespace llvm {
   class AsmPrinter;
-  class Module;
-  class MCAssembler;
   class MCAsmBackend;
   class MCAsmInfo;
   class MCAsmParser;
@@ -65,7 +63,8 @@ namespace llvm {
                                 bool RelaxAll);
   MCStreamer *createMachOStreamer(MCContext &Ctx, MCAsmBackend &TAB,
                                   raw_ostream &OS, MCCodeEmitter *CE,
-                                  bool RelaxAll, bool LabelSections = false);
+                                  bool RelaxAll, bool DWARFMustBeAtTheEnd,
+                                  bool LabelSections = false);
 
   MCRelocationInfo *createMCRelocationInfo(StringRef TT, MCContext &Ctx);
 
@@ -125,8 +124,7 @@ namespace llvm {
     typedef MCDisassembler *(*MCDisassemblerCtorTy)(const Target &T,
                                                     const MCSubtargetInfo &STI,
                                                     MCContext &Ctx);
-    typedef MCInstPrinter *(*MCInstPrinterCtorTy)(const Target &T,
-                                                  unsigned SyntaxVariant,
+    typedef MCInstPrinter *(*MCInstPrinterCtorTy)(unsigned SyntaxVariant,
                                                   const MCAsmInfo &MAI,
                                                   const MCInstrInfo &MII,
                                                   const MCRegisterInfo &MRI,
@@ -138,11 +136,9 @@ namespace llvm {
                                              MCAsmBackend &TAB, raw_ostream &OS,
                                              MCCodeEmitter *Emitter,
                                              bool RelaxAll);
-    typedef MCStreamer *(*MachOStreamerCtorTy)(MCContext &Ctx,
-                                               MCAsmBackend &TAB,
-                                               raw_ostream &OS,
-                                               MCCodeEmitter *Emitter,
-                                               bool RelaxAll);
+    typedef MCStreamer *(*MachOStreamerCtorTy)(
+        MCContext &Ctx, MCAsmBackend &TAB, raw_ostream &OS,
+        MCCodeEmitter *Emitter, bool RelaxAll, bool DWARFMustBeAtTheEnd);
     typedef MCStreamer *(*COFFStreamerCtorTy)(MCContext &Ctx, MCAsmBackend &TAB,
                                               raw_ostream &OS,
                                               MCCodeEmitter *Emitter,
@@ -419,7 +415,7 @@ namespace llvm {
                                        const MCSubtargetInfo &STI) const {
       if (!MCInstPrinterCtorFn)
         return nullptr;
-      return MCInstPrinterCtorFn(*this, SyntaxVariant, MAI, MII, MRI, STI);
+      return MCInstPrinterCtorFn(SyntaxVariant, MAI, MII, MRI, STI);
     }
 
 
@@ -444,7 +440,8 @@ namespace llvm {
                                        MCAsmBackend &TAB, raw_ostream &OS,
                                        MCCodeEmitter *Emitter,
                                        const MCSubtargetInfo &STI,
-                                       bool RelaxAll) const {
+                                       bool RelaxAll,
+                                       bool DWARFMustBeAtTheEnd) const {
       MCStreamer *S;
       switch (T.getObjectFormat()) {
       default:
@@ -455,9 +452,11 @@ namespace llvm {
         break;
       case Triple::MachO:
         if (MachOStreamerCtorFn)
-          S = MachOStreamerCtorFn(Ctx, TAB, OS, Emitter, RelaxAll);
+          S = MachOStreamerCtorFn(Ctx, TAB, OS, Emitter, RelaxAll,
+                                  DWARFMustBeAtTheEnd);
         else
-          S = createMachOStreamer(Ctx, TAB, OS, Emitter, RelaxAll);
+          S = createMachOStreamer(Ctx, TAB, OS, Emitter, RelaxAll,
+                                  DWARFMustBeAtTheEnd);
         break;
       case Triple::ELF:
         if (ELFStreamerCtorFn)
