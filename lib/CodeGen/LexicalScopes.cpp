@@ -59,10 +59,10 @@ void LexicalScopes::extractLexicalScopes(
   for (const auto &MBB : *MF) {
     const MachineInstr *RangeBeginMI = nullptr;
     const MachineInstr *PrevMI = nullptr;
-    DebugLoc PrevDL;
+    const MDLocation *PrevDL = nullptr;
     for (const auto &MInsn : MBB) {
       // Check if instruction has valid location information.
-      const DebugLoc &MIDL = MInsn.getDebugLoc();
+      const MDLocation *MIDL = MInsn.getDebugLoc();
       if (!MIDL) {
         PrevMI = &MInsn;
         continue;
@@ -125,39 +125,36 @@ LexicalScope *LexicalScopes::findLexicalScope(const MDLocation *DL) {
 
 /// getOrCreateLexicalScope - Find lexical scope for the given DebugLoc. If
 /// not available then create new lexical scope.
-LexicalScope *LexicalScopes::getOrCreateLexicalScope(const MDLocation *DL) {
-  if (!DL)
-    return nullptr;
-  MDScope *Scope = DL->getScope();
-  if (auto *InlinedAt = DL->getInlinedAt()) {
+LexicalScope *LexicalScopes::getOrCreateLexicalScope(const MDLocalScope *Scope,
+                                                     const MDLocation *IA) {
+  if (IA) {
     // Create an abstract scope for inlined function.
     getOrCreateAbstractScope(Scope);
     // Create an inlined scope for inlined function.
-    return getOrCreateInlinedScope(Scope, InlinedAt);
+    return getOrCreateInlinedScope(Scope, IA);
   }
 
   return getOrCreateRegularScope(Scope);
 }
 
 /// getOrCreateRegularScope - Find or create a regular lexical scope.
-LexicalScope *LexicalScopes::getOrCreateRegularScope(MDNode *Scope) {
-  DIDescriptor D = DIDescriptor(Scope);
-  if (D.isLexicalBlockFile()) {
-    Scope = DILexicalBlockFile(Scope).getScope();
-    D = DIDescriptor(Scope);
-  }
+LexicalScope *
+LexicalScopes::getOrCreateRegularScope(const MDLocalScope *Scope) {
+  if (auto *File = dyn_cast<MDLexicalBlockFile>(Scope))
+    Scope = File->getScope();
 
   auto I = LexicalScopeMap.find(Scope);
   if (I != LexicalScopeMap.end())
     return &I->second;
 
+  // FIXME: Should the following dyn_cast be MDLexicalBlock?
   LexicalScope *Parent = nullptr;
-  if (D.isLexicalBlock())
-    Parent = getOrCreateLexicalScope(DebugLoc::getFromDILexicalBlock(Scope));
+  if (auto *Block = dyn_cast<MDLexicalBlockBase>(Scope))
+    Parent = getOrCreateLexicalScope(Block->getScope());
   I = LexicalScopeMap.emplace(std::piecewise_construct,
                               std::forward_as_tuple(Scope),
-                              std::forward_as_tuple(Parent, DIDescriptor(Scope),
-                                                    nullptr, false)).first;
+                              std::forward_as_tuple(Parent, Scope, nullptr,
+                                                    false)).first;
 
   if (!Parent) {
     assert(DIDescriptor(Scope).isSubprogram());
@@ -170,19 +167,19 @@ LexicalScope *LexicalScopes::getOrCreateRegularScope(MDNode *Scope) {
 }
 
 /// getOrCreateInlinedScope - Find or create an inlined lexical scope.
-LexicalScope *LexicalScopes::getOrCreateInlinedScope(MDNode *ScopeNode,
-                                                     MDNode *InlinedAt) {
-  std::pair<const MDNode*, const MDNode*> P(ScopeNode, InlinedAt);
+LexicalScope *
+LexicalScopes::getOrCreateInlinedScope(const MDLocalScope *Scope,
+                                       const MDLocation *InlinedAt) {
+  std::pair<const MDLocalScope *, const MDLocation *> P(Scope, InlinedAt);
   auto I = InlinedLexicalScopeMap.find(P);
   if (I != InlinedLexicalScopeMap.end())
     return &I->second;
 
   LexicalScope *Parent;
-  DILexicalBlock Scope(ScopeNode);
-  if (Scope.isSubprogram())
-    Parent = getOrCreateLexicalScope(DebugLoc(InlinedAt));
+  if (auto *Block = dyn_cast<MDLexicalBlockBase>(Scope))
+    Parent = getOrCreateInlinedScope(Block->getScope(), InlinedAt);
   else
-    Parent = getOrCreateInlinedScope(Scope.getContext(), InlinedAt);
+    Parent = getOrCreateLexicalScope(InlinedAt);
 
   I = InlinedLexicalScopeMap.emplace(std::piecewise_construct,
                                      std::forward_as_tuple(P),
@@ -193,27 +190,26 @@ LexicalScope *LexicalScopes::getOrCreateInlinedScope(MDNode *ScopeNode,
 }
 
 /// getOrCreateAbstractScope - Find or create an abstract lexical scope.
-LexicalScope *LexicalScopes::getOrCreateAbstractScope(const MDNode *N) {
-  assert(N && "Invalid Scope encoding!");
+LexicalScope *
+LexicalScopes::getOrCreateAbstractScope(const MDLocalScope *Scope) {
+  assert(Scope && "Invalid Scope encoding!");
 
-  DIDescriptor Scope(N);
-  if (Scope.isLexicalBlockFile())
-    Scope = DILexicalBlockFile(Scope).getScope();
+  if (auto *File = dyn_cast<MDLexicalBlockFile>(Scope))
+    Scope = File->getScope();
   auto I = AbstractScopeMap.find(Scope);
   if (I != AbstractScopeMap.end())
     return &I->second;
 
+  // FIXME: Should the following isa be MDLexicalBlock?
   LexicalScope *Parent = nullptr;
-  if (Scope.isLexicalBlock()) {
-    DILexicalBlock DB(Scope);
-    DIDescriptor ParentDesc = DB.getContext();
-    Parent = getOrCreateAbstractScope(ParentDesc);
-  }
+  if (auto *Block = dyn_cast<MDLexicalBlockBase>(Scope))
+    Parent = getOrCreateAbstractScope(Block->getScope());
+
   I = AbstractScopeMap.emplace(std::piecewise_construct,
                                std::forward_as_tuple(Scope),
                                std::forward_as_tuple(Parent, Scope,
                                                      nullptr, true)).first;
-  if (Scope.isSubprogram())
+  if (isa<MDSubprogram>(Scope))
     AbstractScopesList.push_back(&I->second);
   return &I->second;
 }
@@ -309,12 +305,10 @@ bool LexicalScopes::dominates(const MDLocation *DL, MachineBasicBlock *MBB) {
   bool Result = false;
   for (MachineBasicBlock::iterator I = MBB->begin(), E = MBB->end(); I != E;
        ++I) {
-    DebugLoc IDL = I->getDebugLoc();
-    if (!IDL)
-      continue;
-    if (LexicalScope *IScope = getOrCreateLexicalScope(IDL))
-      if (Scope->dominates(IScope))
-        return true;
+    if (const MDLocation *IDL = I->getDebugLoc())
+      if (LexicalScope *IScope = getOrCreateLexicalScope(IDL))
+        if (Scope->dominates(IScope))
+          return true;
   }
   return Result;
 }
