@@ -1045,7 +1045,7 @@ void LoopAccessInfo::analyzeLoop(const ValueToValueMap &Strides) {
     StoreInst *ST = cast<StoreInst>(*I);
     Value* Ptr = ST->getPointerOperand();
     // Check for store to loop invariant address.
-    StoreToLoopInvariantAddress = isUniform(Ptr);
+    StoreToLoopInvariantAddress |= isUniform(Ptr);
     // If we did *not* see this pointer before, insert it to  the read-write
     // list. At this phase it is only a 'write' list.
     if (Seen.insert(Ptr).second) {
