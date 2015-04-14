@@ -293,14 +293,3 @@ else # Building "Apple-style."
 # Look for the string "Apple-style" in utils/buildit/build_llvm.
 include $(shell find . -name GNUmakefile) # Building "Apple-style."
 endif # Building "Apple-style."
- 
- 
- 
- 
- 
- 
- 
- 
- 
- 
- 

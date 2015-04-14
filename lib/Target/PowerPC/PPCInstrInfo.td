@@ -1356,58 +1356,31 @@ let PPC970_Unit = 7 in {
                       "sc $lev", IIC_BrB, [(PPCsc (i32 imm:$lev))]>;
 }
 
-// DCB* instructions. Some of these instructions allow the user to specify an 
-// immediate field ( corresponding to a prefectch hint or flag ) starting from 
-// ISA version 2.03. The DCBimmfield class is used to set the default immediate 
-// for the cases the intrinsic that maps to these instructions does not specify 
-// it. In some instructions the immediate field is not used at all, but we
-// specify it just to be able to reuse the instruction format.
-class DCBimmfield<bits<5> hint > {
-  // Prefetch hint type field
-  bits<5> TH = hint; 
-}
-def DCBA   : DCB_Form<758, (outs), (ins memrr:$dst), "dcba $dst",
-                      IIC_LdStDCBF, [(int_ppc_dcba xoaddr:$dst)]>, 
-                      DCBimmfield<0>, // imm field is unused
+// DCB* instructions.
+def DCBA   : DCB_Form<758, 0, (outs), (ins memrr:$dst), "dcba $dst",
+                      IIC_LdStDCBF, [(int_ppc_dcba xoaddr:$dst)]>,
                       PPC970_DGroup_Single;
-def DCBF   : DCB_Form<86, (outs), (ins memrr:$dst), "dcbf $dst",
-                      IIC_LdStDCBF, [(int_ppc_dcbf xoaddr:$dst)]>, 
-                      DCBimmfield<0>, // imm 1 means the cache flush to be local
+def DCBF   : DCB_Form<86, 0, (outs), (ins memrr:$dst), "dcbf $dst",
+                      IIC_LdStDCBF, [(int_ppc_dcbf xoaddr:$dst)]>,
                       PPC970_DGroup_Single;
-def DCBI   : DCB_Form<470, (outs), (ins memrr:$dst), "dcbi $dst",
-                      IIC_LdStDCBF, [(int_ppc_dcbi xoaddr:$dst)]>, 
-                      DCBimmfield<0>, // imm field is unused
+def DCBI   : DCB_Form<470, 0, (outs), (ins memrr:$dst), "dcbi $dst",
+                      IIC_LdStDCBF, [(int_ppc_dcbi xoaddr:$dst)]>,
                       PPC970_DGroup_Single;
-def DCBST  : DCB_Form<54, (outs), (ins memrr:$dst), "dcbst $dst",
-                      IIC_LdStDCBF, [(int_ppc_dcbst xoaddr:$dst)]>, 
-                      DCBimmfield<0>, // imm field is unused
+def DCBST  : DCB_Form<54, 0, (outs), (ins memrr:$dst), "dcbst $dst",
+                      IIC_LdStDCBF, [(int_ppc_dcbst xoaddr:$dst)]>,
                       PPC970_DGroup_Single;
-def DCBT   : DCB_Form<278, (outs), (ins memrr:$dst), "dcbt $dst",
-                      IIC_LdStDCBF, [(int_ppc_dcbt xoaddr:$dst)]>, 
-                      DCBimmfield<0>, // imm is a prefetch hint 
+def DCBT   : DCB_Form<278, 0, (outs), (ins memrr:$dst), "dcbt $dst",
+                      IIC_LdStDCBF, [(int_ppc_dcbt xoaddr:$dst)]>,
                       PPC970_DGroup_Single;
-def DCBTST : DCB_Form<246, (outs), (ins memrr:$dst), "dcbtst $dst",
+def DCBTST : DCB_Form<246, 0, (outs), (ins memrr:$dst), "dcbtst $dst",
                       IIC_LdStDCBF, [(int_ppc_dcbtst xoaddr:$dst)]>,
-                      DCBimmfield<0>, // imm is a prefetch hint 
                       PPC970_DGroup_Single;
-def DCBZ   : DCB_Form<1014, (outs), (ins memrr:$dst), "dcbz $dst",
-                      IIC_LdStDCBF, [(int_ppc_dcbz xoaddr:$dst)]>, 
-                      DCBimmfield<0>, // imm field is unused
+def DCBZ   : DCB_Form<1014, 0, (outs), (ins memrr:$dst), "dcbz $dst",
+                      IIC_LdStDCBF, [(int_ppc_dcbz xoaddr:$dst)]>,
                       PPC970_DGroup_Single;
-def DCBZL  : DCB_Form<1014, (outs), (ins memrr:$dst), "dcbzl $dst",
-                      IIC_LdStDCBF, [(int_ppc_dcbzl xoaddr:$dst)]>, 
-                      DCBimmfield<1>, // This bit does not have any effect??
+def DCBZL  : DCB_Form<1014, 1, (outs), (ins memrr:$dst), "dcbzl $dst",
+                      IIC_LdStDCBF, [(int_ppc_dcbzl xoaddr:$dst)]>,
                       PPC970_DGroup_Single;
-
-//Variations of DCB* instructions that specify the TH (prefetch hint) field
-def DCBT_TH   : DCB_Form<278, (outs), (ins memrr:$dst, u5imm:$th), 
-                "dcbt $dst, $th",
-                IIC_LdStDCBF, [(int_ppc_dcbt_th xoaddr:$dst, (i32 imm:$th))]>,
-                PPC970_DGroup_Single;
-def DCBTST_TH : DCB_Form<246, (outs), (ins memrr:$dst, u5imm:$th), 
-                "dcbtst $dst, $th",
-                IIC_LdStDCBF, [(int_ppc_dcbtst_th xoaddr:$dst, (i32 imm:$th))]>,
-                PPC970_DGroup_Single;
 
 def ICBT  : XForm_icbt<31, 22, (outs), (ins u4imm:$CT, memrr:$src),
                        "icbt $CT, $src", IIC_LdStLoad>, Requires<[HasICBT]>;

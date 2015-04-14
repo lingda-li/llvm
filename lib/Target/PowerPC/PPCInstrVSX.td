@@ -505,23 +505,7 @@ let Uses = [RM] in {
                       (outs vsrc:$XT), (ins vsrc:$XB),
                       "xvnegsp $XT, $XB", IIC_VecFP,
                       [(set v4f32:$XT, (fneg v4f32:$XB))]>;
-  
-  // FIXME: Currently these move instructions between fixed and floating point 
-  // registers are only used by the FastIsel. We should identify other cases 
-  // in ISelLowering that can leverage these instructions and add the proper 
-  // patterns here.
-  let B = 0 /*register B of the XX1Form format is unused*/ in {
-  def MTFPRD : XX1Form<31, 179,
-                        (outs vsfrc:$XT), (ins g8rc:$src),
-                        "mtfprd $XT, $src", IIC_VecFP,[]>;
-  def MTFPRWA : XX1Form<31, 211,
-                        (outs vsfrc:$XT), (ins gprc:$src),
-                        "mtfprwa $XT, $src", IIC_VecFP, []>;
-  def MTFPRWZ : XX1Form<31, 243,
-                        (outs vsfrc:$XT), (ins gprc:$src),
-                        "mtfprwz $XT, $src", IIC_VecFP, []>;
-  }
-        
+
   // Conversion Instructions
   def XSCVDPSP : XX2Form<60, 265,
                       (outs vsfrc:$XT), (ins vsfrc:$XB),
