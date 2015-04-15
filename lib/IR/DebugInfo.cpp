@@ -33,19 +33,7 @@
 using namespace llvm;
 using namespace llvm::dwarf;
 
-//===----------------------------------------------------------------------===//
-// Simple Descriptor Constructors and other Methods
-//===----------------------------------------------------------------------===//
-
 DIScopeRef DIScope::getRef() const { return MDScopeRef::get(get()); }
-
-void DICompileUnit::replaceSubprograms(DIArray Subprograms) {
-  get()->replaceSubprograms(MDSubprogramArray(Subprograms));
-}
-
-void DICompileUnit::replaceGlobalVariables(DIArray GlobalVariables) {
-  get()->replaceGlobalVariables(MDGlobalVariableArray(GlobalVariables));
-}
 
 DIVariable llvm::createInlinedVariable(MDNode *DV, MDNode *InlinedScope,
                                        LLVMContext &VMContext) {
@@ -74,7 +62,7 @@ DISubprogram llvm::getDISubprogram(const Function *F) {
     DebugLoc DLoc = Inst->getDebugLoc();
     const MDNode *Scope = DLoc.getInlinedAtScope();
     DISubprogram Subprogram = getDISubprogram(Scope);
-    return Subprogram.describes(F) ? Subprogram : DISubprogram();
+    return Subprogram->describes(F) ? Subprogram : DISubprogram();
   }
 
   return DISubprogram();
@@ -194,7 +182,7 @@ void DebugInfoFinder::processType(DIType DT) {
         processType(Ref.resolve(TypeIdentifierMap));
       return;
     }
-    for (Metadata *D : DCT->getElements()->operands()) {
+    for (Metadata *D : DCT->getElements()) {
       if (DIType T = dyn_cast<MDType>(D))
         processType(T);
       else if (DISubprogram SP = dyn_cast<MDSubprogram>(D))
@@ -222,25 +210,23 @@ void DebugInfoFinder::processScope(DIScope Scope) {
   }
   if (!addScope(Scope))
     return;
-  if (DILexicalBlock LB = dyn_cast<MDLexicalBlockBase>(Scope)) {
-    processScope(LB.getContext());
-  } else if (DINameSpace NS = dyn_cast<MDNamespace>(Scope)) {
-    processScope(NS.getContext());
+  if (auto *LB = dyn_cast<MDLexicalBlockBase>(Scope)) {
+    processScope(LB->getScope());
+  } else if (auto *NS = dyn_cast<MDNamespace>(Scope)) {
+    processScope(NS->getScope());
   }
 }
 
 void DebugInfoFinder::processSubprogram(DISubprogram SP) {
   if (!addSubprogram(SP))
     return;
-  processScope(SP.getContext().resolve(TypeIdentifierMap));
-  processType(SP.getType());
-  for (auto *Element : SP.getTemplateParams()) {
-    if (DITemplateTypeParameter TType =
-            dyn_cast<MDTemplateTypeParameter>(Element)) {
-      processType(TType.getType().resolve(TypeIdentifierMap));
-    } else if (DITemplateValueParameter TVal =
-                   dyn_cast<MDTemplateValueParameter>(Element)) {
-      processType(TVal.getType().resolve(TypeIdentifierMap));
+  processScope(SP->getScope().resolve(TypeIdentifierMap));
+  processType(SP->getType());
+  for (auto *Element : SP->getTemplateParams()) {
+    if (auto *TType = dyn_cast<MDTemplateTypeParameter>(Element)) {
+      processType(TType->getType().resolve(TypeIdentifierMap));
+    } else if (auto *TVal = dyn_cast<MDTemplateValueParameter>(Element)) {
+      processType(TVal->getType().resolve(TypeIdentifierMap));
     }
   }
 }
@@ -436,7 +422,7 @@ llvm::makeSubprogramMap(const Module &M) {
   for (MDNode *N : CU_Nodes->operands()) {
     DICompileUnit CUNode = cast<MDCompileUnit>(N);
     for (DISubprogram SP : CUNode->getSubprograms()) {
-      if (Function *F = SP.getFunction())
+      if (Function *F = SP->getFunction())
         R.insert(std::make_pair(F, SP));
     }
   }

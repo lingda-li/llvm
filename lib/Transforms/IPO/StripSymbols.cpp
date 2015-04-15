@@ -317,7 +317,7 @@ bool StripDeadDebugInfo::runOnModule(Module &M) {
         continue;
 
       // If the function referenced by DISP is not null, the function is live.
-      if (DISP.getFunction())
+      if (DISP->getFunction())
         LiveSubprograms.push_back(DISP);
       else
         SubprogramChange = true;
@@ -345,7 +345,7 @@ bool StripDeadDebugInfo::runOnModule(Module &M) {
     // subprogram list/global variable list with our new live subprogram/global
     // variable list.
     if (SubprogramChange) {
-      DIC.replaceSubprograms(DIArray(MDNode::get(C, LiveSubprograms)));
+      DIC.replaceSubprograms(MDTuple::get(C, LiveSubprograms));
       Changed = true;
     }
 
