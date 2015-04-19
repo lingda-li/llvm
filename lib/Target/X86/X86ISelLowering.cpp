@@ -6918,8 +6918,13 @@ static SDValue getScalarValueForVectorElement(SDValue V, int Idx,
     return SDValue();
 
   if (V.getOpcode() == ISD::BUILD_VECTOR ||
-      (Idx == 0 && V.getOpcode() == ISD::SCALAR_TO_VECTOR))
-    return DAG.getNode(ISD::BITCAST, SDLoc(V), EltVT, V.getOperand(Idx));
+      (Idx == 0 && V.getOpcode() == ISD::SCALAR_TO_VECTOR)) {
+    // Ensure the scalar operand is the same size as the destination.
+    // FIXME: Add support for scalar truncation where possible.
+    SDValue S = V.getOperand(Idx);
+    if (EltVT.getSizeInBits() == S.getSimpleValueType().getSizeInBits())
+      return DAG.getNode(ISD::BITCAST, SDLoc(V), EltVT, S);
+  }
 
   return SDValue();
 }
@@ -12816,6 +12821,16 @@ SDValue X86TargetLowering::getRecipEstimate(SDValue Op,
     return DCI.DAG.getNode(X86ISD::FRCP, SDLoc(Op), VT, Op);
   }
   return SDValue();
+}
+
+/// If we have at least two divisions that use the same divisor, convert to
+/// multplication by a reciprocal. This may need to be adjusted for a given
+/// CPU if a division's cost is not at least twice the cost of a multiplication.
+/// This is because we still need one division to calculate the reciprocal and
+/// then we need two multiplies by that reciprocal as replacements for the
+/// original divisions.
+bool X86TargetLowering::combineRepeatedFPDivisors(unsigned NumUsers) const {
+  return NumUsers > 1;
 }
 
 static bool isAllOnes(SDValue V) {
