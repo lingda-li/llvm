@@ -253,7 +253,7 @@ Init *StringRecTy::convertValue(UnOpInit *BO) {
     Init *L = BO->getOperand()->convertInitializerTo(this);
     if (!L) return nullptr;
     if (L != BO->getOperand())
-      return UnOpInit::get(UnOpInit::CAST, L, new StringRecTy);
+      return UnOpInit::get(UnOpInit::CAST, L, StringRecTy::get());
     return BO;
   }
 
@@ -266,7 +266,7 @@ Init *StringRecTy::convertValue(BinOpInit *BO) {
     Init *R = BO->getRHS()->convertInitializerTo(this);
     if (!L || !R) return nullptr;
     if (L != BO->getLHS() || R != BO->getRHS())
-      return BinOpInit::get(BinOpInit::STRCONCAT, L, R, new StringRecTy);
+      return BinOpInit::get(BinOpInit::STRCONCAT, L, R, StringRecTy::get());
     return BO;
   }
 
@@ -345,7 +345,7 @@ Init *DagRecTy::convertValue(BinOpInit *BO) {
 }
 
 RecordRecTy *RecordRecTy::get(Record *R) {
-  return dyn_cast<RecordRecTy>(R->getDefInit()->getType());
+  return cast<RecordRecTy>(R->getDefInit()->getType());
 }
 
 std::string RecordRecTy::getAsString() const {
@@ -517,7 +517,7 @@ std::string BitsInit::getAsString() const {
 // bits initializer will resolve into VarBitInit to keep the field name and bit
 // number used in targets with fixed insn length.
 static Init *fixBitInit(const RecordVal *RV, Init *Before, Init *After) {
-  if (RV || After != UnsetInit::get())
+  if (RV || !isa<UnsetInit>(After))
     return After;
   return Before;
 }
@@ -1961,7 +1961,7 @@ bool Record::getValueAsBitOrUnset(StringRef FieldName, bool &Unset) const {
     PrintFatalError(getLoc(), "Record `" + getName() +
       "' does not have a field named `" + FieldName.str() + "'!\n");
 
-  if (R->getValue() == UnsetInit::get()) {
+  if (isa<UnsetInit>(R->getValue())) {
     Unset = true;
     return false;
   }

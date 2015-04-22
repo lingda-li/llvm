@@ -4463,8 +4463,7 @@ bool SelectionDAGBuilder::EmitFuncArgumentDbgValue(
   // Ignore inlined function arguments here.
   //
   // FIXME: Should we be checking DL->inlinedAt() to determine this?
-  DIVariable DV(Variable);
-  if (!DV->getScope()->getSubprogram()->describes(MF.getFunction()))
+  if (!Variable->getScope()->getSubprogram()->describes(MF.getFunction()))
     return false;
 
   Optional<MachineOperand> Op;
@@ -4650,8 +4649,8 @@ SelectionDAGBuilder::visitIntrinsicCall(const CallInst &I, unsigned Intrinsic) {
     MDLocalVariable *Variable = DI.getVariable();
     MDExpression *Expression = DI.getExpression();
     const Value *Address = DI.getAddress();
-    DIVariable DIVar = Variable;
-    if (!Address || !DIVar) {
+    assert(Variable && "Missing variable");
+    if (!Address) {
       DEBUG(dbgs() << "Dropping debug info for " << DI << "\n");
       return nullptr;
     }
@@ -4672,9 +4671,8 @@ SelectionDAGBuilder::visitIntrinsicCall(const CallInst &I, unsigned Intrinsic) {
       if (const BitCastInst *BCI = dyn_cast<BitCastInst>(Address))
         Address = BCI->getOperand(0);
       // Parameters are handled specially.
-      bool isParameter =
-        (DIVariable(Variable)->getTag() == dwarf::DW_TAG_arg_variable ||
-         isa<Argument>(Address));
+      bool isParameter = Variable->getTag() == dwarf::DW_TAG_arg_variable ||
+                         isa<Argument>(Address);
 
       const AllocaInst *AI = dyn_cast<AllocaInst>(Address);
 
@@ -4728,9 +4726,7 @@ SelectionDAGBuilder::visitIntrinsicCall(const CallInst &I, unsigned Intrinsic) {
   }
   case Intrinsic::dbg_value: {
     const DbgValueInst &DI = cast<DbgValueInst>(I);
-    DIVariable DIVar = DI.getVariable();
-    if (!DIVar)
-      return nullptr;
+    assert(DI.getVariable() && "Missing variable");
 
     MDLocalVariable *Variable = DI.getVariable();
     MDExpression *Expression = DI.getExpression();
