@@ -384,17 +384,18 @@ void llvm::RemapInstruction(Instruction *I, ValueToValueMapTy &VMap,
       I->setMetadata(MI->first, New);
   }
   
+  if (!TypeMapper)
+    return;
+
   // If the instruction's type is being remapped, do so now.
   if (auto CS = CallSite(I)) {
     SmallVector<Type *, 3> Tys;
-    FunctionType *Old = CS.getFunctionType();
-    unsigned NumOld = Old->getNumParams();
-    assert(NumOld <= CS.arg_size());
-    for (unsigned i = 0; i != NumOld; ++i)
-      Tys.push_back(CS.getArgument(i)->getType());
+    FunctionType *FTy = CS.getFunctionType();
+    Tys.reserve(FTy->getNumParams());
+    for (Type *Ty : FTy->params())
+      Tys.push_back(TypeMapper->remapType(Ty));
     CS.mutateFunctionType(FunctionType::get(
-        TypeMapper ? TypeMapper->remapType(I->getType()) : I->getType(), Tys,
-        Old->isVarArg()));
-  } else if (TypeMapper)
+        TypeMapper->remapType(I->getType()), Tys, FTy->isVarArg()));
+  } else
     I->mutateType(TypeMapper->remapType(I->getType()));
 }
