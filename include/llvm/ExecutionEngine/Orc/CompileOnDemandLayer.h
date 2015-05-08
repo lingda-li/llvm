@@ -69,6 +69,13 @@ private:
   // searching and resource management are handled by the LogicalDylib that owns
   // the LogicalModule.
   struct LogicalModule {
+    LogicalModule() {}
+
+    LogicalModule(LogicalModule &&Other)
+        : SrcM(std::move(Other.SrcM)),
+          GVsAndStubsHandle(std::move(Other.GVsAndStubsHandle)),
+          ImplHandles(std::move(Other.ImplHandles)) {}
+
     std::unique_ptr<Module> SrcM;
     BaseLayerModuleSetHandleT GVsAndStubsHandle;
     std::vector<BaseLayerModuleSetHandleT> ImplHandles;

@@ -437,7 +437,7 @@ void Verifier::visitGlobalValue(const GlobalValue &GV) {
 
   if (GV.hasAppendingLinkage()) {
     const GlobalVariable *GVar = dyn_cast<GlobalVariable>(&GV);
-    Assert(GVar && GVar->getType()->getElementType()->isArrayTy(),
+    Assert(GVar && GVar->getValueType()->isArrayTy(),
            "Only global arrays can have appending linkage!", GVar);
   }
 }
@@ -469,7 +469,7 @@ void Verifier::visitGlobalVariable(const GlobalVariable &GV) {
            "invalid linkage for intrinsic global variable", &GV);
     // Don't worry about emitting an error for it not being an array,
     // visitGlobalValue will complain on appending non-array.
-    if (ArrayType *ATy = dyn_cast<ArrayType>(GV.getType()->getElementType())) {
+    if (ArrayType *ATy = dyn_cast<ArrayType>(GV.getValueType())) {
       StructType *STy = dyn_cast<StructType>(ATy->getElementType());
       PointerType *FuncPtrTy =
           FunctionType::get(Type::getVoidTy(*Context), false)->getPointerTo();
@@ -1350,9 +1350,10 @@ void Verifier::VerifyParameterAttrs(AttributeSet Attrs, unsigned Idx, Type *Ty,
          V);
 
   Assert(!AttrBuilder(Attrs, Idx)
-              .hasAttributes(AttributeFuncs::typeIncompatible(Ty, Idx), Idx),
+              .overlaps(AttributeFuncs::typeIncompatible(Ty)),
          "Wrong types for attribute: " +
-             AttributeFuncs::typeIncompatible(Ty, Idx).getAsString(Idx),
+         AttributeSet::get(*Context, Idx,
+                        AttributeFuncs::typeIncompatible(Ty)).getAsString(Idx),
          V);
 
   if (PointerType *PTy = dyn_cast<PointerType>(Ty)) {
@@ -3315,7 +3316,7 @@ void Verifier::visitIntrinsicFunctionCall(Intrinsic::ID ID, CallInst &CI) {
     // Verify rest of the relocate arguments
 
     GCRelocateOperands ops(&CI);
-    ImmutableCallSite StatepointCS(ops.statepoint());
+    ImmutableCallSite StatepointCS(ops.getStatepoint());
 
     // Both the base and derived must be piped through the safepoint
     Value* Base = CI.getArgOperand(1);
@@ -3362,7 +3363,7 @@ void Verifier::visitIntrinsicFunctionCall(Intrinsic::ID ID, CallInst &CI) {
 
     // Assert that the result type matches the type of the relocated pointer
     GCRelocateOperands Operands(&CI);
-    Assert(Operands.derivedPtr()->getType() == CI.getType(),
+    Assert(Operands.getDerivedPtr()->getType() == CI.getType(),
            "gc.relocate: relocating a pointer shouldn't change its type", &CI);
     break;
   }

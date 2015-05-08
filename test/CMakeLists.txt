@@ -52,7 +52,9 @@ set(LLVM_TEST_DEPENDS
           FileCheck
           count
           not
+          yaml-bench
           yaml2obj
+          yaml-bench
           obj2yaml
           verify-uselistorder
         )

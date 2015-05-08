@@ -117,6 +117,12 @@ uint64_t Argument::getDereferenceableBytes() const {
   return getParent()->getDereferenceableBytes(getArgNo()+1);
 }
 
+uint64_t Argument::getDereferenceableOrNullBytes() const {
+  assert(getType()->isPointerTy() &&
+         "Only pointers have dereferenceable bytes");
+  return getParent()->getDereferenceableOrNullBytes(getArgNo()+1);
+}
+
 /// hasNestAttr - Return true if this argument has the nest attribute on
 /// it in its containing function.
 bool Argument::hasNestAttr() const {
@@ -968,4 +974,17 @@ void Function::setPrologueData(Constant *PrologueData) {
     PDData &= ~(1<<2);
   }
   setValueSubclassData(PDData);
+}
+
+void llvm::overrideFunctionAttribute(StringRef Kind, StringRef Value,
+                                     Function &F) {
+  auto &Ctx = F.getContext();
+  AttributeSet Attrs = F.getAttributes(), AttrsToRemove;
+
+  AttrsToRemove =
+      AttrsToRemove.addAttribute(Ctx, AttributeSet::FunctionIndex, Kind);
+  Attrs = Attrs.removeAttributes(Ctx, AttributeSet::FunctionIndex,
+                                 AttrsToRemove);
+  Attrs = Attrs.addAttribute(Ctx, AttributeSet::FunctionIndex, Kind, Value);
+  F.setAttributes(Attrs);
 }
