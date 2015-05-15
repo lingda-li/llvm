@@ -670,6 +670,7 @@ CountValue *HexagonHardwareLoops::getLoopTripCount(MachineLoop *L,
     MachineBasicBlock *DefBB = MRI->getVRegDef(R)->getParent();
     if (!MDT->properlyDominates(DefBB, Header))
       return nullptr;
+    OldInsts.push_back(MRI->getVRegDef(R));
   }
 
   return computeCount(L, InitialValue, EndValue, IVReg, IVBump, Cmp);
@@ -693,12 +694,14 @@ CountValue *HexagonHardwareLoops::computeCount(MachineLoop *Loop,
   // If so, use the immediate value rather than the register.
   if (Start->isReg()) {
     const MachineInstr *StartValInstr = MRI->getVRegDef(Start->getReg());
-    if (StartValInstr && StartValInstr->getOpcode() == Hexagon::A2_tfrsi)
+    if (StartValInstr && (StartValInstr->getOpcode() == Hexagon::A2_tfrsi ||
+                          StartValInstr->getOpcode() == Hexagon::A2_tfrpi))
       Start = &StartValInstr->getOperand(1);
   }
   if (End->isReg()) {
     const MachineInstr *EndValInstr = MRI->getVRegDef(End->getReg());
-    if (EndValInstr && EndValInstr->getOpcode() == Hexagon::A2_tfrsi)
+    if (EndValInstr && (EndValInstr->getOpcode() == Hexagon::A2_tfrsi ||
+                        EndValInstr->getOpcode() == Hexagon::A2_tfrpi))
       End = &EndValInstr->getOperand(1);
   }
 
@@ -1716,7 +1719,52 @@ bool HexagonHardwareLoops::fixupInductionVariable(MachineLoop *L) {
     // compared against an immediate, we can fix it.
     const RegisterBump &RB = I->second;
     if (CmpRegs.count(RB.first)) {
-      if (!CmpImmOp)
+      if (!CmpImmOp) {
+        // If both operands to the compare instruction are registers, see if
+        // it can be changed to use induction register as one of the operands.
+        MachineInstr *IndI = nullptr;
+        MachineInstr *nonIndI = nullptr;
+        MachineOperand *IndMO = nullptr;
+        MachineOperand *nonIndMO = nullptr;
+
+        for (unsigned i = 1, n = PredDef->getNumOperands(); i < n; ++i) {
+          MachineOperand &MO = PredDef->getOperand(i);
+          if (MO.isReg() && MO.getReg() == RB.first) {
+            DEBUG(dbgs() << "\n DefMI(" << i << ") = "
+                         << *(MRI->getVRegDef(I->first)));
+            if (IndI)
+              return false;
+
+            IndI = MRI->getVRegDef(I->first);
+            IndMO = &MO;
+          } else if (MO.isReg()) {
+            DEBUG(dbgs() << "\n DefMI(" << i << ") = "
+                         << *(MRI->getVRegDef(MO.getReg())));
+            if (nonIndI)
+              return false;
+
+            nonIndI = MRI->getVRegDef(MO.getReg());
+            nonIndMO = &MO;
+          }
+        }
+        if (IndI && nonIndI &&
+            nonIndI->getOpcode() == Hexagon::A2_addi &&
+            nonIndI->getOperand(2).isImm() &&
+            nonIndI->getOperand(2).getImm() == - RB.second) {
+          bool Order = orderBumpCompare(IndI, PredDef);
+          if (Order) {
+            IndMO->setReg(I->first);
+            nonIndMO->setReg(nonIndI->getOperand(1).getReg());
+            return true;
+          }
+        }
+        return false;
+      }
+
+      // It is not valid to do this transformation on an unsigned comparison
+      // because it may underflow.
+      Comparison::Kind Cmp = getComparisonKind(PredDef->getOpcode(), 0, 0, 0);
+      if (!Cmp || Comparison::isUnsigned(Cmp))
         return false;
 
       // If the register is being compared against an immediate, try changing
@@ -1735,12 +1783,6 @@ bool HexagonHardwareLoops::fixupInductionVariable(MachineLoop *L) {
       if (CmpImmOp->isImm())
         if (!isImmValidForOpcode(PredDef->getOpcode(), CmpImm))
           return false;
-
-      // It is not valid to do this transformation on an unsigned comparison
-      // because it may underflow.
-      Comparison::Kind Cmp = getComparisonKind(PredDef->getOpcode(), 0, 0, 0);
-      if (!Cmp || Comparison::isUnsigned(Cmp))
-        return false;
 
       // Make sure that the compare happens after the bump.  Otherwise,
       // after the fixup, the compare would use a yet-undefined register.
@@ -1832,11 +1874,14 @@ MachineBasicBlock *HexagonHardwareLoops::createPreheaderForLoop(
       // created PHI node in the preheader.
       for (unsigned i = 1, n = PN->getNumOperands(); i < n; i += 2) {
         unsigned PredR = PN->getOperand(i).getReg();
+        unsigned PredRSub = PN->getOperand(i).getSubReg();
         MachineBasicBlock *PredB = PN->getOperand(i+1).getMBB();
         if (PredB == Latch)
           continue;
 
-        NewPN->addOperand(MachineOperand::CreateReg(PredR, false));
+        MachineOperand MO = MachineOperand::CreateReg(PredR, false);
+        MO.setSubReg(PredRSub);
+        NewPN->addOperand(MO);
         NewPN->addOperand(MachineOperand::CreateMBB(PredB));
       }
 
