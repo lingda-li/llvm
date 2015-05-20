@@ -448,6 +448,8 @@ public:
 
   /// Warn if RegIndex is the same as the current AT.
   void warnIfRegIndexIsAT(unsigned RegIndex, SMLoc Loc);
+
+  void warnIfNoMacro(SMLoc Loc);
 };
 }
 
@@ -1758,9 +1760,8 @@ bool MipsAsmParser::loadImmediate(int64_t ImmValue, unsigned DstReg,
     tmpInst.addOperand(MCOperand::createReg(SrcReg));
     tmpInst.addOperand(MCOperand::createImm(ImmValue));
     Instructions.push_back(tmpInst);
-  } else if ((ImmValue & 0xffffffff) == ImmValue) {
-    if (!AssemblerOptions.back()->isMacro())
-      Warning(IDLoc, "macro instruction expanded into multiple instructions");
+  } else if (isInt<32>(ImmValue) || isUInt<32>(ImmValue)) {
+    warnIfNoMacro(IDLoc);
 
     // For all other values which are representable as a 32-bit integer:
     // li d,j => lui d,hi16(j)
@@ -1768,10 +1769,23 @@ bool MipsAsmParser::loadImmediate(int64_t ImmValue, unsigned DstReg,
     uint16_t Bits31To16 = (ImmValue >> 16) & 0xffff;
     uint16_t Bits15To0 = ImmValue & 0xffff;
 
-    tmpInst.setOpcode(Mips::LUi);
-    tmpInst.addOperand(MCOperand::createReg(DstReg));
-    tmpInst.addOperand(MCOperand::createImm(Bits31To16));
-    Instructions.push_back(tmpInst);
+    if (!Is32BitImm && !isInt<32>(ImmValue)) {
+      // For DLI, expand to an ORi instead of a LUi to avoid sign-extending the
+      // upper 32 bits.
+      tmpInst.setOpcode(Mips::ORi);
+      tmpInst.addOperand(MCOperand::createReg(DstReg));
+      tmpInst.addOperand(MCOperand::createReg(Mips::ZERO));
+      tmpInst.addOperand(MCOperand::createImm(Bits31To16));
+      tmpInst.setLoc(IDLoc);
+      Instructions.push_back(tmpInst);
+      // Move the value to the upper 16 bits by doing a 16-bit left shift.
+      createLShiftOri<16>(0, DstReg, IDLoc, Instructions);
+    } else {
+      tmpInst.setOpcode(Mips::LUi);
+      tmpInst.addOperand(MCOperand::createReg(DstReg));
+      tmpInst.addOperand(MCOperand::createImm(Bits31To16));
+      Instructions.push_back(tmpInst);
+    }
     createLShiftOri<0>(Bits15To0, DstReg, IDLoc, Instructions);
 
     if (UseSrcReg)
@@ -1782,8 +1796,7 @@ bool MipsAsmParser::loadImmediate(int64_t ImmValue, unsigned DstReg,
       Error(IDLoc, "instruction requires a 32-bit immediate");
       return true;
     }
-    if (!AssemblerOptions.back()->isMacro())
-      Warning(IDLoc, "macro instruction expanded into multiple instructions");
+    warnIfNoMacro(IDLoc);
 
     //            <-------  lo32 ------>
     // <-------  hi32 ------>
@@ -1817,8 +1830,7 @@ bool MipsAsmParser::loadImmediate(int64_t ImmValue, unsigned DstReg,
       Error(IDLoc, "instruction requires a 32-bit immediate");
       return true;
     }
-    if (!AssemblerOptions.back()->isMacro())
-      Warning(IDLoc, "macro instruction expanded into multiple instructions");
+    warnIfNoMacro(IDLoc);
 
     // <-------  hi32 ------> <-------  lo32 ------>
     // <- hi16 ->                        <- lo16 ->
@@ -1921,8 +1933,7 @@ MipsAsmParser::expandLoadAddressImm(MCInst &Inst, bool Is32BitImm, SMLoc IDLoc,
 void MipsAsmParser::expandLoadAddressSym(
     const MCOperand &DstRegOp, const MCOperand &SymOp, bool Is32BitSym,
     SMLoc IDLoc, SmallVectorImpl<MCInst> &Instructions) {
-  if (!AssemblerOptions.back()->isMacro())
-    Warning(IDLoc, "macro instruction expanded into multiple instructions");
+  warnIfNoMacro(IDLoc);
 
   if (Is32BitSym && isABI_N64())
     Warning(IDLoc, "instruction loads the 32-bit address of a 64-bit symbol");
@@ -2243,6 +2254,11 @@ void MipsAsmParser::warnIfRegIndexIsAT(unsigned RegIndex, SMLoc Loc) {
                      ") without \".set noat\"");
 }
 
+void MipsAsmParser::warnIfNoMacro(SMLoc Loc) {
+  if (!AssemblerOptions.back()->isMacro())
+    Warning(Loc, "macro instruction expanded into multiple instructions");
+}
+
 void
 MipsAsmParser::printWarningWithFixIt(const Twine &Msg, const Twine &FixMsg,
                                      SMRange Range, bool ShowColors) {
@@ -2482,7 +2498,7 @@ bool MipsAsmParser::parseOperand(OperandVector &Operands, StringRef Mnemonic) {
       return true;
 
     SMLoc E = SMLoc::getFromPointer(Parser.getTok().getLoc().getPointer() - 1);
-    MCSymbol *Sym = getContext().GetOrCreateSymbol("$" + Identifier);
+    MCSymbol *Sym = getContext().getOrCreateSymbol("$" + Identifier);
     // Otherwise create a symbol reference.
     const MCExpr *Res =
         MCSymbolRefExpr::Create(Sym, MCSymbolRefExpr::VK_None, getContext());
@@ -2783,7 +2799,7 @@ MipsAsmParser::parseMemOperand(OperandVector &Operands) {
 
 bool MipsAsmParser::searchSymbolAlias(OperandVector &Operands) {
   MCAsmParser &Parser = getParser();
-  MCSymbol *Sym = getContext().LookupSymbol(Parser.getTok().getIdentifier());
+  MCSymbol *Sym = getContext().lookupSymbol(Parser.getTok().getIdentifier());
   if (Sym) {
     SMLoc S = Parser.getTok().getLoc();
     const MCExpr *Expr;
@@ -3616,7 +3632,7 @@ bool MipsAsmParser::parseSetAssignment() {
   if (Parser.parseExpression(Value))
     return reportParseError("expected valid expression after comma");
 
-  MCSymbol *Sym = getContext().GetOrCreateSymbol(Name);
+  MCSymbol *Sym = getContext().getOrCreateSymbol(Name);
   Sym->setVariableValue(Value);
 
   return false;
@@ -4278,7 +4294,7 @@ bool MipsAsmParser::ParseDirective(AsmToken DirectiveID) {
       return false;
     }
 
-    MCSymbol *Sym = getContext().GetOrCreateSymbol(SymbolName);
+    MCSymbol *Sym = getContext().getOrCreateSymbol(SymbolName);
 
     getTargetStreamer().emitDirectiveEnt(*Sym);
     CurrentFn = Sym;

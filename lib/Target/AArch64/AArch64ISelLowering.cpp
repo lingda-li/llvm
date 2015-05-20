@@ -679,6 +679,12 @@ void AArch64TargetLowering::addTypeForNEON(EVT VT, EVT PromotedBitwiseVT) {
   setOperationAction(ISD::FP_TO_SINT, VT.getSimpleVT(), Custom);
   setOperationAction(ISD::FP_TO_UINT, VT.getSimpleVT(), Custom);
 
+  // [SU][MIN|MAX] are available for all NEON types apart from i64.
+  if (!VT.isFloatingPoint() &&
+      VT.getSimpleVT() != MVT::v2i64 && VT.getSimpleVT() != MVT::v1i64)
+    for (unsigned Opcode : {ISD::SMIN, ISD::SMAX, ISD::UMIN, ISD::UMAX})
+      setOperationAction(Opcode, VT.getSimpleVT(), Legal);
+
   if (Subtarget->isLittleEndian()) {
     for (unsigned im = (unsigned)ISD::PRE_INC;
          im != (unsigned)ISD::LAST_INDEXED_MODE; ++im) {
@@ -9095,7 +9101,7 @@ Value *AArch64TargetLowering::emitStoreConditional(IRBuilder<> &Builder,
     Value *Lo = Builder.CreateTrunc(Val, Int64Ty, "lo");
     Value *Hi = Builder.CreateTrunc(Builder.CreateLShr(Val, 64), Int64Ty, "hi");
     Addr = Builder.CreateBitCast(Addr, Type::getInt8PtrTy(M->getContext()));
-    return Builder.CreateCall3(Stxr, Lo, Hi, Addr);
+    return Builder.CreateCall(Stxr, {Lo, Hi, Addr});
   }
 
   Intrinsic::ID Int =
@@ -9103,10 +9109,10 @@ Value *AArch64TargetLowering::emitStoreConditional(IRBuilder<> &Builder,
   Type *Tys[] = { Addr->getType() };
   Function *Stxr = Intrinsic::getDeclaration(M, Int, Tys);
 
-  return Builder.CreateCall2(
-      Stxr, Builder.CreateZExtOrBitCast(
-                Val, Stxr->getFunctionType()->getParamType(0)),
-      Addr);
+  return Builder.CreateCall(Stxr,
+                            {Builder.CreateZExtOrBitCast(
+                                 Val, Stxr->getFunctionType()->getParamType(0)),
+                             Addr});
 }
 
 bool AArch64TargetLowering::functionArgumentNeedsConsecutiveRegisters(
