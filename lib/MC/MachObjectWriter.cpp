@@ -115,7 +115,7 @@ uint64_t MachObjectWriter::getPaddingSize(const MCSectionData *SD,
   const MCSectionData &NextSD = *Layout.getSectionOrder()[Next];
   if (NextSD.getSection().isVirtualSection())
     return 0;
-  return OffsetToAlignment(EndAddr, NextSD.getAlignment());
+  return OffsetToAlignment(EndAddr, NextSD.getSection().getAlignment());
 }
 
 void MachObjectWriter::WriteHeader(unsigned NumLoadCommands,
@@ -199,9 +199,10 @@ void MachObjectWriter::WriteSection(const MCAssembler &Asm,
                                     uint64_t RelocationsStart,
                                     unsigned NumRelocations) {
   uint64_t SectionSize = Layout.getSectionAddressSize(&SD);
+  const MCSectionMachO &Section = cast<MCSectionMachO>(SD.getSection());
 
   // The offset is unused for virtual sections.
-  if (SD.getSection().isVirtualSection()) {
+  if (Section.isVirtualSection()) {
     assert(Layout.getSectionFileSize(&SD) == 0 && "Invalid file size!");
     FileOffset = 0;
   }
@@ -212,7 +213,6 @@ void MachObjectWriter::WriteSection(const MCAssembler &Asm,
   uint64_t Start = OS.tell();
   (void) Start;
 
-  const MCSectionMachO &Section = cast<MCSectionMachO>(SD.getSection());
   WriteBytes(Section.getSectionName(), 16);
   WriteBytes(Section.getSegmentName(), 16);
   if (is64Bit()) {
@@ -228,8 +228,8 @@ void MachObjectWriter::WriteSection(const MCAssembler &Asm,
   if (SD.hasInstructions())
     Flags |= MachO::S_ATTR_SOME_INSTRUCTIONS;
 
-  assert(isPowerOf2_32(SD.getAlignment()) && "Invalid alignment!");
-  Write32(Log2_32(SD.getAlignment()));
+  assert(isPowerOf2_32(Section.getAlignment()) && "Invalid alignment!");
+  Write32(Log2_32(Section.getAlignment()));
   Write32(NumRelocations ? RelocationsStart : 0);
   Write32(NumRelocations);
   Write32(Flags);
@@ -338,12 +338,14 @@ void MachObjectWriter::WriteNlist(MachSymbolData &MSD,
   uint64_t Address = 0;
   bool IsAlias = Symbol != AliasedSymbol;
 
+  const MCSymbol &OrigSymbol = *Symbol;
   MachSymbolData *AliaseeInfo;
   if (IsAlias) {
     AliaseeInfo = findSymbolData(*AliasedSymbol);
     if (AliaseeInfo)
       SectionIndex = AliaseeInfo->SectionIndex;
     Symbol = AliasedSymbol;
+    // FIXME: Should this update Data as well?  Do we need OrigSymbol at all?
   }
 
   // Set the N_TYPE bits. See <mach-o/nlist.h>.
@@ -371,9 +373,7 @@ void MachObjectWriter::WriteNlist(MachSymbolData &MSD,
   if (IsAlias && Symbol->isUndefined())
     Address = AliaseeInfo->StringIndex;
   else if (Symbol->isDefined())
-    // FIXME: Should Data.getSymbol() always be *Symbol?  It doesn't look like
-    // that's true.
-    Address = getSymbolAddress(Data.getSymbol(), Layout);
+    Address = getSymbolAddress(OrigSymbol, Layout);
   else if (Data.isCommon()) {
     // Common symbols are encoded with the size in the address
     // field, and their alignment in the flags.
@@ -616,11 +616,11 @@ void MachObjectWriter::ComputeSymbolTable(
   // Set the symbol indices.
   Index = 0;
   for (unsigned i = 0, e = LocalSymbolData.size(); i != e; ++i)
-    LocalSymbolData[i].Symbol->getData().setIndex(Index++);
+    LocalSymbolData[i].Symbol->setIndex(Index++);
   for (unsigned i = 0, e = ExternalSymbolData.size(); i != e; ++i)
-    ExternalSymbolData[i].Symbol->getData().setIndex(Index++);
+    ExternalSymbolData[i].Symbol->setIndex(Index++);
   for (unsigned i = 0, e = UndefinedSymbolData.size(); i != e; ++i)
-    UndefinedSymbolData[i].Symbol->getData().setIndex(Index++);
+    UndefinedSymbolData[i].Symbol->setIndex(Index++);
 
   for (const MCSectionData &SD : Asm) {
     std::vector<RelAndSymbol> &Relocs = Relocations[&SD];
@@ -629,7 +629,7 @@ void MachObjectWriter::ComputeSymbolTable(
         continue;
 
       // Set the Index and the IsExtern bit.
-      unsigned Index = Rel.Sym->getData().getIndex();
+      unsigned Index = Rel.Sym->getIndex();
       assert(isInt<24>(Index));
       if (IsLittleEndian)
         Rel.MRE.r_word1 = (Rel.MRE.r_word1 & (~0U << 24)) | Index | (1 << 27);
@@ -645,7 +645,8 @@ void MachObjectWriter::computeSectionAddresses(const MCAssembler &Asm,
   const SmallVectorImpl<MCSectionData*> &Order = Layout.getSectionOrder();
   for (int i = 0, n = Order.size(); i != n ; ++i) {
     const MCSectionData *SD = Order[i];
-    StartAddress = RoundUpToAlignment(StartAddress, SD->getAlignment());
+    StartAddress =
+        RoundUpToAlignment(StartAddress, SD->getSection().getAlignment());
     SectionAddress[SD] = StartAddress;
     StartAddress += Layout.getSectionAddressSize(SD);
 
@@ -981,7 +982,7 @@ void MachObjectWriter::WriteObject(MCAssembler &Asm,
         }
       }
 
-      Write32(Asm.getSymbolData(*it->Symbol).getIndex());
+      Write32(it->Symbol->getIndex());
     }
 
     // FIXME: Check that offsets match computed ones.
