@@ -124,7 +124,7 @@ void MCExpr::print(raw_ostream &OS) const {
 
 #if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
 void MCExpr::dump() const {
-  print(dbgs());
+  dbgs() << *this;
   dbgs() << '\n';
 }
 #endif
@@ -491,8 +491,8 @@ static void AttemptToFoldSymbolOffsetDifference(
   if (!Layout)
     return;
 
-  const MCSectionData &SecA = *AD.getFragment()->getParent();
-  const MCSectionData &SecB = *BD.getFragment()->getParent();
+  const MCSection &SecA = *AD.getFragment()->getParent();
+  const MCSection &SecB = *BD.getFragment()->getParent();
 
   if ((&SecA != &SecB) && !Addrs)
     return;

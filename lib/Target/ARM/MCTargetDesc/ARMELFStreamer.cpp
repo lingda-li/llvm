@@ -223,7 +223,7 @@ void ARMTargetAsmStreamer::emitInst(uint32_t Inst, char Suffix) {
   OS << "\t.inst";
   if (Suffix)
     OS << "." << Suffix;
-  OS << "\t0x" << utohexstr(Inst) << "\n";
+  OS << "\t0x" << Twine::utohexstr(Inst) << "\n";
 }
 
 void ARMTargetAsmStreamer::emitUnwindRaw(int64_t Offset,
@@ -232,7 +232,7 @@ void ARMTargetAsmStreamer::emitUnwindRaw(int64_t Offset,
   for (SmallVectorImpl<uint8_t>::const_iterator OCI = Opcodes.begin(),
                                                 OCE = Opcodes.end();
        OCI != OCE; ++OCI)
-    OS << ", 0x" << utohexstr(*OCI);
+    OS << ", 0x" << Twine::utohexstr(*OCI);
   OS << '\n';
 }
 
@@ -688,16 +688,16 @@ void ARMTargetELFStreamer::emitArchDefaultAttributes() {
   using namespace ARMBuildAttrs;
 
   setAttributeItem(CPU_name,
-                   ARMTargetParser::getArchDefaultCPUName(Arch),
+                   ARMTargetParser::getCPUAttr(Arch),
                    false);
 
   if (EmittedArch == ARM::AK_INVALID)
     setAttributeItem(CPU_arch,
-                     ARMTargetParser::getArchDefaultCPUArch(Arch),
+                     ARMTargetParser::getArchAttr(Arch),
                      false);
   else
     setAttributeItem(CPU_arch,
-                     ARMTargetParser::getArchDefaultCPUArch(EmittedArch),
+                     ARMTargetParser::getArchAttr(EmittedArch),
                      false);
 
   switch (Arch) {

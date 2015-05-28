@@ -162,9 +162,10 @@ void MCMachOStreamer::ChangeSection(MCSection *Section,
 
   // Output a linker-local symbol so we don't need section-relative local
   // relocations. The linker hates us when we do that.
-  if (LabelSections && !HasSectionLabel[Section]) {
+  if (LabelSections && !HasSectionLabel[Section] &&
+      !Section->getBeginSymbol()) {
     MCSymbol *Label = getContext().createLinkerPrivateTempSymbol();
-    EmitLabel(Label);
+    Section->setBeginSymbol(Label);
     HasSectionLabel[Section] = true;
   }
 }
@@ -287,7 +288,7 @@ bool MCMachOStreamer::EmitSymbolAttribute(MCSymbol *Symbol,
     // important for matching the string table that 'as' generates.
     IndirectSymbolData ISD;
     ISD.Symbol = Symbol;
-    ISD.SectionData = getCurrentSectionData();
+    ISD.Section = getCurrentSectionOnly();
     getAssembler().getIndirectSymbols().push_back(ISD);
     return true;
   }
@@ -403,7 +404,7 @@ void MCMachOStreamer::EmitLocalCommonSymbol(MCSymbol *Symbol, uint64_t Size,
 
 void MCMachOStreamer::EmitZerofill(MCSection *Section, MCSymbol *Symbol,
                                    uint64_t Size, unsigned ByteAlignment) {
-  MCSectionData &SectData = getAssembler().getOrCreateSectionData(*Section);
+  getAssembler().registerSection(*Section);
 
   // The symbol may not be present, which only creates the section.
   if (!Symbol)
@@ -418,9 +419,9 @@ void MCMachOStreamer::EmitZerofill(MCSection *Section, MCSymbol *Symbol,
 
   // Emit an align fragment if necessary.
   if (ByteAlignment != 1)
-    new MCAlignFragment(ByteAlignment, 0, 0, ByteAlignment, &SectData);
+    new MCAlignFragment(ByteAlignment, 0, 0, ByteAlignment, Section);
 
-  MCFragment *F = new MCFillFragment(0, 0, Size, &SectData);
+  MCFragment *F = new MCFillFragment(0, 0, Size, Section);
   SD.setFragment(F);
 
   AssignSection(Symbol, Section);
@@ -479,8 +480,8 @@ void MCMachOStreamer::FinishImpl() {
   for (MCAssembler::iterator it = getAssembler().begin(),
          ie = getAssembler().end(); it != ie; ++it) {
     const MCSymbol *CurrentAtom = nullptr;
-    for (MCSectionData::iterator it2 = it->begin(),
-           ie2 = it->end(); it2 != ie2; ++it2) {
+    for (MCSection::iterator it2 = it->begin(), ie2 = it->end(); it2 != ie2;
+         ++it2) {
       if (const MCSymbol *Symbol = DefiningSymbolMap.lookup(it2))
         CurrentAtom = Symbol;
       it2->setAtom(CurrentAtom);
