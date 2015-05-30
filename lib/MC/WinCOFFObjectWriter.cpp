@@ -364,9 +364,8 @@ void WinCOFFObjectWriter::defineSection(MCSectionCOFF const &Sec) {
 
 static uint64_t getSymbolValue(const MCSymbol &Symbol,
                                const MCAsmLayout &Layout) {
-  const MCSymbolData &Data = Symbol.getData();
-  if (Data.isCommon() && Data.isExternal())
-    return Data.getCommonSize();
+  if (Symbol.isCommon() && Symbol.isExternal())
+    return Symbol.getCommonSize();
 
   uint64_t Res;
   if (!Layout.getSymbolOffset(Symbol, Res))
@@ -383,7 +382,7 @@ void WinCOFFObjectWriter::DefineSymbol(const MCSymbol &Symbol,
   COFFSymbol *coff_symbol = GetOrCreateCOFFSymbol(&Symbol);
   SymbolMap[&Symbol] = coff_symbol;
 
-  if (Symbol.getData().getFlags() & COFF::SF_WeakExternal) {
+  if (Symbol.getFlags() & COFF::SF_WeakExternal) {
     coff_symbol->Data.StorageClass = COFF::IMAGE_SYM_CLASS_WEAK_EXTERNAL;
 
     if (Symbol.isVariable()) {
@@ -414,17 +413,16 @@ void WinCOFFObjectWriter::DefineSymbol(const MCSymbol &Symbol,
 
     coff_symbol->MC = &Symbol;
   } else {
-    const MCSymbolData &ResSymData = Symbol.getData();
     const MCSymbol *Base = Layout.getBaseSymbol(Symbol);
     coff_symbol->Data.Value = getSymbolValue(Symbol, Layout);
 
-    coff_symbol->Data.Type = (ResSymData.getFlags() & 0x0000FFFF) >> 0;
-    coff_symbol->Data.StorageClass = (ResSymData.getFlags() & 0x00FF0000) >> 16;
+    coff_symbol->Data.Type = (Symbol.getFlags() & 0x0000FFFF) >> 0;
+    coff_symbol->Data.StorageClass = (Symbol.getFlags() & 0x00FF0000) >> 16;
 
     // If no storage class was specified in the streamer, define it here.
     if (coff_symbol->Data.StorageClass == 0) {
-      bool IsExternal = ResSymData.isExternal() ||
-                        (!ResSymData.getFragment() && !Symbol.isVariable());
+      bool IsExternal = Symbol.isExternal() ||
+                        (!Symbol.getFragment() && !Symbol.isVariable());
 
       coff_symbol->Data.StorageClass = IsExternal
                                            ? COFF::IMAGE_SYM_CLASS_EXTERNAL
@@ -434,9 +432,8 @@ void WinCOFFObjectWriter::DefineSymbol(const MCSymbol &Symbol,
     if (!Base) {
       coff_symbol->Data.SectionNumber = COFF::IMAGE_SYM_ABSOLUTE;
     } else {
-      const MCSymbolData &BaseData = Base->getData();
-      if (BaseData.getFragment()) {
-        COFFSection *Sec = SectionMap[BaseData.getFragment()->getParent()];
+      if (Base->getFragment()) {
+        COFFSection *Sec = SectionMap[Base->getFragment()->getParent()];
 
         if (coff_symbol->Section && coff_symbol->Section != Sec)
           report_fatal_error("conflicting sections for symbol");
@@ -664,8 +661,7 @@ bool WinCOFFObjectWriter::IsSymbolRefDifferenceFullyResolvedImpl(
   // MS LINK expects to be able to replace all references to a function with a
   // thunk to implement their /INCREMENTAL feature.  Make sure we don't optimize
   // away any relocations to functions.
-  if ((((SymA.getData().getFlags() & COFF::SF_TypeMask) >>
-        COFF::SF_TypeShift) >>
+  if ((((SymA.getFlags() & COFF::SF_TypeMask) >> COFF::SF_TypeShift) >>
        COFF::SCT_COMPLEX_TYPE_SHIFT) == COFF::IMAGE_SYM_DTYPE_FUNCTION)
     return false;
   return MCObjectWriter::IsSymbolRefDifferenceFullyResolvedImpl(Asm, SymA, FB,
@@ -673,8 +669,7 @@ bool WinCOFFObjectWriter::IsSymbolRefDifferenceFullyResolvedImpl(
 }
 
 bool WinCOFFObjectWriter::isWeak(const MCSymbol &Sym) const {
-  const MCSymbolData &SD = Sym.getData();
-  if (!SD.isExternal())
+  if (!Sym.isExternal())
     return false;
 
   if (!Sym.isInSection())
@@ -702,8 +697,6 @@ void WinCOFFObjectWriter::RecordRelocation(
                                       Twine("symbol '") + A.getName() +
                                           "' can not be undefined");
 
-  const MCSymbolData &A_SD = A.getData();
-
   MCSection *Section = Fragment->getParent();
 
   // Mark this symbol as requiring an entry in the symbol table.
@@ -719,14 +712,13 @@ void WinCOFFObjectWriter::RecordRelocation(
 
   if (SymB) {
     const MCSymbol *B = &SymB->getSymbol();
-    const MCSymbolData &B_SD = B->getData();
-    if (!B_SD.getFragment())
+    if (!B->getFragment())
       Asm.getContext().reportFatalError(
           Fixup.getLoc(),
           Twine("symbol '") + B->getName() +
               "' can not be undefined in a subtraction expression");
 
-    if (!A_SD.getFragment())
+    if (!A.getFragment())
       Asm.getContext().reportFatalError(
           Fixup.getLoc(),
           Twine("symbol '") + Symbol.getName() +
@@ -763,9 +755,8 @@ void WinCOFFObjectWriter::RecordRelocation(
   // Turn relocations for temporary symbols into section relocations.
   if (coff_symbol->MC->isTemporary() || CrossSection) {
     Reloc.Symb = coff_symbol->Section->Symbol;
-    FixedValue +=
-        Layout.getFragmentOffset(coff_symbol->MC->getData().getFragment()) +
-        coff_symbol->MC->getData().getOffset();
+    FixedValue += Layout.getFragmentOffset(coff_symbol->MC->getFragment()) +
+                  coff_symbol->MC->getOffset();
   } else
     Reloc.Symb = coff_symbol;
 
