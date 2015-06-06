@@ -555,6 +555,9 @@ void MCStreamer::EmitWinCFIEndProlog() {
   CurrentWinFrameInfo->PrologEnd = Label;
 }
 
+void MCStreamer::EmitCOFFSafeSEH(MCSymbol const *Symbol) {
+}
+
 void MCStreamer::EmitCOFFSectionIndex(MCSymbol const *Symbol) {
 }
 
@@ -643,7 +646,7 @@ void MCStreamer::EndCOFFSymbolDef() {}
 void MCStreamer::EmitFileDirective(StringRef Filename) {}
 void MCStreamer::EmitCOFFSymbolStorageClass(int StorageClass) {}
 void MCStreamer::EmitCOFFSymbolType(int Type) {}
-void MCStreamer::EmitELFSize(MCSymbol *Symbol, const MCExpr *Value) {}
+void MCStreamer::emitELFSize(MCSymbolELF *Symbol, const MCExpr *Value) {}
 void MCStreamer::EmitLocalCommonSymbol(MCSymbol *Symbol, uint64_t Size,
                                        unsigned ByteAlignment) {}
 void MCStreamer::EmitTBSSSymbol(MCSection *Section, MCSymbol *Symbol,

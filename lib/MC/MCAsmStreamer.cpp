@@ -24,7 +24,7 @@
 #include "llvm/MC/MCRegisterInfo.h"
 #include "llvm/MC/MCSectionCOFF.h"
 #include "llvm/MC/MCSectionMachO.h"
-#include "llvm/MC/MCSymbol.h"
+#include "llvm/MC/MCSymbolELF.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/Format.h"
@@ -136,9 +136,10 @@ public:
   void EmitCOFFSymbolStorageClass(int StorageClass) override;
   void EmitCOFFSymbolType(int Type) override;
   void EndCOFFSymbolDef() override;
+  void EmitCOFFSafeSEH(MCSymbol const *Symbol) override;
   void EmitCOFFSectionIndex(MCSymbol const *Symbol) override;
   void EmitCOFFSecRel32(MCSymbol const *Symbol) override;
-  void EmitELFSize(MCSymbol *Symbol, const MCExpr *Value) override;
+  void emitELFSize(MCSymbolELF *Symbol, const MCExpr *Value) override;
   void EmitCommonSymbol(MCSymbol *Symbol, uint64_t Size,
                         unsigned ByteAlignment) override;
 
@@ -486,6 +487,11 @@ void MCAsmStreamer::EndCOFFSymbolDef() {
   EmitEOL();
 }
 
+void MCAsmStreamer::EmitCOFFSafeSEH(MCSymbol const *Symbol) {
+  OS << "\t.safeseh\t" << *Symbol;
+  EmitEOL();
+}
+
 void MCAsmStreamer::EmitCOFFSectionIndex(MCSymbol const *Symbol) {
   OS << "\t.secidx\t" << *Symbol;
   EmitEOL();
@@ -496,7 +502,7 @@ void MCAsmStreamer::EmitCOFFSecRel32(MCSymbol const *Symbol) {
   EmitEOL();
 }
 
-void MCAsmStreamer::EmitELFSize(MCSymbol *Symbol, const MCExpr *Value) {
+void MCAsmStreamer::emitELFSize(MCSymbolELF *Symbol, const MCExpr *Value) {
   assert(MAI->hasDotTypeDotSizeDirective());
   OS << "\t.size\t" << *Symbol << ", " << *Value << '\n';
 }
