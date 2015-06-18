@@ -218,7 +218,8 @@ namespace llvm {
       // Integer add/sub with signed saturation.
       ADDS,
       SUBS,
-
+      // Unsigned Integer average 
+      AVG,
       /// Integer horizontal add.
       HADD,
 
@@ -292,6 +293,9 @@ namespace llvm {
 
       // Vector FP round.
       VFPROUND,
+
+      // Vector signed integer to double.
+      CVTDQ2PD,
 
       // 128-bit vector logical left / right shift
       VSHLDQ, VSRLDQ,
