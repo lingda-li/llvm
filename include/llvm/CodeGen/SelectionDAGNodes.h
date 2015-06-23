@@ -89,7 +89,7 @@ namespace ISD {
   /// Return true if the node has at least one operand
   /// and all operands of the specified node are ISD::UNDEF.
   bool allOperandsUndef(const SDNode *N);
-}  // end llvm:ISD namespace
+} // namespace ISD
 
 //===----------------------------------------------------------------------===//
 /// Unlike LLVM values, Selection DAG nodes may return multiple
@@ -1810,6 +1810,21 @@ public:
   }
 };
 
+class MCSymbolSDNode : public SDNode {
+  MCSymbol *Symbol;
+
+  friend class SelectionDAG;
+  MCSymbolSDNode(MCSymbol *Symbol, EVT VT)
+      : SDNode(ISD::MCSymbol, 0, DebugLoc(), getSDVTList(VT)), Symbol(Symbol) {}
+
+public:
+  MCSymbol *getMCSymbol() const { return Symbol; }
+
+  static bool classof(const SDNode *N) {
+    return N->getOpcode() == ISD::MCSymbol;
+  }
+};
+
 class CondCodeSDNode : public SDNode {
   ISD::CondCode Condition;
   friend class SelectionDAG;
@@ -2268,8 +2283,8 @@ namespace ISD {
     return isa<StoreSDNode>(N) &&
       cast<StoreSDNode>(N)->getAddressingMode() == ISD::UNINDEXED;
   }
-}
+} // namespace ISD
 
-} // end llvm namespace
+} // namespace llvm
 
 #endif

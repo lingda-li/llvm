@@ -18,6 +18,8 @@
 
 namespace llvm {
 
+class MachineInstrBuilder;
+class MCCFIInstruction;
 class X86Subtarget;
 class X86RegisterInfo;
 
@@ -29,7 +31,7 @@ public:
 
   const X86Subtarget &STI;
   const TargetInstrInfo &TII;
-  const X86RegisterInfo *RegInfo;
+  const X86RegisterInfo *TRI;
 
   unsigned SlotSize;
 
@@ -42,6 +44,8 @@ public:
   /// 64-bit targets with the exception of x32. If this is false, 32-bit
   /// instruction operands should be used to manipulate StackPtr and FramePtr.
   bool Uses64BitFramePtr;
+
+  unsigned StackPtr;
 
   /// Emit a call to the target's stack probe function. This is required for all
   /// large stack allocations on Windows. The caller is required to materialize
@@ -104,15 +108,12 @@ public:
   /// stack adjustment is returned as a positive value for ADD/LEA and
   /// a negative for SUB.
   int mergeSPUpdates(MachineBasicBlock &MBB, MachineBasicBlock::iterator &MBBI,
-                     unsigned StackPtr, bool doMergeWithPrevious) const;
+                     bool doMergeWithPrevious) const;
 
   /// Emit a series of instructions to increment / decrement the stack
   /// pointer by a constant value.
   void emitSPUpdate(MachineBasicBlock &MBB, MachineBasicBlock::iterator &MBBI,
-                    unsigned StackPtr, int64_t NumBytes, bool Is64BitTarget,
-                    bool Is64BitStackPtr, bool UseLEA,
-                    const TargetInstrInfo &TII,
-                    const TargetRegisterInfo &TRI) const;
+                    int64_t NumBytes, bool InEpilogue) const;
 
   /// Check that LEA can be used on SP in an epilogue sequence for \p MF.
   bool canUseLEAForSPInEpilogue(const MachineFunction &MF) const;
@@ -135,8 +136,23 @@ private:
                               uint64_t Amount) const;
 
   uint64_t calculateMaxStackAlign(const MachineFunction &MF) const;
+
+  /// Wraps up getting a CFI index and building a MachineInstr for it.
+  void BuildCFI(MachineBasicBlock &MBB, MachineBasicBlock::iterator MBBI,
+                DebugLoc DL, MCCFIInstruction CFIInst) const;
+
+  /// Aligns the stack pointer by ANDing it with -MaxAlign.
+  void BuildStackAlignAND(MachineBasicBlock &MBB,
+                          MachineBasicBlock::iterator MBBI, DebugLoc DL,
+                          uint64_t MaxAlign) const;
+
+  /// Adjusts the stack pointer using LEA, SUB, or ADD.
+  MachineInstrBuilder BuildStackAdjustment(MachineBasicBlock &MBB,
+                                           MachineBasicBlock::iterator MBBI,
+                                           DebugLoc DL, int64_t Offset,
+                                           bool InEpilogue) const;
 };
 
-} // End llvm namespace
+} // namespace llvm
 
 #endif

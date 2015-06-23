@@ -11,9 +11,10 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "HexagonMCTargetDesc.h"
+#include "Hexagon.h"
 #include "HexagonMCAsmInfo.h"
 #include "HexagonMCELFStreamer.h"
-#include "HexagonMCTargetDesc.h"
 #include "MCTargetDesc/HexagonInstPrinter.h"
 #include "llvm/MC/MCCodeGenInfo.h"
 #include "llvm/MC/MCContext.h"
@@ -59,6 +60,51 @@ createHexagonMCSubtargetInfo(const Triple &TT, StringRef CPU, StringRef FS) {
 }
 
 namespace {
+class HexagonTargetAsmStreamer : public HexagonTargetStreamer {
+public:
+  HexagonTargetAsmStreamer(MCStreamer &S,
+                           formatted_raw_ostream &, bool,
+                           MCInstPrinter &)
+      : HexagonTargetStreamer(S) {}
+  void prettyPrintAsm(MCInstPrinter &InstPrinter, raw_ostream &OS,
+                      const MCInst &Inst, const MCSubtargetInfo &STI) override {
+    assert(HexagonMCInstrInfo::isBundle(Inst));
+    assert(HexagonMCInstrInfo::bundleSize(Inst) <= HEXAGON_PACKET_SIZE);
+    std::string Buffer;
+    {
+      raw_string_ostream TempStream(Buffer);
+      InstPrinter.printInst(&Inst, TempStream, "", STI);
+    }
+    StringRef Contents(Buffer);
+    auto PacketBundle = Contents.rsplit('\n');
+    auto HeadTail = PacketBundle.first.split('\n');
+    auto Preamble = "\t{\n\t\t";
+    auto Separator = "";
+    while(!HeadTail.first.empty()) {
+      OS << Separator;
+      StringRef Inst;
+      auto Duplex = HeadTail.first.split('\v');
+      if(!Duplex.second.empty()){
+        OS << Duplex.first << "\n";
+        Inst = Duplex.second;
+      }
+      else {
+        if(!HeadTail.first.startswith("immext"))
+          Inst = Duplex.first;
+      }
+      OS << Preamble;
+      OS << Inst;
+      HeadTail = HeadTail.second.split('\n');
+      Preamble = "";
+      Separator = "\n\t\t";
+    }
+    if(HexagonMCInstrInfo::bundleSize(Inst) != 0)
+      OS << "\n\t}" << PacketBundle.second;
+  }
+};
+} // namespace
+
+namespace {
 class HexagonTargetELFStreamer : public HexagonTargetStreamer {
 public:
   MCELFStreamer &getStreamer() {
@@ -91,7 +137,7 @@ public:
         Symbol, Size, ByteAlignment, AccessSize);
   }
 };
-}
+} // namespace
 
 static MCAsmInfo *createHexagonMCAsmInfo(const MCRegisterInfo &MRI,
                                          const Triple &TT) {
@@ -124,6 +170,12 @@ static MCInstPrinter *createHexagonMCInstPrinter(const Triple &T,
     return (new HexagonInstPrinter(MAI, MII, MRI));
   else
     return nullptr;
+}
+
+MCTargetStreamer *createMCAsmTargetStreamer(
+      MCStreamer &S, formatted_raw_ostream &OS, MCInstPrinter *InstPrint,
+      bool IsVerboseAsm) {
+  return new HexagonTargetAsmStreamer(S,  OS, IsVerboseAsm, *InstPrint);
 }
 
 static MCStreamer *createMCStreamer(Triple const &T, MCContext &Context,
@@ -168,6 +220,10 @@ extern "C" void LLVMInitializeHexagonTargetMC() {
 
   // Register the obj streamer
   TargetRegistry::RegisterELFStreamer(TheHexagonTarget, createMCStreamer);
+
+  // Register the asm streamer
+  TargetRegistry::RegisterAsmTargetStreamer(TheHexagonTarget,
+                                            createMCAsmTargetStreamer);
 
   // Register the MC Inst Printer
   TargetRegistry::RegisterMCInstPrinter(TheHexagonTarget,

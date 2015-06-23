@@ -133,7 +133,7 @@ enum {
   EM_386           = 3, // Intel 386
   EM_68K           = 4, // Motorola 68000
   EM_88K           = 5, // Motorola 88000
-  EM_486           = 6, // Intel 486 (deprecated)
+  EM_IAMCU         = 6, // Intel MCU
   EM_860           = 7, // Intel 80860
   EM_MIPS          = 8, // MIPS R3000
   EM_S370          = 9, // IBM System/370
@@ -308,7 +308,8 @@ enum {
   EM_COGE          = 216, // Cognitive Smart Memory Processor
   EM_COOL          = 217, // iCelero CoolEngine
   EM_NORC          = 218, // Nanoradio Optimized RISC
-  EM_CSR_KALIMBA   = 219  // CSR Kalimba architecture family
+  EM_CSR_KALIMBA   = 219, // CSR Kalimba architecture family
+  EM_AMDGPU        = 224  // AMD GPU architecture
 };
 
 // Object file classes.

@@ -13,16 +13,19 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/CodeGen/MIRParser/MIRParser.h"
+#include "MIParser.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/AsmParser/Parser.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MIRYamlMapping.h"
+#include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/DiagnosticInfo.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/ValueSymbolTable.h"
 #include "llvm/Support/LineIterator.h"
 #include "llvm/Support/SMLoc.h"
 #include "llvm/Support/SourceMgr.h"
@@ -73,6 +76,12 @@ public:
   ///
   /// Return true if error occurred.
   bool initializeMachineFunction(MachineFunction &MF);
+
+  /// Initialize the machine basic block using it's YAML representation.
+  ///
+  /// Return true if an error occurred.
+  bool initializeMachineBasicBlock(MachineFunction &MF, MachineBasicBlock &MBB,
+                                   const yaml::MachineBasicBlock &YamlMBB);
 
 private:
   /// Return a MIR diagnostic converted from an LLVM assembly diagnostic.
@@ -198,6 +207,41 @@ bool MIRParserImpl::initializeMachineFunction(MachineFunction &MF) {
     MF.setAlignment(YamlMF.Alignment);
   MF.setExposesReturnsTwice(YamlMF.ExposesReturnsTwice);
   MF.setHasInlineAsm(YamlMF.HasInlineAsm);
+  const auto &F = *MF.getFunction();
+  for (const auto &YamlMBB : YamlMF.BasicBlocks) {
+    const BasicBlock *BB = nullptr;
+    if (!YamlMBB.Name.empty()) {
+      BB = dyn_cast_or_null<BasicBlock>(
+          F.getValueSymbolTable().lookup(YamlMBB.Name));
+      if (!BB)
+        return error(Twine("basic block '") + YamlMBB.Name +
+                     "' is not defined in the function '" + MF.getName() + "'");
+    }
+    auto *MBB = MF.CreateMachineBasicBlock(BB);
+    MF.insert(MF.end(), MBB);
+    if (initializeMachineBasicBlock(MF, *MBB, YamlMBB))
+      return true;
+  }
+  return false;
+}
+
+bool MIRParserImpl::initializeMachineBasicBlock(
+    MachineFunction &MF, MachineBasicBlock &MBB,
+    const yaml::MachineBasicBlock &YamlMBB) {
+  MBB.setAlignment(YamlMBB.Alignment);
+  if (YamlMBB.AddressTaken)
+    MBB.setHasAddressTaken();
+  MBB.setIsLandingPad(YamlMBB.IsLandingPad);
+  // Parse the instructions.
+  for (const auto &MISource : YamlMBB.Instructions) {
+    SMDiagnostic Error;
+    if (auto *MI = parseMachineInstr(SM, MF, MISource, Error)) {
+      MBB.insert(MBB.end(), MI);
+      continue;
+    }
+    reportDiagnostic(Error);
+    return true;
+  }
   return false;
 }
 
