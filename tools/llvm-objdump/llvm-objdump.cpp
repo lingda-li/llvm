@@ -21,7 +21,6 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/Triple.h"
-#include "llvm/CodeGen/FaultMaps.h"
 #include "llvm/MC/MCAsmInfo.h"
 #include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCDisassembler.h"
@@ -35,6 +34,7 @@
 #include "llvm/MC/MCSubtargetInfo.h"
 #include "llvm/Object/Archive.h"
 #include "llvm/Object/ELFObjectFile.h"
+#include "llvm/Object/FaultMapParser.h"
 #include "llvm/Object/COFF.h"
 #include "llvm/Object/MachO.h"
 #include "llvm/Object/ObjectFile.h"
@@ -1085,7 +1085,6 @@ void llvm::PrintSymbolTable(const ObjectFile *o) {
       continue;
     if (error(Symbol.getType(Type)))
       continue;
-    uint64_t Size = Symbol.getSize();
     if (error(Symbol.getSection(Section)))
       continue;
     StringRef Name;
@@ -1101,15 +1100,11 @@ void llvm::PrintSymbolTable(const ObjectFile *o) {
     bool Common = Flags & SymbolRef::SF_Common;
     bool Hidden = Flags & SymbolRef::SF_Hidden;
 
-    if (Common) {
-      uint32_t Alignment = Symbol.getAlignment();
-      Address = Size;
-      Size = Alignment;
-    }
+    if (Common)
+      Address = Symbol.getSize();
+
     if (Address == UnknownAddressOrSize)
       Address = 0;
-    if (Size == UnknownAddressOrSize)
-      Size = 0;
     char GlobLoc = ' ';
     if (Type != SymbolRef::ST_Unknown)
       GlobLoc = Global ? 'g' : 'l';
@@ -1151,8 +1146,13 @@ void llvm::PrintSymbolTable(const ObjectFile *o) {
         SectionName = "";
       outs() << SectionName;
     }
-    outs() << '\t'
-           << format("%08" PRIx64 " ", Size);
+
+    outs() << '\t';
+    if (Common || isa<ELFObjectFileBase>(o)) {
+      uint64_t Val = Common ? Symbol.getAlignment() :  Symbol.getSize();
+      outs() << format("\t %08" PRIx64 " ", Val);
+    }
+
     if (Hidden) {
       outs() << ".hidden ";
     }

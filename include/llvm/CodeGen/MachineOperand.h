@@ -705,10 +705,12 @@ public:
     return Op;
   }
 
-  static MachineOperand CreateMCSymbol(MCSymbol *Sym) {
+  static MachineOperand CreateMCSymbol(MCSymbol *Sym,
+                                       unsigned char TargetFlags = 0) {
     MachineOperand Op(MachineOperand::MO_MCSymbol);
     Op.Contents.Sym = Sym;
     Op.setOffset(0);
+    Op.setTargetFlags(TargetFlags);
     return Op;
   }
 
@@ -744,6 +746,6 @@ inline raw_ostream &operator<<(raw_ostream &OS, const MachineOperand& MO) {
   // See friend declaration above. This additional declaration is required in
   // order to compile LLVM with IBM xlC compiler.
   hash_code hash_value(const MachineOperand &MO);
-} // namespace llvm
+} // End llvm namespace
 
 #endif

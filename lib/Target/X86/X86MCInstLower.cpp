@@ -112,7 +112,7 @@ namespace llvm {
     OutStreamer->EmitInstruction(Inst, getSubtargetInfo());
     SMShadowTracker.count(Inst, getSubtargetInfo());
   }
-} // namespace llvm
+} // end llvm namespace
 
 X86MCInstLower::X86MCInstLower(const MachineFunction &mf,
                                X86AsmPrinter &asmprinter)
@@ -159,7 +159,7 @@ GetSymbolFromOperand(const MachineOperand &MO) const {
     const GlobalValue *GV = MO.getGlobal();
     AsmPrinter.getNameWithPrefix(Name, GV);
   } else if (MO.isSymbol()) {
-    getMang()->getNameWithPrefix(Name, MO.getSymbolName());
+    Mangler::getNameWithPrefix(Name, MO.getSymbolName(), *DL);
   } else if (MO.isMBB()) {
     assert(Suffix.empty());
     Sym = MO.getMBB()->getSymbol();
