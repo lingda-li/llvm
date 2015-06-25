@@ -57,6 +57,7 @@ public:
 
   bool parseRegister(unsigned &Reg);
   bool parseRegisterOperand(MachineOperand &Dest, bool IsDef = false);
+  bool parseImmediateOperand(MachineOperand &Dest);
   bool parseMachineOperand(MachineOperand &Dest);
 
 private:
@@ -173,6 +174,9 @@ bool MIParser::parseInstruction(unsigned &OpCode) {
 
 bool MIParser::parseRegister(unsigned &Reg) {
   switch (Token.kind()) {
+  case MIToken::underscore:
+    Reg = 0;
+    break;
   case MIToken::NamedRegister: {
     StringRef Name = Token.stringValue().drop_front(1); // Drop the '%'
     if (getRegisterByName(Name, Reg))
@@ -197,10 +201,24 @@ bool MIParser::parseRegisterOperand(MachineOperand &Dest, bool IsDef) {
   return false;
 }
 
+bool MIParser::parseImmediateOperand(MachineOperand &Dest) {
+  assert(Token.is(MIToken::IntegerLiteral));
+  const APSInt &Int = Token.integerValue();
+  if (Int.getMinSignedBits() > 64)
+    // TODO: Replace this with an error when we can parse CIMM Machine Operands.
+    llvm_unreachable("Can't parse large integer literals yet!");
+  Dest = MachineOperand::CreateImm(Int.getExtValue());
+  lex();
+  return false;
+}
+
 bool MIParser::parseMachineOperand(MachineOperand &Dest) {
   switch (Token.kind()) {
+  case MIToken::underscore:
   case MIToken::NamedRegister:
     return parseRegisterOperand(Dest);
+  case MIToken::IntegerLiteral:
+    return parseImmediateOperand(Dest);
   case MIToken::Error:
     return true;
   default:
@@ -231,6 +249,8 @@ bool MIParser::parseInstrName(StringRef InstrName, unsigned &OpCode) {
 void MIParser::initNames2Regs() {
   if (!Names2Regs.empty())
     return;
+  // The '%noreg' register is the register 0.
+  Names2Regs.insert(std::make_pair("noreg", 0));
   const auto *TRI = MF.getSubtarget().getRegisterInfo();
   assert(TRI && "Expected target register info");
   for (unsigned I = 0, E = TRI->getNumRegs(); I < E; ++I) {

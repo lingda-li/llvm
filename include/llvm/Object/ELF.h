@@ -265,6 +265,7 @@ private:
   DynRegionInfo DynHashRegion;
   DynRegionInfo DynStrRegion;
   DynRegionInfo DynSymRegion;
+  DynRegionInfo DynRelaRegion;
 
   // Pointer to SONAME entry in dynamic string table
   // This is set the first time getLoadName is called.
@@ -363,6 +364,21 @@ public:
     return Elf_Sym_Iter(0, nullptr, true);
   }
 
+  Elf_Rela_Iter begin_dyn_rela() const {
+    if (DynRelaRegion.Addr)
+      return Elf_Rela_Iter(DynRelaRegion.EntSize,
+        (const char *)DynRelaRegion.Addr);
+    return Elf_Rela_Iter(0, nullptr);
+  }
+
+  Elf_Rela_Iter end_dyn_rela() const {
+    if (DynRelaRegion.Addr)
+      return Elf_Rela_Iter(
+        DynRelaRegion.EntSize,
+        (const char *)DynRelaRegion.Addr + DynRelaRegion.Size);
+    return Elf_Rela_Iter(0, nullptr);
+  }
+
   Elf_Rela_Iter begin_rela(const Elf_Shdr *sec) const {
     return Elf_Rela_Iter(sec->sh_entsize,
                          (const char *)(base() + sec->sh_offset));
@@ -401,7 +417,7 @@ public:
 
   uint64_t getNumSections() const;
   uintX_t getStringTableIndex() const;
-  ELF::Elf64_Word getSymbolTableIndex(const Elf_Sym *symb) const;
+  ELF::Elf64_Word getExtendedSymbolTableIndex(const Elf_Sym *symb) const;
   const Elf_Ehdr *getHeader() const { return Header; }
   const Elf_Shdr *getSection(const Elf_Sym *symb) const;
   const Elf_Shdr *getSection(uint32_t Index) const;
@@ -510,10 +526,10 @@ void ELFFile<ELFT>::LoadVersionMap() const {
 }
 
 template <class ELFT>
-ELF::Elf64_Word ELFFile<ELFT>::getSymbolTableIndex(const Elf_Sym *symb) const {
-  if (symb->st_shndx == ELF::SHN_XINDEX)
-    return ExtendedSymbolTable.lookup(symb);
-  return symb->st_shndx;
+ELF::Elf64_Word
+ELFFile<ELFT>::getExtendedSymbolTableIndex(const Elf_Sym *symb) const {
+  assert(symb->st_shndx == ELF::SHN_XINDEX);
+  return ExtendedSymbolTable.lookup(symb);
 }
 
 template <class ELFT>
@@ -759,6 +775,38 @@ ELFFile<ELFT>::ELFFile(StringRef Object, std::error_code &EC)
       DynamicRegion.Size = PhdrI->p_filesz;
       DynamicRegion.EntSize = sizeof(Elf_Dyn);
       break;
+    }
+  }
+
+  // Scan dynamic table.
+  for (Elf_Dyn_Iter DynI = begin_dynamic_table(), DynE = end_dynamic_table();
+  DynI != DynE; ++DynI) {
+    switch (DynI->d_tag) {
+    case ELF::DT_RELA: {
+      uint64_t VBase = 0;
+      const uint8_t *FBase = nullptr;
+      for (Elf_Phdr_Iter PhdrI = begin_program_headers(),
+        PhdrE = end_program_headers();
+        PhdrI != PhdrE; ++PhdrI) {
+        if (PhdrI->p_type != ELF::PT_LOAD)
+          continue;
+        if (DynI->getPtr() >= PhdrI->p_vaddr &&
+            DynI->getPtr() < PhdrI->p_vaddr + PhdrI->p_memsz) {
+          VBase = PhdrI->p_vaddr;
+          FBase = base() + PhdrI->p_offset;
+          break;
+        }
+      }
+      if (!VBase)
+        return;
+      DynRelaRegion.Addr = FBase + DynI->getPtr() - VBase;
+      break;
+    }
+    case ELF::DT_RELASZ:
+      DynRelaRegion.Size = DynI->getVal();
+      break;
+    case ELF::DT_RELAENT:
+      DynRelaRegion.EntSize = DynI->getVal();
     }
   }
 

@@ -15,6 +15,7 @@
 #ifndef LLVM_LIB_CODEGEN_MIRPARSER_MILEXER_H
 #define LLVM_LIB_CODEGEN_MIRPARSER_MILEXER_H
 
+#include "llvm/ADT/APSInt.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/STLExtras.h"
 #include <functional>
@@ -33,24 +34,34 @@ struct MIToken {
     // Tokens with no info.
     comma,
     equal,
+    underscore,
 
     // Identifier tokens
     Identifier,
-    NamedRegister
+    NamedRegister,
+
+    // Other tokens
+    IntegerLiteral
   };
 
 private:
   TokenKind Kind;
   StringRef Range;
+  APSInt IntVal;
 
 public:
   MIToken(TokenKind Kind, StringRef Range) : Kind(Kind), Range(Range) {}
+
+  MIToken(TokenKind Kind, StringRef Range, const APSInt &IntVal)
+      : Kind(Kind), Range(Range), IntVal(IntVal) {}
 
   TokenKind kind() const { return Kind; }
 
   bool isError() const { return Kind == Error; }
 
-  bool isRegister() const { return Kind == NamedRegister; }
+  bool isRegister() const {
+    return Kind == NamedRegister || Kind == underscore;
+  }
 
   bool is(TokenKind K) const { return Kind == K; }
 
@@ -59,6 +70,8 @@ public:
   StringRef::iterator location() const { return Range.begin(); }
 
   StringRef stringValue() const { return Range; }
+
+  const APSInt &integerValue() const { return IntVal; }
 };
 
 /// Consume a single machine instruction token in the given source and return

@@ -19,6 +19,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/AsmParser/Parser.h"
 #include "llvm/CodeGen/MachineFunction.h"
+#include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/MIRYamlMapping.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/DiagnosticInfo.h"
@@ -83,7 +84,14 @@ public:
   bool initializeMachineBasicBlock(MachineFunction &MF, MachineBasicBlock &MBB,
                                    const yaml::MachineBasicBlock &YamlMBB);
 
+  bool initializeRegisterInfo(MachineRegisterInfo &RegInfo,
+                              const yaml::MachineFunction &YamlMF);
+
 private:
+  /// Return a MIR diagnostic converted from an MI string diagnostic.
+  SMDiagnostic diagFromMIStringDiag(const SMDiagnostic &Error,
+                                    SMRange SourceRange);
+
   /// Return a MIR diagnostic converted from an LLVM assembly diagnostic.
   SMDiagnostic diagFromLLVMAssemblyDiag(const SMDiagnostic &Error,
                                         SMRange SourceRange);
@@ -129,6 +137,7 @@ static void handleYAMLDiag(const SMDiagnostic &Diag, void *Context) {
 std::unique_ptr<Module> MIRParserImpl::parse() {
   yaml::Input In(SM.getMemoryBuffer(SM.getMainFileID())->getBuffer(),
                  /*Ctxt=*/nullptr, handleYAMLDiag, this);
+  In.setContext(&In);
 
   if (!In.setCurrentDocument()) {
     if (In.error())
@@ -207,6 +216,9 @@ bool MIRParserImpl::initializeMachineFunction(MachineFunction &MF) {
     MF.setAlignment(YamlMF.Alignment);
   MF.setExposesReturnsTwice(YamlMF.ExposesReturnsTwice);
   MF.setHasInlineAsm(YamlMF.HasInlineAsm);
+  if (initializeRegisterInfo(MF.getRegInfo(), YamlMF))
+    return true;
+
   const auto &F = *MF.getFunction();
   for (const auto &YamlMBB : YamlMF.BasicBlocks) {
     const BasicBlock *BB = nullptr;
@@ -235,14 +247,42 @@ bool MIRParserImpl::initializeMachineBasicBlock(
   // Parse the instructions.
   for (const auto &MISource : YamlMBB.Instructions) {
     SMDiagnostic Error;
-    if (auto *MI = parseMachineInstr(SM, MF, MISource, Error)) {
+    if (auto *MI = parseMachineInstr(SM, MF, MISource.Value, Error)) {
       MBB.insert(MBB.end(), MI);
       continue;
     }
-    reportDiagnostic(Error);
+    reportDiagnostic(diagFromMIStringDiag(Error, MISource.SourceRange));
     return true;
   }
   return false;
+}
+
+bool MIRParserImpl::initializeRegisterInfo(
+    MachineRegisterInfo &RegInfo, const yaml::MachineFunction &YamlMF) {
+  assert(RegInfo.isSSA());
+  if (!YamlMF.IsSSA)
+    RegInfo.leaveSSA();
+  assert(RegInfo.tracksLiveness());
+  if (!YamlMF.TracksRegLiveness)
+    RegInfo.invalidateLiveness();
+  RegInfo.enableSubRegLiveness(YamlMF.TracksSubRegLiveness);
+  return false;
+}
+
+SMDiagnostic MIRParserImpl::diagFromMIStringDiag(const SMDiagnostic &Error,
+                                                 SMRange SourceRange) {
+  assert(SourceRange.isValid() && "Invalid source range");
+  SMLoc Loc = SourceRange.Start;
+  bool HasQuote = Loc.getPointer() < SourceRange.End.getPointer() &&
+                  *Loc.getPointer() == '\'';
+  // Translate the location of the error from the location in the MI string to
+  // the corresponding location in the MIR file.
+  Loc = Loc.getFromPointer(Loc.getPointer() + Error.getColumnNo() +
+                           (HasQuote ? 1 : 0));
+
+  // TODO: Translate any source ranges as well.
+  return SM.GetMessage(Loc, Error.getKind(), Error.getMessage(), None,
+                       Error.getFixIts());
 }
 
 SMDiagnostic MIRParserImpl::diagFromLLVMAssemblyDiag(const SMDiagnostic &Error,

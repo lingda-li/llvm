@@ -33,7 +33,7 @@ public:
 
   bool isEOF() const { return Ptr == End; }
 
-  char peek() const { return isEOF() ? 0 : *Ptr; }
+  char peek(int I = 0) const { return End - Ptr <= I ? 0 : Ptr[I]; }
 
   void advance() { ++Ptr; }
 
@@ -64,7 +64,9 @@ static Cursor lexIdentifier(Cursor C, MIToken &Token) {
   auto Range = C;
   while (isIdentifierChar(C.peek()))
     C.advance();
-  Token = MIToken(MIToken::Identifier, Range.upto(C));
+  auto Identifier = Range.upto(C);
+  Token = MIToken(Identifier == "_" ? MIToken::underscore : MIToken::Identifier,
+                  Identifier);
   return C;
 }
 
@@ -74,6 +76,16 @@ static Cursor lexPercent(Cursor C, MIToken &Token) {
   while (isIdentifierChar(C.peek()))
     C.advance();
   Token = MIToken(MIToken::NamedRegister, Range.upto(C));
+  return C;
+}
+
+static Cursor lexIntegerLiteral(Cursor C, MIToken &Token) {
+  auto Range = C;
+  C.advance();
+  while (isdigit(C.peek()))
+    C.advance();
+  StringRef StrVal = Range.upto(C);
+  Token = MIToken(MIToken::IntegerLiteral, StrVal, APSInt(StrVal));
   return C;
 }
 
@@ -109,6 +121,8 @@ StringRef llvm::lexMIToken(
     return lexIdentifier(C, Token).remaining();
   if (Char == '%')
     return lexPercent(C, Token).remaining();
+  if (isdigit(Char) || (Char == '-' && isdigit(C.peek(1))))
+    return lexIntegerLiteral(C, Token).remaining();
   MIToken::TokenKind Kind = symbolToken(Char);
   if (Kind != MIToken::Error)
     return lexSymbol(C, Kind, Token).remaining();
