@@ -227,6 +227,8 @@ public:
                    ArchivePointerTypeTraits<const char> > Current;
   };
 
+  typedef iterator_range<Elf_Sym_Iter> Elf_Sym_Range;
+
 private:
   typedef SmallVector<const Elf_Shdr *, 2> Sections_t;
   typedef DenseMap<unsigned, unsigned> IndexMap_t;
@@ -302,8 +304,7 @@ public:
   const T        *getEntry(uint32_t Section, uint32_t Entry) const;
   template <typename T>
   const T *getEntry(const Elf_Shdr *Section, uint32_t Entry) const;
-  const char     *getString(uint32_t section, uint32_t offset) const;
-  const char     *getString(const Elf_Shdr *section, uint32_t offset) const;
+  ErrorOr<StringRef> getString(const Elf_Shdr *Section, uint32_t Offset) const;
   const char *getDynamicString(uintX_t Offset) const;
   ErrorOr<StringRef> getSymbolVersion(const Elf_Shdr *section,
                                       const Elf_Sym *Symb,
@@ -340,6 +341,9 @@ public:
 
   Elf_Sym_Iter begin_symbols() const;
   Elf_Sym_Iter end_symbols() const;
+  Elf_Sym_Range symbols() const {
+    return make_range(begin_symbols(), end_symbols());
+  }
 
   Elf_Dyn_Iter begin_dynamic_table() const;
   /// \param NULLEnd use one past the first DT_NULL entry as the end instead of
@@ -424,6 +428,7 @@ public:
   const Elf_Sym *getSymbol(uint32_t index) const;
 
   ErrorOr<StringRef> getSymbolName(Elf_Sym_Iter Sym) const;
+  ErrorOr<StringRef> getStaticSymbolName(const Elf_Sym *Symb) const;
 
   /// \brief Get the name of \p Symb.
   /// \param SymTab The symbol table section \p Symb is contained in.
@@ -929,19 +934,12 @@ ELFFile<ELFT>::getSection(uint32_t index) const {
 }
 
 template <class ELFT>
-const char *ELFFile<ELFT>::getString(uint32_t section,
-                                     ELF::Elf32_Word offset) const {
-  return getString(getSection(section), offset);
-}
-
-template <class ELFT>
-const char *ELFFile<ELFT>::getString(const Elf_Shdr *section,
-                                     ELF::Elf32_Word offset) const {
-  assert(section && section->sh_type == ELF::SHT_STRTAB && "Invalid section!");
-  if (offset >= section->sh_size)
-    // FIXME: Proper error handling.
-    report_fatal_error("Symbol name offset outside of string table!");
-  return (const char *)base() + section->sh_offset + offset;
+ErrorOr<StringRef> ELFFile<ELFT>::getString(const Elf_Shdr *Section,
+                                            ELF::Elf32_Word Offset) const {
+  assert(Section && Section->sh_type == ELF::SHT_STRTAB && "Invalid section!");
+  if (Offset >= Section->sh_size)
+    return object_error::parse_failed;
+  return StringRef((const char *)base() + Section->sh_offset + Offset);
 }
 
 template <class ELFT>
@@ -962,23 +960,22 @@ ErrorOr<StringRef> ELFFile<ELFT>::getSymbolName(Elf_Sym_Iter Sym) const {
 }
 
 template <class ELFT>
+ErrorOr<StringRef>
+ELFFile<ELFT>::getStaticSymbolName(const Elf_Sym *Symb) const {
+  return getSymbolName(dot_symtab_sec, Symb);
+}
+
+template <class ELFT>
 ErrorOr<StringRef> ELFFile<ELFT>::getSymbolName(const Elf_Shdr *Section,
                                                 const Elf_Sym *Symb) const {
-  if (Symb->st_name == 0)
-    return StringRef("");
-
   const Elf_Shdr *StrTab = getSection(Section->sh_link);
-  if (Symb->st_name >= StrTab->sh_size)
-    return object_error::parse_failed;
-  return StringRef(getString(StrTab, Symb->st_name));
+  return getString(StrTab, Symb->st_name);
 }
 
 template <class ELFT>
 ErrorOr<StringRef>
 ELFFile<ELFT>::getSectionName(const Elf_Shdr *Section) const {
-  if (Section->sh_name >= dot_shstrtab_sec->sh_size)
-    return object_error::parse_failed;
-  return StringRef(getString(dot_shstrtab_sec, Section->sh_name));
+  return getString(dot_shstrtab_sec, Section->sh_name);
 }
 
 template <class ELFT>
