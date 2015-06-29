@@ -321,6 +321,14 @@ static std::error_code getRelocationValueString(const ELFObjectFile<ELFT> *Obj,
   const ELFFile<ELFT> &EF = *Obj->getELFFile();
 
   const Elf_Shdr *sec = EF.getSection(Rel.d.a);
+  const Elf_Shdr *SymTab = EF.getSection(sec->sh_link);
+  assert(SymTab->sh_type == ELF::SHT_SYMTAB ||
+         SymTab->sh_type == ELF::SHT_DYNSYM);
+  const Elf_Shdr *StrTabSec = EF.getSection(SymTab->sh_link);
+  ErrorOr<StringRef> StrTabOrErr = EF.getStringTable(StrTabSec);
+  if (std::error_code EC = StrTabOrErr.getError())
+    return EC;
+  StringRef StrTab = *StrTabOrErr;
   uint8_t type;
   StringRef res;
   int64_t addend = 0;
@@ -351,8 +359,7 @@ static std::error_code getRelocationValueString(const ELFObjectFile<ELFT> *Obj,
       return EC;
     Target = *SecName;
   } else {
-    ErrorOr<StringRef> SymName =
-        EF.getSymbolName(EF.getSection(sec->sh_link), symb);
+    ErrorOr<StringRef> SymName = EF.getSymbolName(StrTab, symb);
     if (!SymName)
       return SymName.getError();
     Target = *SymName;

@@ -1346,9 +1346,9 @@ void DwarfUnit::constructMemberDIE(DIE &Buffer, const DIDerivedType *DT) {
       addUInt(MemberDie, dwarf::DW_AT_byte_size, None, FieldSize/8);
       addUInt(MemberDie, dwarf::DW_AT_bit_size, None, Size);
       //
-      // The DWARF 2 DW_AT_bit_offset is counting the bits between
-      // the high end of the aligned storage unit containing the bit
-      // field to the high end of the bit field.
+      // The DWARF 2 DW_AT_bit_offset is counting the bits between the most
+      // significant bit of the aligned storage unit containing the bit field to
+      // the most significan bit of the bit field.
       //
       // FIXME: DWARF 4 states that DW_AT_data_bit_offset (which
       // counts from the beginning, regardless of endianness) should
