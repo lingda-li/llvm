@@ -264,52 +264,53 @@ public:
       Header->getDataEncoding() == ELF::ELFDATA2LSB;
   }
 
-  Elf_Shdr_Iter begin_sections() const;
-  Elf_Shdr_Iter end_sections() const;
+  Elf_Shdr_Iter section_begin() const;
+  Elf_Shdr_Iter section_end() const;
   Elf_Shdr_Range sections() const {
-    return make_range(begin_sections(), end_sections());
+    return make_range(section_begin(), section_end());
   }
 
-  const Elf_Sym *begin_symbols() const;
-  const Elf_Sym *end_symbols() const;
+  const Elf_Sym *symbol_begin() const;
+  const Elf_Sym *symbol_end() const;
   Elf_Sym_Range symbols() const {
-    return make_range(begin_symbols(), end_symbols());
+    return make_range(symbol_begin(), symbol_end());
   }
 
-  Elf_Dyn_Iter begin_dynamic_table() const;
+  Elf_Dyn_Iter dynamic_table_begin() const;
   /// \param NULLEnd use one past the first DT_NULL entry as the end instead of
   /// the section size.
-  Elf_Dyn_Iter end_dynamic_table(bool NULLEnd = false) const;
+  Elf_Dyn_Iter dynamic_table_end(bool NULLEnd = false) const;
   Elf_Dyn_Range dynamic_table(bool NULLEnd = false) const {
-    return make_range(begin_dynamic_table(), end_dynamic_table(NULLEnd));
+    return make_range(dynamic_table_begin(), dynamic_table_end(NULLEnd));
   }
 
-  const Elf_Sym *begin_dynamic_symbols() const {
-    if (DynSymRegion.Addr)
-      return reinterpret_cast<const Elf_Sym *>(DynSymRegion.Addr);
-    return nullptr;
+  const Elf_Sym *dynamic_symbol_begin() const {
+    if (!DynSymRegion.Addr)
+      return nullptr;
+    if (DynSymRegion.EntSize != sizeof(Elf_Sym))
+      report_fatal_error("Invalid symbol size");
+    return reinterpret_cast<const Elf_Sym *>(DynSymRegion.Addr);
   }
 
-  const Elf_Sym *end_dynamic_symbols() const {
-    if (DynSymRegion.Addr)
-      return reinterpret_cast<const Elf_Sym *>(
-          ((const char *)DynSymRegion.Addr + DynSymRegion.Size));
-
-    return nullptr;
+  const Elf_Sym *dynamic_symbol_end() const {
+    if (!DynSymRegion.Addr)
+      return nullptr;
+    return reinterpret_cast<const Elf_Sym *>(
+        ((const char *)DynSymRegion.Addr + DynSymRegion.Size));
   }
 
   Elf_Sym_Range dynamic_symbols() const {
-    return make_range(begin_dynamic_symbols(), end_dynamic_symbols());
+    return make_range(dynamic_symbol_begin(), dynamic_symbol_end());
   }
 
-  Elf_Rela_Iter begin_dyn_rela() const {
+  Elf_Rela_Iter dyn_rela_begin() const {
     if (DynRelaRegion.Addr)
       return Elf_Rela_Iter(DynRelaRegion.EntSize,
         (const char *)DynRelaRegion.Addr);
     return Elf_Rela_Iter(0, nullptr);
   }
 
-  Elf_Rela_Iter end_dyn_rela() const {
+  Elf_Rela_Iter dyn_rela_end() const {
     if (DynRelaRegion.Addr)
       return Elf_Rela_Iter(
         DynRelaRegion.EntSize,
@@ -317,23 +318,23 @@ public:
     return Elf_Rela_Iter(0, nullptr);
   }
 
-  Elf_Rela_Iter begin_rela(const Elf_Shdr *sec) const {
+  Elf_Rela_Iter rela_begin(const Elf_Shdr *sec) const {
     return Elf_Rela_Iter(sec->sh_entsize,
                          (const char *)(base() + sec->sh_offset));
   }
 
-  Elf_Rela_Iter end_rela(const Elf_Shdr *sec) const {
+  Elf_Rela_Iter rela_end(const Elf_Shdr *sec) const {
     return Elf_Rela_Iter(
         sec->sh_entsize,
         (const char *)(base() + sec->sh_offset + sec->sh_size));
   }
 
-  Elf_Rel_Iter begin_rel(const Elf_Shdr *sec) const {
+  Elf_Rel_Iter rel_begin(const Elf_Shdr *sec) const {
     return Elf_Rel_Iter(sec->sh_entsize,
                         (const char *)(base() + sec->sh_offset));
   }
 
-  Elf_Rel_Iter end_rel(const Elf_Shdr *sec) const {
+  Elf_Rel_Iter rel_end(const Elf_Shdr *sec) const {
     return Elf_Rel_Iter(sec->sh_entsize,
                         (const char *)(base() + sec->sh_offset + sec->sh_size));
   }
@@ -341,12 +342,12 @@ public:
   /// \brief Iterate over program header table.
   typedef ELFEntityIterator<const Elf_Phdr> Elf_Phdr_Iter;
 
-  Elf_Phdr_Iter begin_program_headers() const {
+  Elf_Phdr_Iter program_header_begin() const {
     return Elf_Phdr_Iter(Header->e_phentsize,
                          (const char*)base() + Header->e_phoff);
   }
 
-  Elf_Phdr_Iter end_program_headers() const {
+  Elf_Phdr_Iter program_header_end() const {
     return Elf_Phdr_Iter(Header->e_phentsize,
                          (const char*)base() +
                            Header->e_phoff +
@@ -365,13 +366,6 @@ public:
   ErrorOr<StringRef> getDynamicSymbolName(const Elf_Sym *Symb) const;
   ErrorOr<StringRef> getSymbolName(const Elf_Sym *Symb, bool IsDynamic) const;
 
-  /// \brief Get the name of \p Symb.
-  /// \param SymTab The symbol table section \p Symb is contained in.
-  /// \param Symb The symbol to get the name of.
-  ///
-  /// \p SymTab is used to lookup the string table to use to get the symbol's
-  /// name.
-  ErrorOr<StringRef> getSymbolName(StringRef StrTab, const Elf_Sym *Symb) const;
   ErrorOr<StringRef> getSectionName(const Elf_Shdr *Section) const;
   uint64_t getSymbolIndex(const Elf_Sym *sym) const;
   ErrorOr<ArrayRef<uint8_t> > getSectionContents(const Elf_Shdr *Sec) const;
@@ -484,7 +478,7 @@ ELFFile<ELFT>::getSection(const Elf_Sym *symb) const {
 template <class ELFT>
 const typename ELFFile<ELFT>::Elf_Sym *
 ELFFile<ELFT>::getSymbol(uint32_t Index) const {
-  return &*(begin_symbols() + Index);
+  return &*(symbol_begin() + Index);
 }
 
 template <class ELFT>
@@ -698,8 +692,8 @@ ELFFile<ELFT>::ELFFile(StringRef Object, std::error_code &EC)
   }
 
   // Scan program headers.
-  for (Elf_Phdr_Iter PhdrI = begin_program_headers(),
-                     PhdrE = end_program_headers();
+  for (Elf_Phdr_Iter PhdrI = program_header_begin(),
+                     PhdrE = program_header_end();
        PhdrI != PhdrE; ++PhdrI) {
     if (PhdrI->p_type == ELF::PT_DYNAMIC) {
       DynamicRegion.Addr = base() + PhdrI->p_offset;
@@ -710,15 +704,15 @@ ELFFile<ELFT>::ELFFile(StringRef Object, std::error_code &EC)
   }
 
   // Scan dynamic table.
-  for (Elf_Dyn_Iter DynI = begin_dynamic_table(), DynE = end_dynamic_table();
-  DynI != DynE; ++DynI) {
+  for (Elf_Dyn_Iter DynI = dynamic_table_begin(), DynE = dynamic_table_end();
+       DynI != DynE; ++DynI) {
     switch (DynI->d_tag) {
     case ELF::DT_RELA: {
       uint64_t VBase = 0;
       const uint8_t *FBase = nullptr;
-      for (Elf_Phdr_Iter PhdrI = begin_program_headers(),
-        PhdrE = end_program_headers();
-        PhdrI != PhdrE; ++PhdrI) {
+      for (Elf_Phdr_Iter PhdrI = program_header_begin(),
+                         PhdrE = program_header_end();
+           PhdrI != PhdrE; ++PhdrI) {
         if (PhdrI->p_type != ELF::PT_LOAD)
           continue;
         if (DynI->getPtr() >= PhdrI->p_vaddr &&
@@ -757,27 +751,29 @@ uint64_t ELFFile<ELFT>::getSymbolIndex(const Elf_Sym *Sym) const {
 }
 
 template <class ELFT>
-typename ELFFile<ELFT>::Elf_Shdr_Iter ELFFile<ELFT>::begin_sections() const {
+typename ELFFile<ELFT>::Elf_Shdr_Iter ELFFile<ELFT>::section_begin() const {
   return Elf_Shdr_Iter(Header->e_shentsize,
                        (const char *)base() + Header->e_shoff);
 }
 
 template <class ELFT>
-typename ELFFile<ELFT>::Elf_Shdr_Iter ELFFile<ELFT>::end_sections() const {
+typename ELFFile<ELFT>::Elf_Shdr_Iter ELFFile<ELFT>::section_end() const {
   return Elf_Shdr_Iter(Header->e_shentsize,
                        (const char *)base() + Header->e_shoff +
                            (getNumSections() * Header->e_shentsize));
 }
 
 template <class ELFT>
-const typename ELFFile<ELFT>::Elf_Sym *ELFFile<ELFT>::begin_symbols() const {
+const typename ELFFile<ELFT>::Elf_Sym *ELFFile<ELFT>::symbol_begin() const {
   if (!dot_symtab_sec)
     return nullptr;
+  if (dot_symtab_sec->sh_entsize != sizeof(Elf_Sym))
+    report_fatal_error("Invalid symbol size");
   return reinterpret_cast<const Elf_Sym *>(base() + dot_symtab_sec->sh_offset);
 }
 
 template <class ELFT>
-const typename ELFFile<ELFT>::Elf_Sym *ELFFile<ELFT>::end_symbols() const {
+const typename ELFFile<ELFT>::Elf_Sym *ELFFile<ELFT>::symbol_end() const {
   if (!dot_symtab_sec)
     return nullptr;
   return reinterpret_cast<const Elf_Sym *>(base() + dot_symtab_sec->sh_offset +
@@ -786,7 +782,7 @@ const typename ELFFile<ELFT>::Elf_Sym *ELFFile<ELFT>::end_symbols() const {
 
 template <class ELFT>
 typename ELFFile<ELFT>::Elf_Dyn_Iter
-ELFFile<ELFT>::begin_dynamic_table() const {
+ELFFile<ELFT>::dynamic_table_begin() const {
   if (DynamicRegion.Addr)
     return Elf_Dyn_Iter(DynamicRegion.EntSize,
                         (const char *)DynamicRegion.Addr);
@@ -795,14 +791,14 @@ ELFFile<ELFT>::begin_dynamic_table() const {
 
 template <class ELFT>
 typename ELFFile<ELFT>::Elf_Dyn_Iter
-ELFFile<ELFT>::end_dynamic_table(bool NULLEnd) const {
+ELFFile<ELFT>::dynamic_table_end(bool NULLEnd) const {
   if (!DynamicRegion.Addr)
     return Elf_Dyn_Iter(0, nullptr);
   Elf_Dyn_Iter Ret(DynamicRegion.EntSize,
                     (const char *)DynamicRegion.Addr + DynamicRegion.Size);
 
   if (NULLEnd) {
-    Elf_Dyn_Iter Start = begin_dynamic_table();
+    Elf_Dyn_Iter Start = dynamic_table_begin();
     while (Start != Ret && Start->getTag() != ELF::DT_NULL)
       ++Start;
 
@@ -881,7 +877,7 @@ const char *ELFFile<ELFT>::getDynamicString(uintX_t Offset) const {
 template <class ELFT>
 ErrorOr<StringRef>
 ELFFile<ELFT>::getStaticSymbolName(const Elf_Sym *Symb) const {
-  return getSymbolName(DotStrtab, Symb);
+  return Symb->getName(DotStrtab);
 }
 
 template <class ELFT>
@@ -896,15 +892,6 @@ ErrorOr<StringRef> ELFFile<ELFT>::getSymbolName(const Elf_Sym *Symb,
   if (IsDynamic)
     return getDynamicSymbolName(Symb);
   return getStaticSymbolName(Symb);
-}
-
-template <class ELFT>
-ErrorOr<StringRef> ELFFile<ELFT>::getSymbolName(StringRef StrTab,
-                                                const Elf_Sym *Sym) const {
-  uint32_t Offset = Sym->st_name;
-  if (Offset >= StrTab.size())
-    return object_error::parse_failed;
-  return StringRef(StrTab.data() + Offset);
 }
 
 template <class ELFT>
@@ -932,7 +919,7 @@ ErrorOr<StringRef> ELFFile<ELFT>::getSymbolVersion(const Elf_Shdr *section,
     // Non-dynamic symbols can have versions in their names
     // A name of the form 'foo@V1' indicates version 'V1', non-default.
     // A name of the form 'foo@@V2' indicates version 'V2', default version.
-    ErrorOr<StringRef> SymName = getSymbolName(StrTab, symb);
+    ErrorOr<StringRef> SymName = symb->getName(StrTab);
     if (!SymName)
       return SymName;
     StringRef Name = *SymName;
