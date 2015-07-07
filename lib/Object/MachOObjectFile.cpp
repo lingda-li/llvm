@@ -368,12 +368,8 @@ std::error_code MachOObjectFile::getIndirectName(DataRefImpl Symb,
   return std::error_code();
 }
 
-uint64_t MachOObjectFile::getSymbolValue(DataRefImpl Sym) const {
-  uint64_t NValue = getNValue(Sym);
-  MachO::nlist_base Entry = getSymbolTableEntryBase(this, Sym);
-  if ((Entry.n_type & MachO::N_TYPE) == MachO::N_UNDF && NValue == 0)
-    return UnknownAddress;
-  return NValue;
+uint64_t MachOObjectFile::getSymbolValueImpl(DataRefImpl Sym) const {
+  return getNValue(Sym);
 }
 
 ErrorOr<uint64_t> MachOObjectFile::getSymbolAddress(DataRefImpl Sym) const {
