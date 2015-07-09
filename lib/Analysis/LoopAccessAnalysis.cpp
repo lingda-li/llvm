@@ -222,18 +222,40 @@ void LoopAccessInfo::RuntimePointerCheck::groupChecks(
   for (unsigned Pointer = 0; Pointer < Pointers.size(); ++Pointer)
     PositionMap[Pointers[Pointer]] = Pointer;
 
+  // We need to keep track of what pointers we've already seen so we
+  // don't process them twice.
+  SmallSet<unsigned, 2> Seen;
+
   // Go through all equivalence classes, get the the "pointer check groups"
-  // and add them to the overall solution.
-  for (auto DI = DepCands.begin(), DE = DepCands.end(); DI != DE; ++DI) {
-    if (!DI->isLeader())
+  // and add them to the overall solution. We use the order in which accesses
+  // appear in 'Pointers' to enforce determinism.
+  for (unsigned I = 0; I < Pointers.size(); ++I) {
+    // We've seen this pointer before, and therefore already processed
+    // its equivalence class.
+    if (Seen.count(I))
       continue;
 
-    SmallVector<CheckingPtrGroup, 2> Groups;
+    MemoryDepChecker::MemAccessInfo Access(Pointers[I], IsWritePtr[I]);
 
-    for (auto MI = DepCands.member_begin(DI), ME = DepCands.member_end();
+    SmallVector<CheckingPtrGroup, 2> Groups;
+    auto LeaderI = DepCands.findValue(DepCands.getLeaderValue(Access));
+
+    SmallVector<unsigned, 2> MemberIndices;
+
+    // Get all indeces of the members of this equivalence class and sort them.
+    // This will allow us to process all accesses in the order in which they
+    // were added to the RuntimePointerCheck.
+    for (auto MI = DepCands.member_begin(LeaderI), ME = DepCands.member_end();
          MI != ME; ++MI) {
       unsigned Pointer = PositionMap[MI->getPointer()];
+      MemberIndices.push_back(Pointer);
+    }
+    std::sort(MemberIndices.begin(), MemberIndices.end());
+
+    for (unsigned Pointer : MemberIndices) {
       bool Merged = false;
+      // Mark this pointer as seen.
+      Seen.insert(Pointer);
 
       // Go through all the existing sets and see if we can find one
       // which can include this pointer.
@@ -373,7 +395,8 @@ public:
 
   AccessAnalysis(const DataLayout &Dl, AliasAnalysis *AA, LoopInfo *LI,
                  MemoryDepChecker::DepCandidates &DA)
-      : DL(Dl), AST(*AA), LI(LI), DepCands(DA), IsRTCheckNeeded(false) {}
+      : DL(Dl), AST(*AA), LI(LI), DepCands(DA),
+        IsRTCheckAnalysisNeeded(false) {}
 
   /// \brief Register a load  and whether it is only read from.
   void addLoad(MemoryLocation &Loc, bool IsReadOnly) {
@@ -405,8 +428,11 @@ public:
     processMemAccesses();
   }
 
-  bool isRTCheckNeeded() { return IsRTCheckNeeded; }
-
+  /// \brief Initial processing of memory accesses determined that we need to
+  /// perform dependency checking.
+  ///
+  /// Note that this can later be cleared if we retry memcheck analysis without
+  /// dependency checking (i.e. ShouldRetryWithRuntimeCheck).
   bool isDependencyCheckNeeded() { return !CheckDeps.empty(); }
 
   /// We decided that no dependence analysis would be used.  Reset the state.
@@ -421,7 +447,7 @@ private:
   typedef SetVector<MemAccessInfo> PtrAccessSet;
 
   /// \brief Go over all memory access and check whether runtime pointer checks
-  /// are needed /// and build sets of dependency check candidates.
+  /// are needed and build sets of dependency check candidates.
   void processMemAccesses();
 
   /// Set of all accesses.
@@ -446,7 +472,14 @@ private:
   /// dependence check.
   MemoryDepChecker::DepCandidates &DepCands;
 
-  bool IsRTCheckNeeded;
+  /// \brief Initial processing of memory accesses determined that we may need
+  /// to add memchecks.  Perform the analysis to determine the necessary checks.
+  ///
+  /// Note that, this is different from isDependencyCheckNeeded.  When we retry
+  /// memcheck analysis without dependency checking
+  /// (i.e. ShouldRetryWithRuntimeCheck), isDependencyCheckNeeded is cleared
+  /// while this remains set if we have potentially dependent accesses.
+  bool IsRTCheckAnalysisNeeded;
 };
 
 } // end anonymous namespace
@@ -471,7 +504,7 @@ bool AccessAnalysis::canCheckPtrAtRT(
   bool CanDoRT = true;
 
   NeedRTCheck = false;
-  if (!IsRTCheckNeeded) return true;
+  if (!IsRTCheckAnalysisNeeded) return true;
 
   bool IsDepCheckNeeded = isDependencyCheckNeeded();
 
@@ -479,6 +512,9 @@ bool AccessAnalysis::canCheckPtrAtRT(
   // Accesses between different groups doesn't need to be checked.
   unsigned ASId = 1;
   for (auto &AS : AST) {
+    int NumReadPtrChecks = 0;
+    int NumWritePtrChecks = 0;
+
     // We assign consecutive id to access from different dependence sets.
     // Accesses within the same set don't need a runtime check.
     unsigned RunningDepId = 1;
@@ -488,6 +524,11 @@ bool AccessAnalysis::canCheckPtrAtRT(
       Value *Ptr = A.getValue();
       bool IsWrite = Accesses.count(MemAccessInfo(Ptr, true));
       MemAccessInfo Access(Ptr, IsWrite);
+
+      if (IsWrite)
+        ++NumWritePtrChecks;
+      else
+        ++NumReadPtrChecks;
 
       if (hasComputableBounds(SE, StridesMap, Ptr) &&
           // When we run after a failing dependency check we have to make sure
@@ -516,14 +557,20 @@ bool AccessAnalysis::canCheckPtrAtRT(
       }
     }
 
+    // If we have at least two writes or one write and a read then we need to
+    // check them.  But there is no need to checks if there is only one
+    // dependence set for this alias set.
+    //
+    // Note that this function computes CanDoRT and NeedRTCheck independently.
+    // For example CanDoRT=false, NeedRTCheck=false means that we have a pointer
+    // for which we couldn't find the bounds but we don't actually need to emit
+    // any checks so it does not matter.
+    if (!(IsDepCheckNeeded && CanDoRT && RunningDepId == 2))
+      NeedRTCheck |= (NumWritePtrChecks >= 2 || (NumReadPtrChecks >= 1 &&
+                                                 NumWritePtrChecks >= 1));
+
     ++ASId;
   }
-
-  // We need a runtime check if there are any accesses that need checking.
-  // However, some accesses cannot be checked (for example because we
-  // can't determine their bounds). In these cases we would need a check
-  // but wouldn't be able to add it.
-  NeedRTCheck = !CanDoRT || RtCheck.needsAnyChecking(nullptr);
 
   // If the pointers that we would use for the bounds comparison have different
   // address spaces, assume the values aren't directly comparable, so we can't
@@ -639,7 +686,7 @@ void AccessAnalysis::processMemAccesses() {
           // catch "a[i] = a[i] + " without having to do a dependence check).
           if ((IsWrite || IsReadOnlyPtr) && SetHasWrite) {
             CheckDeps.insert(Access);
-            IsRTCheckNeeded = true;
+            IsRTCheckAnalysisNeeded = true;
           }
 
           if (IsWrite)
@@ -769,7 +816,7 @@ int llvm::isStridedPtr(ScalarEvolution *SE, Value *Ptr, const Loop *Lp,
   // Check the step is constant.
   const SCEV *Step = AR->getStepRecurrence(*SE);
 
-  // Calculate the pointer stride and check if it is consecutive.
+  // Calculate the pointer stride and check if it is constant.
   const SCEVConstant *C = dyn_cast<SCEVConstant>(Step);
   if (!C) {
     DEBUG(dbgs() << "LAA: Bad stride - Not a constant strided " << *Ptr <<
@@ -974,11 +1021,11 @@ MemoryDepChecker::isDependent(const MemAccessInfo &A, unsigned AIdx,
   DEBUG(dbgs() << "LAA: Distance for " << *InstMap[AIdx] << " to "
         << *InstMap[BIdx] << ": " << *Dist << "\n");
 
-  // Need consecutive accesses. We don't want to vectorize
+  // Need accesses with constant stride. We don't want to vectorize
   // "A[B[i]] += ..." and similar code or pointer arithmetic that could wrap in
   // the address space.
   if (!StrideAPtr || !StrideBPtr || StrideAPtr != StrideBPtr){
-    DEBUG(dbgs() << "Non-consecutive pointer access\n");
+    DEBUG(dbgs() << "Pointer access with non-constant stride\n");
     return Dependence::Unknown;
   }
 
