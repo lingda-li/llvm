@@ -1,4 +1,4 @@
-//===-- WebAssemblySelectionDAGInfo.cpp - WebAssembly SelectionDAG Info ---===//
+//===- IntrinsicsWebAssembly.td - Defines wasm intrinsics --*- tablegen -*-===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -8,13 +8,9 @@
 //===----------------------------------------------------------------------===//
 ///
 /// \file
-/// \brief This file implements the WebAssemblySelectionDAGInfo class.
+/// \brief This file defines all of the WebAssembly-specific intrinsics.
 ///
 //===----------------------------------------------------------------------===//
 
-#include "WebAssemblyTargetMachine.h"
-using namespace llvm;
-
-#define DEBUG_TYPE "wasm-selectiondag-info"
-
-WebAssemblySelectionDAGInfo::~WebAssemblySelectionDAGInfo() {}
+let TargetPrefix = "wasm" in {  // All intrinsics start with "llvm.wasm.".
+}
