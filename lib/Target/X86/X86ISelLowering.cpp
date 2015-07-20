@@ -1352,8 +1352,33 @@ X86TargetLowering::X86TargetLowering(const X86TargetMachine &TM,
     setOperationAction(ISD::TRUNCATE,           MVT::v16i8, Custom);
     setOperationAction(ISD::TRUNCATE,           MVT::v8i32, Custom);
     if (Subtarget->hasDQI()) {
-      setOperationAction(ISD::TRUNCATE,           MVT::v2i1, Custom);
-      setOperationAction(ISD::TRUNCATE,           MVT::v4i1, Custom);
+      setOperationAction(ISD::TRUNCATE,         MVT::v2i1, Custom);
+      setOperationAction(ISD::TRUNCATE,         MVT::v4i1, Custom);
+
+      setOperationAction(ISD::SINT_TO_FP,       MVT::v8i64, Legal);
+      setOperationAction(ISD::UINT_TO_FP,       MVT::v8i64, Legal);
+      setOperationAction(ISD::FP_TO_SINT,       MVT::v8i64, Legal);
+      setOperationAction(ISD::FP_TO_UINT,       MVT::v8i64, Legal);
+      if (Subtarget->hasVLX()) {
+        setOperationAction(ISD::SINT_TO_FP,    MVT::v4i64, Legal);
+        setOperationAction(ISD::SINT_TO_FP,    MVT::v2i64, Legal);
+        setOperationAction(ISD::UINT_TO_FP,    MVT::v4i64, Legal);
+        setOperationAction(ISD::UINT_TO_FP,    MVT::v2i64, Legal);
+        setOperationAction(ISD::FP_TO_SINT,    MVT::v4i64, Legal);
+        setOperationAction(ISD::FP_TO_SINT,    MVT::v2i64, Legal);
+        setOperationAction(ISD::FP_TO_UINT,    MVT::v4i64, Legal);
+        setOperationAction(ISD::FP_TO_UINT,    MVT::v2i64, Legal);
+      }
+    }
+    if (Subtarget->hasVLX()) {
+      setOperationAction(ISD::SINT_TO_FP,       MVT::v8i32, Legal);
+      setOperationAction(ISD::UINT_TO_FP,       MVT::v8i32, Legal);
+      setOperationAction(ISD::FP_TO_SINT,       MVT::v8i32, Legal);
+      setOperationAction(ISD::FP_TO_UINT,       MVT::v8i32, Legal);
+      setOperationAction(ISD::SINT_TO_FP,       MVT::v4i32, Legal);
+      setOperationAction(ISD::UINT_TO_FP,       MVT::v4i32, Legal);
+      setOperationAction(ISD::FP_TO_SINT,       MVT::v4i32, Legal);
+      setOperationAction(ISD::FP_TO_UINT,       MVT::v4i32, Legal);
     }
     setOperationAction(ISD::TRUNCATE,           MVT::v8i1, Custom);
     setOperationAction(ISD::TRUNCATE,           MVT::v16i1, Custom);
@@ -16991,7 +17016,7 @@ static SDValue LowerMUL_LOHI(SDValue Op, const X86Subtarget *Subtarget,
   return DAG.getMergeValues(Ops, dl);
 }
 
-// Return true if the requred (according to Opcode) shift-imm form is natively
+// Return true if the required (according to Opcode) shift-imm form is natively
 // supported by the Subtarget
 static bool SupportedVectorShiftWithImm(MVT VT, const X86Subtarget *Subtarget,
                                         unsigned Opcode) {
@@ -17011,14 +17036,14 @@ static bool SupportedVectorShiftWithImm(MVT VT, const X86Subtarget *Subtarget,
 }
 
 // The shift amount is a variable, but it is the same for all vector lanes.
-// These instrcutions are defined together with shift-immediate.
+// These instructions are defined together with shift-immediate.
 static
 bool SupportedVectorShiftWithBaseAmnt(MVT VT, const X86Subtarget *Subtarget,
                                       unsigned Opcode) {
   return SupportedVectorShiftWithImm(VT, Subtarget, Opcode);
 }
 
-// Return true if the requred (according to Opcode) variable-shift form is
+// Return true if the required (according to Opcode) variable-shift form is
 // natively supported by the Subtarget
 static bool SupportedVectorVarShift(MVT VT, const X86Subtarget *Subtarget,
                                     unsigned Opcode) {
