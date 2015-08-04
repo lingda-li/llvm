@@ -36,7 +36,10 @@ struct MIToken {
     equal,
     underscore,
     colon,
+    coloncolon,
     exclaim,
+    lparen,
+    rparen,
 
     // Keywords
     kw_implicit,
@@ -47,7 +50,18 @@ struct MIToken {
     kw_frame_setup,
     kw_debug_location,
     kw_cfi_offset,
+    kw_cfi_def_cfa_register,
     kw_cfi_def_cfa_offset,
+    kw_cfi_def_cfa,
+    kw_blockaddress,
+    kw_target_index,
+    kw_half,
+    kw_float,
+    kw_double,
+    kw_x86_fp80,
+    kw_fp128,
+    kw_ppc_fp128,
+    kw_volatile,
 
     // Identifier tokens
     Identifier,
@@ -63,9 +77,15 @@ struct MIToken {
 
     // Other tokens
     IntegerLiteral,
+    FloatingPointLiteral,
     VirtualRegister,
     ConstantPoolItem,
-    JumpTableIndex
+    JumpTableIndex,
+    NamedIRBlock,
+    QuotedNamedIRBlock,
+    IRBlock,
+    NamedIRValue,
+    QuotedNamedIRValue,
   };
 
 private:
@@ -96,6 +116,8 @@ public:
            Kind == kw_dead || Kind == kw_killed || Kind == kw_undef;
   }
 
+  bool isMemoryOperandFlag() const { return Kind == kw_volatile; }
+
   bool is(TokenKind K) const { return Kind == K; }
 
   bool isNot(TokenKind K) const { return Kind != K; }
@@ -103,7 +125,8 @@ public:
   StringRef::iterator location() const { return Range.begin(); }
 
   bool isStringValueQuoted() const {
-    return Kind == QuotedNamedGlobalValue || Kind == QuotedExternalSymbol;
+    return Kind == QuotedNamedGlobalValue || Kind == QuotedExternalSymbol ||
+           Kind == QuotedNamedIRBlock || Kind == QuotedNamedIRValue;
   }
 
   /// Return the token's raw string value.
@@ -131,7 +154,8 @@ public:
     return Kind == IntegerLiteral || Kind == MachineBasicBlock ||
            Kind == StackObject || Kind == FixedStackObject ||
            Kind == GlobalValue || Kind == VirtualRegister ||
-           Kind == ConstantPoolItem || Kind == JumpTableIndex;
+           Kind == ConstantPoolItem || Kind == JumpTableIndex ||
+           Kind == IRBlock;
   }
 };
 
