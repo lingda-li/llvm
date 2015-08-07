@@ -55,8 +55,7 @@ Here's the short story for getting up and running quickly with LLVM:
    * ``cd llvm/projects``
    * ``svn co http://llvm.org/svn/llvm-project/compiler-rt/trunk compiler-rt``
 
-#. Checkout libcxx and libcxxabi (required if you want to use the sanitizers
-   on C++ code):
+#. Checkout libcxx and libcxxabi **[Optional]**:
 
    * ``cd where-you-want-llvm-to-live``
    * ``cd llvm/projects``
@@ -536,8 +535,7 @@ If you want to check out compiler-rt (required to build the sanitizers), run:
   % cd llvm/projects
   % git clone http://llvm.org/git/compiler-rt.git
 
-If you want to check out libcxx and libcxxabi (required if you want to use the
-sanitizers on C++ code), run:
+If you want to check out libcxx and libcxxabi (optional), run:
 
 .. code-block:: console
 
@@ -731,9 +729,9 @@ used by people developing LLVM.
 |                         | the configure script. The default list is defined  |
 |                         | as ``LLVM_ALL_TARGETS``, and can be set to include |
 |                         | out-of-tree targets. The default value includes:   |
-|                         | ``AArch64, ARM, CppBackend, Hexagon,               |
-|                         | Mips, MSP430, NVPTX, PowerPC, AMDGPU, Sparc,       |
-|                         | SystemZ, X86, XCore``.                             |
+|                         | ``AArch64, AMDGPU, ARM, BPF, CppBackend, Hexagon,  |
+|                         | Mips, MSP430, NVPTX, PowerPC, Sparc, SystemZ       |
+|                         | X86, XCore``.                                      |
 +-------------------------+----------------------------------------------------+
 | LLVM_ENABLE_DOXYGEN     | Build doxygen-based documentation from the source  |
 |                         | code This is disabled by default because it is     |

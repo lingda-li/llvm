@@ -4875,8 +4875,7 @@ MachineInstr *X86InstrInfo::foldMemoryOperandImpl(
   // For CPUs that favor the register form of a call or push,
   // do not fold loads into calls or pushes, unless optimizing for size
   // aggressively.
-  if (isCallRegIndirect && 
-      !MF.getFunction()->hasFnAttribute(Attribute::MinSize) &&
+  if (isCallRegIndirect && !MF.getFunction()->optForMinSize() &&
       (MI->getOpcode() == X86::CALL32r || MI->getOpcode() == X86::CALL64r ||
        MI->getOpcode() == X86::PUSH16r || MI->getOpcode() == X86::PUSH32r ||
        MI->getOpcode() == X86::PUSH64r))
@@ -5242,6 +5241,7 @@ MachineInstr *X86InstrInfo::foldMemoryOperandImpl(
 
   // Unless optimizing for size, don't fold to avoid partial
   // register update stalls
+  // FIXME: Use Function::optForSize().
   if (!MF.getFunction()->hasFnAttribute(Attribute::OptimizeForSize) &&
       hasPartialRegUpdate(MI->getOpcode()))
     return nullptr;
@@ -5351,6 +5351,7 @@ MachineInstr *X86InstrInfo::foldMemoryOperandImpl(
 
   // Unless optimizing for size, don't fold to avoid partial
   // register update stalls
+  // FIXME: Use Function::optForSize().
   if (!MF.getFunction()->hasFnAttribute(Attribute::OptimizeForSize) &&
       hasPartialRegUpdate(MI->getOpcode()))
     return nullptr;
@@ -6437,6 +6438,44 @@ bool X86InstrInfo::getMachineCombinerPatterns(MachineInstr &Root,
   return false;
 }
 
+/// This is an architecture-specific helper function of reassociateOps.
+/// Set special operand attributes for new instructions after reassociation.
+static void setSpecialOperandAttr(MachineInstr &OldMI1, MachineInstr &OldMI2,
+                                  MachineInstr &NewMI1, MachineInstr &NewMI2) {
+  // Integer instructions define an implicit EFLAGS source register operand as
+  // the third source (fourth total) operand.
+  if (OldMI1.getNumOperands() != 4 || OldMI2.getNumOperands() != 4)
+    return;
+
+  assert(NewMI1.getNumOperands() == 4 && NewMI2.getNumOperands() == 4 &&
+         "Unexpected instruction type for reassociation");
+  
+  MachineOperand &OldOp1 = OldMI1.getOperand(3);
+  MachineOperand &OldOp2 = OldMI2.getOperand(3);
+  MachineOperand &NewOp1 = NewMI1.getOperand(3);
+  MachineOperand &NewOp2 = NewMI2.getOperand(3);
+
+  assert(OldOp1.isReg() && OldOp1.getReg() == X86::EFLAGS && OldOp1.isDead() &&
+         "Must have dead EFLAGS operand in reassociable instruction");
+  assert(OldOp2.isReg() && OldOp2.getReg() == X86::EFLAGS && OldOp2.isDead() &&
+         "Must have dead EFLAGS operand in reassociable instruction");
+
+  (void)OldOp1;
+  (void)OldOp2;
+
+  assert(NewOp1.isReg() && NewOp1.getReg() == X86::EFLAGS &&
+         "Unexpected operand in reassociable instruction");
+  assert(NewOp2.isReg() && NewOp2.getReg() == X86::EFLAGS &&
+         "Unexpected operand in reassociable instruction");
+
+  // Mark the new EFLAGS operands as dead to be helpful to subsequent iterations
+  // of this pass or other passes. The EFLAGS operands must be dead in these new
+  // instructions because the EFLAGS operands in the original instructions must
+  // be dead in order for reassociation to occur.
+  NewOp1.setIsDead();
+  NewOp2.setIsDead();
+}
+
 /// Attempt the following reassociation to reduce critical path length:
 ///   B = A op X (Prev)
 ///   C = B op Y (Root)
@@ -6503,15 +6542,16 @@ static void reassociateOps(MachineInstr &Root, MachineInstr &Prev,
     BuildMI(*MF, Prev.getDebugLoc(), TII->get(Opcode), NewVR)
       .addReg(RegX, getKillRegState(KillX))
       .addReg(RegY, getKillRegState(KillY));
-  InsInstrs.push_back(MIB1);
-
   MachineInstrBuilder MIB2 =
     BuildMI(*MF, Root.getDebugLoc(), TII->get(Opcode), RegC)
       .addReg(RegA, getKillRegState(KillA))
       .addReg(NewVR, getKillRegState(true));
-  InsInstrs.push_back(MIB2);
 
-  // Record old instructions for deletion.
+  setSpecialOperandAttr(Root, Prev, *MIB1, *MIB2);
+
+  // Record new instructions for insertion and old instructions for deletion.
+  InsInstrs.push_back(MIB1);
+  InsInstrs.push_back(MIB2);
   DelInstrs.push_back(&Prev);
   DelInstrs.push_back(&Root);
 }
@@ -6539,6 +6579,41 @@ void X86InstrInfo::genAlternativeCodeSequence(
 
   reassociateOps(Root, *Prev, Pattern, InsInstrs, DelInstrs, InstIdxForVirtReg);
   return;
+}
+
+std::pair<unsigned, unsigned>
+X86InstrInfo::decomposeMachineOperandsTargetFlags(unsigned TF) const {
+  return std::make_pair(TF, 0u);
+}
+
+ArrayRef<std::pair<unsigned, const char *>>
+X86InstrInfo::getSerializableDirectMachineOperandTargetFlags() const {
+  using namespace X86II;
+  static std::pair<unsigned, const char *> TargetFlags[] = {
+      {MO_GOT_ABSOLUTE_ADDRESS, "x86-got-absolute-address"},
+      {MO_PIC_BASE_OFFSET, "x86-pic-base-offset"},
+      {MO_GOT, "x86-got"},
+      {MO_GOTOFF, "x86-gotoff"},
+      {MO_GOTPCREL, "x86-gotpcrel"},
+      {MO_PLT, "x86-plt"},
+      {MO_TLSGD, "x86-tlsgd"},
+      {MO_TLSLD, "x86-tlsld"},
+      {MO_TLSLDM, "x86-tlsldm"},
+      {MO_GOTTPOFF, "x86-gottpoff"},
+      {MO_INDNTPOFF, "x86-indntpoff"},
+      {MO_TPOFF, "x86-tpoff"},
+      {MO_DTPOFF, "x86-dtpoff"},
+      {MO_NTPOFF, "x86-ntpoff"},
+      {MO_GOTNTPOFF, "x86-gotntpoff"},
+      {MO_DLLIMPORT, "x86-dllimport"},
+      {MO_DARWIN_STUB, "x86-darwin-stub"},
+      {MO_DARWIN_NONLAZY, "x86-darwin-nonlazy"},
+      {MO_DARWIN_NONLAZY_PIC_BASE, "x86-darwin-nonlazy-pic-base"},
+      {MO_DARWIN_HIDDEN_NONLAZY_PIC_BASE, "x86-darwin-hidden-nonlazy-pic-base"},
+      {MO_TLVP, "x86-tlvp"},
+      {MO_TLVP_PIC_BASE, "x86-tlvp-pic-base"},
+      {MO_SECREL, "x86-secrel"}};
+  return makeArrayRef(TargetFlags);
 }
 
 namespace {

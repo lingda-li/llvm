@@ -420,12 +420,14 @@ void StructType::setBody(ArrayRef<Type*> Elements, bool isPacked) {
   if (isPacked)
     setSubclassData(getSubclassData() | SCDB_Packed);
 
-  unsigned NumElements = Elements.size();
-  Type **Elts = getContext().pImpl->TypeAllocator.Allocate<Type*>(NumElements);
-  memcpy(Elts, Elements.data(), sizeof(Elements[0]) * NumElements);
-  
-  ContainedTys = Elts;
-  NumContainedTys = NumElements;
+  NumContainedTys = Elements.size();
+
+  if (Elements.empty()) {
+    ContainedTys = nullptr;
+    return;
+  }
+
+  ContainedTys = Elements.copy(getContext().pImpl->TypeAllocator).data();
 }
 
 void StructType::setName(StringRef Name) {
@@ -606,7 +608,8 @@ bool StructType::isLayoutIdentical(StructType *Other) const {
       getNumElements() != Other->getNumElements())
     return false;
   
-  return std::equal(element_begin(), element_end(), Other->element_begin());
+  return element_begin() &&
+         std::equal(element_begin(), element_end(), Other->element_begin());
 }
 
 /// getTypeByName - Return the type with the specified name, or null if there

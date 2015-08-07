@@ -680,6 +680,7 @@ CleanupReturnInst::CleanupReturnInst(const CleanupReturnInst &CRI)
                          CRI.getNumOperands(),
                      CRI.getNumOperands()) {
   SubclassOptionalData = CRI.SubclassOptionalData;
+  setInstructionSubclassData(CRI.getSubclassDataFromInstruction());
   if (Value *RetVal = CRI.getReturnValue())
     setReturnValue(RetVal);
   if (BasicBlock *UnwindDest = CRI.getUnwindDest())
@@ -749,6 +750,7 @@ CatchEndPadInst::CatchEndPadInst(const CatchEndPadInst &CRI)
                          CRI.getNumOperands(),
                      CRI.getNumOperands()) {
   SubclassOptionalData = CRI.SubclassOptionalData;
+  setInstructionSubclassData(CRI.getSubclassDataFromInstruction());
   if (BasicBlock *UnwindDest = CRI.getUnwindDest())
     setUnwindDest(UnwindDest);
 }
@@ -880,15 +882,13 @@ void CatchPadInst::setSuccessorV(unsigned Idx, BasicBlock *B) {
 //===----------------------------------------------------------------------===//
 //                        TerminatePadInst Implementation
 //===----------------------------------------------------------------------===//
-void TerminatePadInst::init(BasicBlock *BB, ArrayRef<Value *> Args,
-                              const Twine &NameStr) {
+void TerminatePadInst::init(BasicBlock *BB, ArrayRef<Value *> Args) {
   SubclassOptionalData = 0;
   if (BB)
     setInstructionSubclassData(getSubclassDataFromInstruction() | 1);
   if (BB)
     Op<-1>() = BB;
   std::copy(Args.begin(), Args.end(), op_begin());
-  setName(NameStr);
 }
 
 TerminatePadInst::TerminatePadInst(const TerminatePadInst &TPI)
@@ -897,27 +897,26 @@ TerminatePadInst::TerminatePadInst(const TerminatePadInst &TPI)
                          TPI.getNumOperands(),
                      TPI.getNumOperands()) {
   SubclassOptionalData = TPI.SubclassOptionalData;
+  setInstructionSubclassData(TPI.getSubclassDataFromInstruction());
   std::copy(TPI.op_begin(), TPI.op_end(), op_begin());
 }
 
 TerminatePadInst::TerminatePadInst(LLVMContext &C, BasicBlock *BB,
-                                       ArrayRef<Value *> Args, unsigned Values,
-                                       const Twine &NameStr,
-                                       Instruction *InsertBefore)
+                                   ArrayRef<Value *> Args, unsigned Values,
+                                   Instruction *InsertBefore)
     : TerminatorInst(Type::getVoidTy(C), Instruction::TerminatePad,
                      OperandTraits<TerminatePadInst>::op_end(this) - Values,
                      Values, InsertBefore) {
-  init(BB, Args, NameStr);
+  init(BB, Args);
 }
 
 TerminatePadInst::TerminatePadInst(LLVMContext &C, BasicBlock *BB,
-                                       ArrayRef<Value *> Args, unsigned Values,
-                                       const Twine &NameStr,
-                                       BasicBlock *InsertAtEnd)
+                                   ArrayRef<Value *> Args, unsigned Values,
+                                   BasicBlock *InsertAtEnd)
     : TerminatorInst(Type::getVoidTy(C), Instruction::TerminatePad,
                      OperandTraits<TerminatePadInst>::op_end(this) - Values,
                      Values, InsertAtEnd) {
-  init(BB, Args, NameStr);
+  init(BB, Args);
 }
 
 BasicBlock *TerminatePadInst::getSuccessorV(unsigned Idx) const {
