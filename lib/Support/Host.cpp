@@ -368,7 +368,13 @@ StringRef sys::getHostCPUName() {
 
       // Broadwell:
       case 61:
+      case 71:
         return "broadwell";
+
+      // Skylake:
+      case 78:
+      case 94:
+        return "skylake";
 
       case 28: // Most 45 nm Intel Atom processors
       case 38: // 45 nm Atom Lincroft
@@ -382,6 +388,7 @@ StringRef sys::getHostCPUName() {
       case 74:
       case 77:
       case 90:
+      case 93:
         return "silvermont";
 
       default: // Unknown family 6 CPU, try to guess.
