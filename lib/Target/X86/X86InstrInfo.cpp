@@ -2456,7 +2456,7 @@ inline static unsigned getTruncatedShiftCount(MachineInstr *MI,
 inline static bool isTruncatedShiftCountForLEA(unsigned ShAmt) {
   // Left shift instructions can be transformed into load-effective-address
   // instructions if we can encode them appropriately.
-  // A LEA instruction utilizes a SIB byte to encode it's scale factor.
+  // A LEA instruction utilizes a SIB byte to encode its scale factor.
   // The SIB.scale field is two bits wide which means that we can encode any
   // shift amount less than 4.
   return ShAmt < 4 && ShAmt > 0;
@@ -6385,11 +6385,17 @@ static bool hasReassociableSibling(const MachineInstr &Inst, bool &Commuted) {
 // TODO: There are many more machine instruction opcodes to match:
 //       1. Other data types (integer, vectors)
 //       2. Other math / logic operations (and, or)
+//       3. Other forms of the same operation (intrinsics and other variants)
 static bool isAssociativeAndCommutative(const MachineInstr &Inst) {
   switch (Inst.getOpcode()) {
   case X86::IMUL16rr:
   case X86::IMUL32rr:
   case X86::IMUL64rr:
+  // Normal min/max instructions are not commutative because of NaN and signed
+  // zero semantics, but these are. Thus, there's no need to check for global
+  // relaxed math; the instructions themselves have the properties we need.
+  case X86::MINCSSrr:
+  case X86::VMINCSSrr:
     return true;
   case X86::ADDPDrr:
   case X86::ADDPSrr:

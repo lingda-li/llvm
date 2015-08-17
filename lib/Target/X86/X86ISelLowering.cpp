@@ -1198,6 +1198,19 @@ X86TargetLowering::X86TargetLowering(const X86TargetMachine &TM,
       setOperationAction(ISD::MUL,             MVT::v8i32, Custom);
       setOperationAction(ISD::MUL,             MVT::v16i16, Custom);
       setOperationAction(ISD::MUL,             MVT::v32i8, Custom);
+
+      setOperationAction(ISD::SMAX,            MVT::v32i8,  Custom);
+      setOperationAction(ISD::SMAX,            MVT::v16i16, Custom);
+      setOperationAction(ISD::SMAX,            MVT::v8i32,  Custom);
+      setOperationAction(ISD::UMAX,            MVT::v32i8,  Custom);
+      setOperationAction(ISD::UMAX,            MVT::v16i16, Custom);
+      setOperationAction(ISD::UMAX,            MVT::v8i32,  Custom);
+      setOperationAction(ISD::SMIN,            MVT::v32i8,  Custom);
+      setOperationAction(ISD::SMIN,            MVT::v16i16, Custom);
+      setOperationAction(ISD::SMIN,            MVT::v8i32,  Custom);
+      setOperationAction(ISD::UMIN,            MVT::v32i8,  Custom);
+      setOperationAction(ISD::UMIN,            MVT::v16i16, Custom);
+      setOperationAction(ISD::UMIN,            MVT::v8i32,  Custom);
     }
 
     // In the customized shift lowering, the legal cases in AVX2 will be
@@ -1716,7 +1729,6 @@ X86TargetLowering::X86TargetLowering(const X86TargetMachine &TM,
   setTargetDAGCombine(ISD::SINT_TO_FP);
   setTargetDAGCombine(ISD::UINT_TO_FP);
   setTargetDAGCombine(ISD::SETCC);
-  setTargetDAGCombine(ISD::INTRINSIC_WO_CHAIN);
   setTargetDAGCombine(ISD::BUILD_VECTOR);
   setTargetDAGCombine(ISD::MUL);
   setTargetDAGCombine(ISD::XOR);
@@ -1903,8 +1915,14 @@ X86TargetLowering::allowsMisalignedMemoryAccesses(EVT VT,
                                                   unsigned,
                                                   unsigned,
                                                   bool *Fast) const {
-  if (Fast)
-    *Fast = Subtarget->isUnalignedMemAccessFast();
+  if (Fast) {
+    // FIXME: We should be checking 128-bit accesses separately from smaller
+    // accesses.
+    if (VT.getSizeInBits() == 256)
+      *Fast = !Subtarget->isUnalignedMem32Slow();
+    else
+      *Fast = Subtarget->isUnalignedMemAccessFast();
+  }
   return true;
 }
 
@@ -4963,7 +4981,7 @@ LowerAsSplatVectorLoad(SDValue SrcOp, MVT VT, SDLoc dl, SelectionDAG &DAG) {
       return SDValue();
     if ((Offset % RequiredAlign) & 3)
       return SDValue();
-    int64_t StartOffset = Offset & ~(RequiredAlign-1);
+    int64_t StartOffset = Offset & ~int64_t(RequiredAlign - 1);
     if (StartOffset) {
       SDLoc DL(Ptr);
       Ptr = DAG.getNode(ISD::ADD, DL, Ptr.getValueType(), Ptr,
@@ -8330,16 +8348,18 @@ static SDValue lowerV8I16GeneralSingleInputVectorShuffle(
     assert(AToAInputs.size() + BToAInputs.size() == 4 &&
            "Must call this with either 3:1 or 1:3 inputs (summing to 4).");
 
+    bool ThreeAInputs = AToAInputs.size() == 3;
+
     // Compute the index of dword with only one word among the three inputs in
     // a half by taking the sum of the half with three inputs and subtracting
     // the sum of the actual three inputs. The difference is the remaining
     // slot.
     int ADWord, BDWord;
-    int &TripleDWord = AToAInputs.size() == 3 ? ADWord : BDWord;
-    int &OneInputDWord = AToAInputs.size() == 3 ? BDWord : ADWord;
-    int TripleInputOffset = AToAInputs.size() == 3 ? AOffset : BOffset;
-    ArrayRef<int> TripleInputs = AToAInputs.size() == 3 ? AToAInputs : BToAInputs;
-    int OneInput = AToAInputs.size() == 3 ? BToAInputs[0] : AToAInputs[0];
+    int &TripleDWord = ThreeAInputs ? ADWord : BDWord;
+    int &OneInputDWord = ThreeAInputs ? BDWord : ADWord;
+    int TripleInputOffset = ThreeAInputs ? AOffset : BOffset;
+    ArrayRef<int> TripleInputs = ThreeAInputs ? AToAInputs : BToAInputs;
+    int OneInput = ThreeAInputs ? BToAInputs[0] : AToAInputs[0];
     int TripleInputSum = 0 + 1 + 2 + 3 + (4 * TripleInputOffset);
     int TripleNonInputIdx =
         TripleInputSum - std::accumulate(TripleInputs.begin(), TripleInputs.end(), 0);
@@ -8408,8 +8428,7 @@ static SDValue lowerV8I16GeneralSingleInputVectorShuffle(
           FixFlippedInputs(BPinnedIdx, BDWord, BToBInputs);
         } else {
           assert(NumFlippedAToBInputs != 0 && "Impossible given predicates!");
-          int APinnedIdx =
-              AToAInputs.size() == 3 ? TripleNonInputIdx : OneInput;
+          int APinnedIdx = ThreeAInputs ? TripleNonInputIdx : OneInput;
           FixFlippedInputs(APinnedIdx, ADWord, AToBInputs);
         }
       }
@@ -11246,14 +11265,25 @@ static SDValue LowerINSERT_SUBVECTOR(SDValue Op, const X86Subtarget *Subtarget,
   // --> load32 addr
   if ((IdxVal == OpVT.getVectorNumElements() / 2) &&
       Vec.getOpcode() == ISD::INSERT_SUBVECTOR &&
-      OpVT.is256BitVector() && SubVecVT.is128BitVector() &&
-      !Subtarget->isUnalignedMem32Slow()) {
-    SDValue SubVec2 = Vec.getOperand(1);
-    if (auto *Idx2 = dyn_cast<ConstantSDNode>(Vec.getOperand(2))) {
-      if (Idx2->getZExtValue() == 0) {
-        SDValue Ops[] = { SubVec2, SubVec };
-        if (SDValue Ld = EltsFromConsecutiveLoads(OpVT, Ops, dl, DAG, false))
-          return Ld;
+      OpVT.is256BitVector() && SubVecVT.is128BitVector()) {
+    auto *Idx2 = dyn_cast<ConstantSDNode>(Vec.getOperand(2));
+    if (Idx2 && Idx2->getZExtValue() == 0) {
+      SDValue SubVec2 = Vec.getOperand(1);
+      // If needed, look through a bitcast to get to the load.
+      if (SubVec2.getNode() && SubVec2.getOpcode() == ISD::BITCAST)
+        SubVec2 = SubVec2.getOperand(0);
+      
+      if (auto *FirstLd = dyn_cast<LoadSDNode>(SubVec2)) {
+        bool Fast;
+        unsigned Alignment = FirstLd->getAlignment();
+        unsigned AS = FirstLd->getAddressSpace();
+        const X86TargetLowering *TLI = Subtarget->getTargetLowering();
+        if (TLI->allowsMemoryAccess(*DAG.getContext(), DAG.getDataLayout(),
+                                    OpVT, AS, Alignment, &Fast) && Fast) {
+          SDValue Ops[] = { SubVec2, SubVec };
+          if (SDValue Ld = EltsFromConsecutiveLoads(OpVT, Ops, dl, DAG, false))
+            return Ld;
+        }
       }
     }
   }
@@ -12706,7 +12736,7 @@ static SDValue LowerFABSorFNEG(SDValue Op, SelectionDAG &DAG) {
   MVT LogicVT;
   MVT EltVT;
   unsigned NumElts;
-  
+
   if (VT.isVector()) {
     LogicVT = VT;
     EltVT = VT.getVectorElementType();
@@ -15423,7 +15453,7 @@ static SDValue LowerINTRINSIC_WO_CHAIN(SDValue Op, const X86Subtarget *Subtarget
       SDValue Mask = Op.getOperand(3);
       SDValue RoundingMode;
       // We allways add rounding mode to the Node.
-      // If the rounding mode is not specified, we add the 
+      // If the rounding mode is not specified, we add the
       // "current direction" mode.
       if (Op.getNumOperands() == 4)
         RoundingMode =
@@ -16875,6 +16905,13 @@ static SDValue LowerSUB(SDValue Op, SelectionDAG &DAG) {
   if (Op.getValueType() == MVT::i1)
     return DAG.getNode(ISD::XOR, SDLoc(Op), Op.getValueType(),
                        Op.getOperand(0), Op.getOperand(1));
+  assert(Op.getSimpleValueType().is256BitVector() &&
+         Op.getSimpleValueType().isInteger() &&
+         "Only handle AVX 256-bit vector integer operation");
+  return Lower256IntArith(Op, DAG);
+}
+
+static SDValue LowerMINMAX(SDValue Op, SelectionDAG &DAG) {
   assert(Op.getSimpleValueType().is256BitVector() &&
          Op.getSimpleValueType().isInteger() &&
          "Only handle AVX 256-bit vector integer operation");
@@ -18772,6 +18809,10 @@ SDValue X86TargetLowering::LowerOperation(SDValue Op, SelectionDAG &DAG) const {
   case ISD::SUBE:               return LowerADDC_ADDE_SUBC_SUBE(Op, DAG);
   case ISD::ADD:                return LowerADD(Op, DAG);
   case ISD::SUB:                return LowerSUB(Op, DAG);
+  case ISD::SMAX:
+  case ISD::SMIN:
+  case ISD::UMAX:
+  case ISD::UMIN:               return LowerMINMAX(Op, DAG);
   case ISD::FSINCOS:            return LowerFSINCOS(Op, Subtarget, DAG);
   case ISD::MGATHER:            return LowerMGATHER(Op, Subtarget, DAG);
   case ISD::MSCATTER:           return LowerMSCATTER(Op, Subtarget, DAG);
@@ -22365,96 +22406,6 @@ static SDValue PerformEXTRACT_VECTOR_ELTCombine(SDNode *N, SelectionDAG &DAG,
   return SDValue();
 }
 
-/// \brief Matches a VSELECT onto min/max or return 0 if the node doesn't match.
-static std::pair<unsigned, bool>
-matchIntegerMINMAX(SDValue Cond, EVT VT, SDValue LHS, SDValue RHS,
-                   SelectionDAG &DAG, const X86Subtarget *Subtarget) {
-  if (!VT.isVector())
-    return std::make_pair(0, false);
-
-  bool NeedSplit = false;
-  switch (VT.getSimpleVT().SimpleTy) {
-  default: return std::make_pair(0, false);
-  case MVT::v4i64:
-  case MVT::v2i64:
-    if (!Subtarget->hasVLX())
-      return std::make_pair(0, false);
-    break;
-  case MVT::v64i8:
-  case MVT::v32i16:
-    if (!Subtarget->hasBWI())
-      return std::make_pair(0, false);
-    break;
-  case MVT::v16i32:
-  case MVT::v8i64:
-    if (!Subtarget->hasAVX512())
-      return std::make_pair(0, false);
-    break;
-  case MVT::v32i8:
-  case MVT::v16i16:
-  case MVT::v8i32:
-    if (!Subtarget->hasAVX2())
-      NeedSplit = true;
-    if (!Subtarget->hasAVX())
-      return std::make_pair(0, false);
-    break;
-  case MVT::v16i8:
-  case MVT::v8i16:
-  case MVT::v4i32:
-    if (!Subtarget->hasSSE2())
-      return std::make_pair(0, false);
-  }
-
-  // SSE2 has only a small subset of the operations.
-  bool hasUnsigned = Subtarget->hasSSE41() ||
-                     (Subtarget->hasSSE2() && VT == MVT::v16i8);
-  bool hasSigned = Subtarget->hasSSE41() ||
-                   (Subtarget->hasSSE2() && VT == MVT::v8i16);
-
-  ISD::CondCode CC = cast<CondCodeSDNode>(Cond.getOperand(2))->get();
-
-  unsigned Opc = 0;
-  // Check for x CC y ? x : y.
-  if (DAG.isEqualTo(LHS, Cond.getOperand(0)) &&
-      DAG.isEqualTo(RHS, Cond.getOperand(1))) {
-    switch (CC) {
-    default: break;
-    case ISD::SETULT:
-    case ISD::SETULE:
-      Opc = hasUnsigned ? ISD::UMIN : 0; break;
-    case ISD::SETUGT:
-    case ISD::SETUGE:
-      Opc = hasUnsigned ? ISD::UMAX : 0; break;
-    case ISD::SETLT:
-    case ISD::SETLE:
-      Opc = hasSigned ? ISD::SMIN : 0; break;
-    case ISD::SETGT:
-    case ISD::SETGE:
-      Opc = hasSigned ? ISD::SMAX : 0; break;
-    }
-  // Check for x CC y ? y : x -- a min/max with reversed arms.
-  } else if (DAG.isEqualTo(LHS, Cond.getOperand(1)) &&
-             DAG.isEqualTo(RHS, Cond.getOperand(0))) {
-    switch (CC) {
-    default: break;
-    case ISD::SETULT:
-    case ISD::SETULE:
-      Opc = hasUnsigned ? ISD::UMAX : 0; break;
-    case ISD::SETUGT:
-    case ISD::SETUGE:
-      Opc = hasUnsigned ? ISD::UMIN : 0; break;
-    case ISD::SETLT:
-    case ISD::SETLE:
-      Opc = hasSigned ? ISD::SMAX : 0; break;
-    case ISD::SETGT:
-    case ISD::SETGE:
-      Opc = hasSigned ? ISD::SMIN : 0; break;
-    }
-  }
-
-  return std::make_pair(Opc, NeedSplit);
-}
-
 static SDValue
 transformVSELECTtoBlendVECTOR_SHUFFLE(SDNode *N, SelectionDAG &DAG,
                                       const X86Subtarget *Subtarget) {
@@ -22862,32 +22813,6 @@ static SDValue PerformSELECTCombine(SDNode *N, SelectionDAG &DAG,
                 DAG.getConstant(OpRHSConst->getAPIntValue(), DL, VT));
         }
     }
-  }
-
-  // Try to match a min/max vector operation.
-  if (N->getOpcode() == ISD::VSELECT && Cond.getOpcode() == ISD::SETCC) {
-    std::pair<unsigned, bool> ret = matchIntegerMINMAX(Cond, VT, LHS, RHS, DAG, Subtarget);
-    unsigned Opc = ret.first;
-    bool NeedSplit = ret.second;
-
-    if (Opc && NeedSplit) {
-      unsigned NumElems = VT.getVectorNumElements();
-      // Extract the LHS vectors
-      SDValue LHS1 = Extract128BitVector(LHS, 0, DAG, DL);
-      SDValue LHS2 = Extract128BitVector(LHS, NumElems/2, DAG, DL);
-
-      // Extract the RHS vectors
-      SDValue RHS1 = Extract128BitVector(RHS, 0, DAG, DL);
-      SDValue RHS2 = Extract128BitVector(RHS, NumElems/2, DAG, DL);
-
-      // Create min/max for each subvector
-      LHS = DAG.getNode(Opc, DL, LHS1.getValueType(), LHS1, RHS1);
-      RHS = DAG.getNode(Opc, DL, LHS2.getValueType(), LHS2, RHS2);
-
-      // Merge the result
-      return DAG.getNode(ISD::CONCAT_VECTORS, DL, VT, LHS, RHS);
-    } else if (Opc)
-      return DAG.getNode(Opc, DL, VT, LHS, RHS);
   }
 
   // Simplify vector selection if condition value type matches vselect
@@ -23431,62 +23356,15 @@ static SDValue PerformCMOVCombine(SDNode *N, SelectionDAG &DAG,
   return SDValue();
 }
 
-static SDValue PerformINTRINSIC_WO_CHAINCombine(SDNode *N, SelectionDAG &DAG,
-                                                const X86Subtarget *Subtarget) {
-  unsigned IntNo = cast<ConstantSDNode>(N->getOperand(0))->getZExtValue();
-  switch (IntNo) {
-  default: return SDValue();
-  // SSE/AVX/AVX2 blend intrinsics.
-  case Intrinsic::x86_avx2_pblendvb:
-    // Don't try to simplify this intrinsic if we don't have AVX2.
-    if (!Subtarget->hasAVX2())
-      return SDValue();
-    // FALL-THROUGH
-  case Intrinsic::x86_avx_blendv_pd_256:
-  case Intrinsic::x86_avx_blendv_ps_256:
-    // Don't try to simplify this intrinsic if we don't have AVX.
-    if (!Subtarget->hasAVX())
-      return SDValue();
-    // FALL-THROUGH
-  case Intrinsic::x86_sse41_blendvps:
-  case Intrinsic::x86_sse41_blendvpd:
-  case Intrinsic::x86_sse41_pblendvb: {
-    SDValue Op0 = N->getOperand(1);
-    SDValue Op1 = N->getOperand(2);
-    SDValue Mask = N->getOperand(3);
-
-    // Don't try to simplify this intrinsic if we don't have SSE4.1.
-    if (!Subtarget->hasSSE41())
-      return SDValue();
-
-    // fold (blend A, A, Mask) -> A
-    if (Op0 == Op1)
-      return Op0;
-    // fold (blend A, B, allZeros) -> A
-    if (ISD::isBuildVectorAllZeros(Mask.getNode()))
-      return Op0;
-    // fold (blend A, B, allOnes) -> B
-    if (ISD::isBuildVectorAllOnes(Mask.getNode()))
-      return Op1;
-
-    // Simplify the case where the mask is a constant i32 value.
-    if (ConstantSDNode *C = dyn_cast<ConstantSDNode>(Mask)) {
-      if (C->isNullValue())
-        return Op0;
-      if (C->isAllOnesValue())
-        return Op1;
-    }
-
-    return SDValue();
-  }
-  }
-}
-
 /// PerformMulCombine - Optimize a single multiply with constant into two
 /// in order to implement it with two cheaper instructions, e.g.
 /// LEA + SHL, LEA + LEA.
 static SDValue PerformMulCombine(SDNode *N, SelectionDAG &DAG,
                                  TargetLowering::DAGCombinerInfo &DCI) {
+  // An imul is usually smaller than the alternative sequence.
+  if (DAG.getMachineFunction().getFunction()->optForMinSize())
+    return SDValue();
+
   if (DCI.isBeforeLegalize() || DCI.isCalledByLegalizer())
     return SDValue();
 
@@ -25746,8 +25624,6 @@ SDValue X86TargetLowering::PerformDAGCombine(SDNode *N,
   case X86ISD::VPERM2X128:
   case ISD::VECTOR_SHUFFLE: return PerformShuffleCombine(N, DAG, DCI,Subtarget);
   case ISD::FMA:            return PerformFMACombine(N, DAG, Subtarget);
-  case ISD::INTRINSIC_WO_CHAIN:
-    return PerformINTRINSIC_WO_CHAINCombine(N, DAG, Subtarget);
   case X86ISD::INSERTPS: {
     if (getTargetMachine().getOptLevel() > CodeGenOpt::None)
       return PerformINSERTPSCombine(N, DAG, Subtarget);
