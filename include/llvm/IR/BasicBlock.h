@@ -40,8 +40,6 @@ template<> struct ilist_traits<BasicBlock>
   BasicBlock *provideInitialHead() const { return createSentinel(); }
   BasicBlock *ensureHead(BasicBlock*) const { return createSentinel(); }
   static void noteHead(BasicBlock*, BasicBlock*) {}
-
-  static ValueSymbolTable *getSymTab(Function *ItemParent);
 private:
   mutable ilist_half_node<BasicBlock> Sentinel;
 };
@@ -253,7 +251,7 @@ public:
         InstListType &getInstList()       { return InstList; }
 
   /// \brief Returns a pointer to a member of the instruction list.
-  static iplist<Instruction> BasicBlock::*getSublistAccess(Instruction*) {
+  static InstListType BasicBlock::*getSublistAccess(Instruction*) {
     return &BasicBlock::InstList;
   }
 

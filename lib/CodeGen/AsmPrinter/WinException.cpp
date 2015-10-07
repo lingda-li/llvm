@@ -113,10 +113,10 @@ void WinException::endFunction(const MachineFunction *MF) {
   if (F->hasPersonalityFn())
     Per = classifyEHPersonality(F->getPersonalityFn());
 
-  // Get rid of any dead landing pads if we're not using a Windows EH scheme. In
-  // Windows EH schemes, the landing pad is not actually reachable. It only
-  // exists so that we can emit the right table data.
-  if (!isMSVCEHPersonality(Per))
+  // Get rid of any dead landing pads if we're not using funclets. In funclet
+  // schemes, the landing pad is not actually reachable. It only exists so
+  // that we can emit the right table data.
+  if (!isFuncletEHPersonality(Per))
     MMI->TidyLandingPads();
 
   endFunclet();
@@ -292,6 +292,7 @@ const MCExpr *WinException::getLabelPlusOne(MCSymbol *Label) {
                                  Asm->OutContext);
 }
 
+namespace {
 /// Information describing an invoke range.
 struct InvokeRange {
   MCSymbol *BeginLabel = nullptr;
@@ -329,6 +330,7 @@ private:
   MachineBasicBlock::const_iterator MBBIEnd;
   InvokeRange CurRange;
 };
+} // end anonymous namespace
 
 /// Invoke label range iteration logic. Increment MBBI until we find the next
 /// EH_LABEL pair, and then update MBBI to point after the end label.
@@ -425,8 +427,10 @@ void WinException::emitCSpecificHandlerTable(const MachineFunction *MF) {
 
     // Use the assembler to compute the number of table entries through label
     // difference and division.
-    MCSymbol *TableBegin = Ctx.createTempSymbol("lsda_begin");
-    MCSymbol *TableEnd = Ctx.createTempSymbol("lsda_end");
+    MCSymbol *TableBegin =
+        Ctx.createTempSymbol("lsda_begin", /*AlwaysAddSuffix=*/true);
+    MCSymbol *TableEnd =
+        Ctx.createTempSymbol("lsda_end", /*AlwaysAddSuffix=*/true);
     const MCExpr *LabelDiff =
         MCBinaryExpr::createSub(MCSymbolRefExpr::create(TableEnd, Ctx),
                                 MCSymbolRefExpr::create(TableBegin, Ctx), Ctx);
