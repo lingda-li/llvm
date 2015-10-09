@@ -1057,6 +1057,7 @@ void X86FrameLowering::emitEpilogue(MachineFunction &MF,
   bool IsWin64Prologue = MF.getTarget().getMCAsmInfo()->usesWindowsCFI();
   bool NeedsWinCFI =
       IsWin64Prologue && MF.getFunction()->needsUnwindTableEntry();
+  bool IsFunclet = isFuncletReturnInstr(MBBI);
 
   // Get the number of bytes to allocate from the FrameInfo.
   uint64_t StackSize = MFI->getStackSize();
@@ -1170,8 +1171,10 @@ void X86FrameLowering::emitEpilogue(MachineFunction &MF,
 
   // If dynamic alloca is used, then reset esp to point to the last callee-saved
   // slot before popping them off! Same applies for the case, when stack was
-  // realigned.
-  if (TRI->needsStackRealignment(MF) || MFI->hasVarSizedObjects()) {
+  // realigned. Don't do this if this was a funclet epilogue, since the funclets
+  // will not do realignment or dynamic stack allocation.
+  if ((TRI->needsStackRealignment(MF) || MFI->hasVarSizedObjects()) &&
+      !IsFunclet) {
     if (TRI->needsStackRealignment(MF))
       MBBI = FirstCSPop;
     unsigned SEHFrameOffset = calculateSetFPREG(SEHStackAllocAmt);
@@ -2175,12 +2178,9 @@ MachineBasicBlock::iterator X86FrameLowering::restoreWin32EHStackPointers(
   int EHRegOffset = getFrameIndexReference(MF, FI, UsedReg);
   int EndOffset = -EHRegOffset - EHRegSize;
   FuncInfo.EHRegNodeEndOffset = EndOffset;
-  assert(EndOffset >= 0 &&
-         "end of registration object above normal EBP position!");
 
   if (UsedReg == FramePtr) {
     // ADD $offset, %ebp
-    assert(UsedReg == FramePtr);
     unsigned ADDri = getADDriOpcode(false, EndOffset);
     BuildMI(MBB, MBBI, DL, TII.get(ADDri), FramePtr)
         .addReg(FramePtr)
@@ -2188,8 +2188,9 @@ MachineBasicBlock::iterator X86FrameLowering::restoreWin32EHStackPointers(
         .setMIFlag(MachineInstr::FrameSetup)
         ->getOperand(3)
         .setIsDead();
-  } else {
-    assert(UsedReg == BasePtr);
+    assert(EndOffset >= 0 &&
+           "end of registration object above normal EBP position!");
+  } else if (UsedReg == BasePtr) {
     // LEA offset(%ebp), %esi
     addRegOffset(BuildMI(MBB, MBBI, DL, TII.get(X86::LEA32r), BasePtr),
                  FramePtr, false, EndOffset)
@@ -2202,6 +2203,8 @@ MachineBasicBlock::iterator X86FrameLowering::restoreWin32EHStackPointers(
     addRegOffset(BuildMI(MBB, MBBI, DL, TII.get(X86::MOV32rm), FramePtr),
                  UsedReg, true, Offset)
         .setMIFlag(MachineInstr::FrameSetup);
+  } else {
+    llvm_unreachable("32-bit frames with WinEH must use FramePtr or BasePtr");
   }
   return MBBI;
 }

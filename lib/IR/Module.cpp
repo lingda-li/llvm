@@ -38,9 +38,9 @@ using namespace llvm;
 
 // Explicit instantiations of SymbolTableListTraits since some of the methods
 // are not in the public header file.
-template class llvm::SymbolTableListTraits<Function, Module>;
-template class llvm::SymbolTableListTraits<GlobalVariable, Module>;
-template class llvm::SymbolTableListTraits<GlobalAlias, Module>;
+template class llvm::SymbolTableListTraits<Function>;
+template class llvm::SymbolTableListTraits<GlobalVariable>;
+template class llvm::SymbolTableListTraits<GlobalAlias>;
 
 //===----------------------------------------------------------------------===//
 // Primitive Module methods.
@@ -277,7 +277,7 @@ NamedMDNode *Module::getOrInsertNamedMetadata(StringRef Name) {
 /// delete it.
 void Module::eraseNamedMetadata(NamedMDNode *NMD) {
   static_cast<StringMap<NamedMDNode *> *>(NamedMDSymTab)->erase(NMD->getName());
-  NamedMDList.erase(NMD);
+  NamedMDList.erase(NMD->getIterator());
 }
 
 bool Module::isValidModFlagBehavior(Metadata *MD, ModFlagBehavior &MFB) {
