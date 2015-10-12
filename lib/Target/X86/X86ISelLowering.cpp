@@ -2701,10 +2701,6 @@ SDValue X86TargetLowering::LowerFormalArguments(
   }
 
   MachineModuleInfo &MMI = MF.getMMI();
-  const Function *WinEHParent = nullptr;
-  if (MMI.hasWinEHFuncInfo(Fn))
-    WinEHParent = MMI.getWinEHParent(Fn);
-  bool IsWinEHParent = WinEHParent && WinEHParent == Fn;
 
   // Figure out if XMM registers are in use.
   assert(!(Subtarget->useSoftFloat() &&
@@ -2861,7 +2857,7 @@ SDValue X86TargetLowering::LowerFormalArguments(
 
   FuncInfo->setArgumentStackSize(StackSize);
 
-  if (IsWinEHParent) {
+  if (MMI.hasWinEHFuncInfo(Fn)) {
     if (Is64Bit) {
       int UnwindHelpFI = MFI->CreateStackObject(8, 8, /*isSS=*/false);
       SDValue StackSlot = DAG.getFrameIndex(UnwindHelpFI, MVT::i64);
@@ -14157,6 +14153,35 @@ static SDValue LowerVSETCC(SDValue Op, const X86Subtarget *Subtarget,
                        DAG.getConstant(SSECC, dl, MVT::i8));
   }
 
+  MVT VTOp0 = Op0.getSimpleValueType();
+  assert(VTOp0 == Op1.getSimpleValueType() &&
+         "Expected operands with same type!");
+  assert(VT.getVectorNumElements() == VTOp0.getVectorNumElements() &&
+         "Invalid number of packed elements for source and destination!");
+
+  if (VT.is128BitVector() && VTOp0.is256BitVector()) {
+    // On non-AVX512 targets, a vector of MVT::i1 is promoted by the type
+    // legalizer to a wider vector type.  In the case of 'vsetcc' nodes, the
+    // legalizer firstly checks if the first operand in input to the setcc has
+    // a legal type. If so, then it promotes the return type to that same type.
+    // Otherwise, the return type is promoted to the 'next legal type' which,
+    // for a vector of MVT::i1 is always a 128-bit integer vector type.
+    //
+    // We reach this code only if the following two conditions are met:
+    // 1. Both return type and operand type have been promoted to wider types
+    //    by the type legalizer.
+    // 2. The original operand type has been promoted to a 256-bit vector.
+    //
+    // Note that condition 2. only applies for AVX targets.
+    SDValue NewOp = DAG.getSetCC(dl, VTOp0, Op0, Op1, SetCCOpcode);
+    return DAG.getZExtOrTrunc(NewOp, dl, VT);
+  }
+
+  // The non-AVX512 code below works under the assumption that source and
+  // destination types are the same.
+  assert((Subtarget->hasAVX512() || (VT == VTOp0)) &&
+         "Value types for source and destination must be the same!");
+
   // Break 256-bit integer vector compare into smaller ones.
   if (VT.is256BitVector() && !Subtarget->hasInt256())
     return Lower256IntVSETCC(Op, DAG);
@@ -14181,6 +14206,33 @@ static SDValue LowerVSETCC(SDValue Op, const X86Subtarget *Subtarget,
          OpVT.getVectorElementType().getSizeInBits() >= 8))
       return DAG.getNode(ISD::TRUNCATE, dl, VT,
                          DAG.getNode(ISD::SETCC, dl, OpVT, Op0, Op1, CC));
+  }
+
+  // Lower using XOP integer comparisons.
+  if ((VT == MVT::v16i8 || VT == MVT::v8i16 ||
+       VT == MVT::v4i32 || VT == MVT::v2i64) && Subtarget->hasXOP()) {
+    // Translate compare code to XOP PCOM compare mode.
+    unsigned CmpMode = 0;
+    switch (SetCCOpcode) {
+    default: llvm_unreachable("Unexpected SETCC condition");
+    case ISD::SETULT:
+    case ISD::SETLT: CmpMode = 0x00; break;
+    case ISD::SETULE:
+    case ISD::SETLE: CmpMode = 0x01; break;
+    case ISD::SETUGT:
+    case ISD::SETGT: CmpMode = 0x02; break;
+    case ISD::SETUGE:
+    case ISD::SETGE: CmpMode = 0x03; break;
+    case ISD::SETEQ: CmpMode = 0x04; break;
+    case ISD::SETNE: CmpMode = 0x05; break;
+    }
+
+    // Are we comparing unsigned or signed integers?
+    unsigned Opc = ISD::isUnsignedIntSetCC(SetCCOpcode)
+      ? X86ISD::VPCOMU : X86ISD::VPCOM;
+
+    return DAG.getNode(Opc, dl, VT, Op0, Op1,
+                       DAG.getConstant(CmpMode, dl, MVT::i8));
   }
 
   // We are handling one of the integer comparisons here.  Since SSE only has
@@ -19855,6 +19907,8 @@ const char *X86TargetLowering::getTargetNodeName(unsigned Opcode) const {
   case X86ISD::VPMADDWD:           return "X86ISD::VPMADDWD";
   case X86ISD::VPSHA:              return "X86ISD::VPSHA";
   case X86ISD::VPSHL:              return "X86ISD::VPSHL";
+  case X86ISD::VPCOM:              return "X86ISD::VPCOM";
+  case X86ISD::VPCOMU:             return "X86ISD::VPCOMU";
   case X86ISD::FMADD:              return "X86ISD::FMADD";
   case X86ISD::FMSUB:              return "X86ISD::FMSUB";
   case X86ISD::FNMADD:             return "X86ISD::FNMADD";
@@ -21966,10 +22020,22 @@ static bool combineX86ShuffleChain(SDValue Op, SDValue Root, ArrayRef<int> Mask,
   MVT RootVT = Root.getSimpleValueType();
   SDLoc DL(Root);
 
-  // Just remove no-op shuffle masks.
   if (Mask.size() == 1) {
-    DCI.CombineTo(Root.getNode(), DAG.getBitcast(RootVT, Input),
-                  /*AddTo*/ true);
+    int Index = Mask[0];
+    assert((Index >= 0 || Index == SM_SentinelUndef ||
+            Index == SM_SentinelZero) &&
+           "Invalid shuffle index found!");
+
+    // We may end up with an accumulated mask of size 1 as a result of
+    // widening of shuffle operands (see function canWidenShuffleElements).
+    // If the only shuffle index is equal to SM_SentinelZero then propagate
+    // a zero vector. Otherwise, the combine shuffle mask is a no-op shuffle
+    // mask, and therefore the entire chain of shuffles can be folded away.
+    if (Index == SM_SentinelZero)
+      DCI.CombineTo(Root.getNode(), getZeroVector(RootVT, Subtarget, DAG, DL));
+    else
+      DCI.CombineTo(Root.getNode(), DAG.getBitcast(RootVT, Input),
+                    /*AddTo*/ true);
     return true;
   }
 
@@ -22913,15 +22979,15 @@ static SDValue PerformEXTRACT_VECTOR_ELTCombine(SDNode *N, SelectionDAG &DAG,
                          InputVector.getNode()->getOperand(0));
 
     // The mmx is indirect: (i64 extract_elt (v1i64 bitcast (x86mmx ...))).
-    SDValue MMXSrcOp = MMXSrc.getOperand(0);
     if (MMXSrc.getOpcode() == ISD::EXTRACT_VECTOR_ELT && MMXSrc.hasOneUse() &&
-        MMXSrc.getValueType() == MVT::i64 && MMXSrcOp.hasOneUse() &&
-        MMXSrcOp.getOpcode() == ISD::BITCAST &&
-        MMXSrcOp.getValueType() == MVT::v1i64 &&
-        MMXSrcOp.getOperand(0).getValueType() == MVT::x86mmx)
-      return DAG.getNode(X86ISD::MMX_MOVD2W, SDLoc(InputVector),
-                         N->getValueType(0),
-                         MMXSrcOp.getOperand(0));
+        MMXSrc.getValueType() == MVT::i64) {
+      SDValue MMXSrcOp = MMXSrc.getOperand(0);
+      if (MMXSrcOp.hasOneUse() && MMXSrcOp.getOpcode() == ISD::BITCAST &&
+          MMXSrcOp.getValueType() == MVT::v1i64 &&
+          MMXSrcOp.getOperand(0).getValueType() == MVT::x86mmx)
+        return DAG.getNode(X86ISD::MMX_MOVD2W, SDLoc(InputVector),
+                           N->getValueType(0), MMXSrcOp.getOperand(0));
+    }
   }
 
   EVT VT = N->getValueType(0);
@@ -25699,10 +25765,7 @@ static SDValue PerformSExtCombine(SDNode *N, SelectionDAG &DAG,
     }
   }
 
-  if (!Subtarget->hasFp256())
-    return SDValue();
-
-  if (VT.isVector() && VT.getSizeInBits() == 256)
+  if (Subtarget->hasAVX() && VT.isVector() && VT.getSizeInBits() == 256)
     if (SDValue R = WidenMaskArithmetic(N, DAG, DCI, Subtarget))
       return R;
 
