@@ -56,6 +56,7 @@ public:
   void printNeededLibraries() override;
   void printProgramHeaders() override;
   void printHashTable() override;
+  void printGnuHashTable() override;
   void printLoadName() override;
 
   void printAttributes() override;
@@ -76,6 +77,7 @@ private:
   typedef typename ELFO::Elf_Rela_Range Elf_Rela_Range;
   typedef typename ELFO::Elf_Phdr Elf_Phdr;
   typedef typename ELFO::Elf_Hash Elf_Hash;
+  typedef typename ELFO::Elf_GnuHash Elf_GnuHash;
   typedef typename ELFO::Elf_Ehdr Elf_Ehdr;
   typedef typename ELFO::Elf_Word Elf_Word;
   typedef typename ELFO::uintX_t uintX_t;
@@ -136,6 +138,7 @@ private:
   const Elf_Sym *DynSymStart = nullptr;
   StringRef SOName;
   const Elf_Hash *HashTable = nullptr;
+  const Elf_GnuHash *GnuHashTable = nullptr;
   const Elf_Shdr *DotDynSymSec = nullptr;
   const Elf_Shdr *DotSymtabSec = nullptr;
   ArrayRef<Elf_Word> ShndxTable;
@@ -850,6 +853,10 @@ ELFDumper<ELFT>::ELFDumper(const ELFFile<ELFT> *Obj, StreamWriter &Writer)
       HashTable =
           reinterpret_cast<const Elf_Hash *>(toMappedAddr(Dyn.getPtr()));
       break;
+    case ELF::DT_GNU_HASH:
+      GnuHashTable =
+          reinterpret_cast<const Elf_GnuHash *>(toMappedAddr(Dyn.getPtr()));
+      break;
     case ELF::DT_RELA:
       DynRelaRegion.Addr = toMappedAddr(Dyn.getPtr());
       break;
@@ -1237,6 +1244,8 @@ static const char *getTypeString(uint64_t Type) {
   LLVM_READOBJ_TYPE_CASE(SYMENT);
   LLVM_READOBJ_TYPE_CASE(SYMTAB);
   LLVM_READOBJ_TYPE_CASE(TEXTREL);
+  LLVM_READOBJ_TYPE_CASE(VERDEF);
+  LLVM_READOBJ_TYPE_CASE(VERDEFNUM);
   LLVM_READOBJ_TYPE_CASE(VERNEED);
   LLVM_READOBJ_TYPE_CASE(VERNEEDNUM);
   LLVM_READOBJ_TYPE_CASE(VERSYM);
@@ -1371,6 +1380,7 @@ void ELFDumper<ELFT>::printValue(uint64_t Type, uint64_t Value) {
   case DT_FINI_ARRAY:
   case DT_PREINIT_ARRAY:
   case DT_DEBUG:
+  case DT_VERDEF:
   case DT_VERNEED:
   case DT_VERSYM:
   case DT_GNU_HASH:
@@ -1384,6 +1394,7 @@ void ELFDumper<ELFT>::printValue(uint64_t Type, uint64_t Value) {
     OS << format("0x%" PRIX64, Value);
     break;
   case DT_RELCOUNT:
+  case DT_VERDEFNUM:
   case DT_VERNEEDNUM:
   case DT_MIPS_RLD_VERSION:
   case DT_MIPS_LOCAL_GOTNO:
@@ -1531,6 +1542,23 @@ void ELFDumper<ELFT>::printHashTable() {
   W.printNumber("Num Chains", HashTable->nchain);
   W.printList("Buckets", HashTable->buckets());
   W.printList("Chains", HashTable->chains());
+}
+
+template <typename ELFT>
+void ELFDumper<ELFT>::printGnuHashTable() {
+  DictScope D(W, "GnuHashTable");
+  if (!GnuHashTable)
+    return;
+  W.printNumber("Num Buckets", GnuHashTable->nbuckets);
+  W.printNumber("First Hashed Symbol Index", GnuHashTable->symndx);
+  W.printNumber("Num Mask Words", GnuHashTable->maskwords);
+  W.printNumber("Shift Count", GnuHashTable->shift2);
+  W.printHexList("Bloom Filter", GnuHashTable->filter());
+  W.printList("Buckets", GnuHashTable->buckets());
+  if (!DotDynSymSec)
+    reportError("No dynamic symbol section");
+  W.printHexList("Values",
+                 GnuHashTable->values(DotDynSymSec->getEntityCount()));
 }
 
 template <typename ELFT> void ELFDumper<ELFT>::printLoadName() {
