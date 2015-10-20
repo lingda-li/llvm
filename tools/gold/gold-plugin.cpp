@@ -544,7 +544,7 @@ static const char *getResolutionName(ld_plugin_symbol_resolution R) {
 }
 
 namespace {
-class LocalValueMaterializer : public ValueMaterializer {
+class LocalValueMaterializer final : public ValueMaterializer {
   DenseSet<GlobalValue *> &Dropped;
   DenseMap<GlobalObject *, GlobalObject *> LocalVersions;
 
@@ -914,7 +914,7 @@ static ld_plugin_status allSymbolsReadHook(raw_fd_ostream *ApiFile) {
     if (EC)
       message(LDPL_FATAL, "Unable to open %s.thinlto.bc for writing: %s",
               output_name.data(), EC.message().c_str());
-    WriteFunctionSummaryToFile(&CombinedIndex, OS);
+    WriteFunctionSummaryToFile(CombinedIndex, OS);
     OS.close();
 
     cleanup_hook();

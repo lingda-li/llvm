@@ -1239,36 +1239,28 @@ static void recomputeLiveInValues(
   }
 }
 
-// When inserting gc.relocate calls, we need to ensure there are no uses
-// of the original value between the gc.statepoint and the gc.relocate call.
-// One case which can arise is a phi node starting one of the successor blocks.
-// We also need to be able to insert the gc.relocates only on the path which
-// goes through the statepoint.  We might need to split an edge to make this
-// possible.
+// When inserting gc.relocate and gc.result calls, we need to ensure there are
+// no uses of the original value / return value between the gc.statepoint and
+// the gc.relocate / gc.result call.  One case which can arise is a phi node
+// starting one of the successor blocks.  We also need to be able to insert the
+// gc.relocates only on the path which goes through the statepoint.  We might
+// need to split an edge to make this possible.
 static BasicBlock *
 normalizeForInvokeSafepoint(BasicBlock *BB, BasicBlock *InvokeParent,
                             DominatorTree &DT) {
   BasicBlock *Ret = BB;
-  if (!BB->getUniquePredecessor()) {
+  if (!BB->getUniquePredecessor())
     Ret = SplitBlockPredecessors(BB, InvokeParent, "", &DT);
-  }
 
-  // Now that 'ret' has unique predecessor we can safely remove all phi nodes
+  // Now that 'Ret' has unique predecessor we can safely remove all phi nodes
   // from it
   FoldSingleEntryPHINodes(Ret);
-  assert(!isa<PHINode>(Ret->begin()));
+  assert(!isa<PHINode>(Ret->begin()) &&
+         "All PHI nodes should have been removed!");
 
-  // At this point, we can safely insert a gc.relocate as the first instruction
-  // in Ret if needed.
+  // At this point, we can safely insert a gc.relocate or gc.result as the first
+  // instruction in Ret if needed.
   return Ret;
-}
-
-static int find_index(ArrayRef<Value *> livevec, Value *val) {
-  auto itr = std::find(livevec.begin(), livevec.end(), val);
-  assert(livevec.end() != itr);
-  size_t index = std::distance(livevec.begin(), itr);
-  assert(index < livevec.size());
-  return index;
 }
 
 // Create new attribute set containing only attributes which can be transferred
@@ -1325,7 +1317,15 @@ static void CreateGCRelocates(ArrayRef<Value *> LiveVariables,
                               IRBuilder<> Builder) {
   if (LiveVariables.empty())
     return;
-  
+
+  auto FindIndex = [](ArrayRef<Value *> LiveVec, Value *Val) {
+    auto ValIt = std::find(LiveVec.begin(), LiveVec.end(), Val);
+    assert(ValIt != LiveVec.end() && "Val not found in LiveVec!");
+    size_t Index = std::distance(LiveVec.begin(), ValIt);
+    assert(Index < LiveVec.size() && "Bug in std::find?");
+    return Index;
+  };
+
   // All gc_relocate are set to i8 addrspace(1)* type. We originally generated
   // unique declarations for each pointer type, but this proved problematic
   // because the intrinsic mangling code is incomplete and fragile.  Since
@@ -1341,9 +1341,8 @@ static void CreateGCRelocates(ArrayRef<Value *> LiveVariables,
   for (unsigned i = 0; i < LiveVariables.size(); i++) {
     // Generate the gc.relocate call and save the result
     Value *BaseIdx =
-      Builder.getInt32(LiveStart + find_index(LiveVariables, BasePtrs[i]));
-    Value *LiveIdx =
-      Builder.getInt32(LiveStart + find_index(LiveVariables, LiveVariables[i]));
+      Builder.getInt32(LiveStart + FindIndex(LiveVariables, BasePtrs[i]));
+    Value *LiveIdx = Builder.getInt32(LiveStart + i);
 
     // only specify a debug name if we can give a useful one
     CallInst *Reloc = Builder.CreateCall(
