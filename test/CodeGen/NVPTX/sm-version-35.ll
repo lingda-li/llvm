@@ -2,6 +2,6 @@
 ; RUN: llc < %s -march=nvptx64 -mcpu=sm_35 | FileCheck %s
 
 
-; CHECK: .version 3.2
+; CHECK: .version 4.0
 ; CHECK: .target sm_35
 

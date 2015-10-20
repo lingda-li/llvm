@@ -739,6 +739,12 @@ static void emitKill(const MachineInstr *MI, AsmPrinter &AP) {
 /// of DBG_VALUE, returning true if it was able to do so.  A false return
 /// means the target will need to handle MI in EmitInstruction.
 static bool emitDebugValueComment(const MachineInstr *MI, AsmPrinter &AP) {
+  // FIXME: NVPTX does not use physical registers so emitDebugValueComment
+  // fails. We should find a better way of doing this.
+  if (AP.TM.getTargetTriple().getArch() == Triple::nvptx ||
+      AP.TM.getTargetTriple().getArch() == Triple::nvptx64)
+    return false;
+
   // This code handles only the 4-operand target-independent form.
   if (MI->getNumOperands() != 4)
     return false;

@@ -156,6 +156,10 @@ void NVPTXAsmPrinter::emitLineNumberAsDotLoc(const MachineInstr &MI) {
 }
 
 void NVPTXAsmPrinter::EmitInstruction(const MachineInstr *MI) {
+  // FIXME: we do not support debug values yet.
+  if (MI->isDebugValue())
+    return;
+
   SmallString<128> Str;
   raw_svector_ostream OS(Str);
   if (static_cast<NVPTXTargetMachine &>(TM).getDrvInterface() == NVPTX::CUDA)
