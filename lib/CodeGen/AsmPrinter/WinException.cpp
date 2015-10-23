@@ -273,12 +273,10 @@ const MCExpr *WinException::create32bitRef(const MCSymbol *Value) {
                                  Asm->OutContext);
 }
 
-const MCExpr *WinException::create32bitRef(const Value *V) {
-  if (!V)
+const MCExpr *WinException::create32bitRef(const GlobalValue *GV) {
+  if (!GV)
     return MCConstantExpr::create(0, Asm->OutContext);
-  if (const auto *GV = dyn_cast<GlobalValue>(V))
-    return create32bitRef(Asm->getSymbol(GV));
-  return create32bitRef(MMI->getAddrLabelSymbol(cast<BasicBlock>(V)));
+  return create32bitRef(Asm->getSymbol(GV));
 }
 
 const MCExpr *WinException::getLabelPlusOne(const MCSymbol *Label) {
@@ -611,7 +609,6 @@ void WinException::emitCXXFrameHandler3Table(const MachineFunction *MF) {
     computeIP2StateTable(MF, FuncInfo, IPToStateTable);
   } else {
     FuncInfoXData = Asm->OutContext.getOrCreateLSDASymbol(FuncLinkageName);
-    emitEHRegistrationOffsetLabel(FuncInfo, FuncLinkageName);
   }
 
   int UnwindHelpOffset = 0;
