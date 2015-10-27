@@ -13,6 +13,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Analysis/ValueTracking.h"
+#include "llvm/ADT/Optional.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Analysis/AssumptionCache.h"
 #include "llvm/Analysis/InstructionSimplify.h"
@@ -379,9 +380,7 @@ void llvm::computeKnownBitsFromRangeMetadata(const MDNode &Ranges,
     ConstantInt *Upper =
         mdconst::extract<ConstantInt>(Ranges.getOperand(2 * i + 1));
     ConstantRange Range(Lower->getValue(), Upper->getValue());
-    if (Range.isWrappedSet())
-      MinLeadingZeros = 0; // -1 has no zeros
-    unsigned LeadingZeros = (Upper->getValue() - 1).countLeadingZeros();
+    unsigned LeadingZeros = Range.getUnsignedMax().countLeadingZeros();
     MinLeadingZeros = std::min(LeadingZeros, MinLeadingZeros);
   }
 
@@ -405,14 +404,8 @@ static bool isEphemeralValueOf(Instruction *I, const Value *E) {
       continue;
 
     // If all uses of this value are ephemeral, then so is this value.
-    bool FoundNEUse = false;
-    for (const User *I : V->users())
-      if (!EphValues.count(I)) {
-        FoundNEUse = true;
-        break;
-      }
-
-    if (!FoundNEUse) {
+    if (std::all_of(V->user_begin(), V->user_end(),
+                    [&](const User *U) { return EphValues.count(U); })) {
       if (V == E)
         return true;
 
@@ -1010,9 +1003,18 @@ static void computeKnownBitsFromShiftOperator(Operator *I,
   // calculation. Reusing the APInts here to prevent unnecessary allocations.
   KnownZero.clearAllBits(), KnownOne.clearAllBits();
 
+  // If we know the shifter operand is nonzero, we can sometimes infer more
+  // known bits. However this is expensive to compute, so be lazy about it and
+  // only compute it when absolutely necessary.
+  Optional<bool> ShifterOperandIsNonZero;
+
   // Early exit if we can't constrain any well-defined shift amount.
-  if (!(ShiftAmtKZ & (BitWidth-1)) && !(ShiftAmtKO & (BitWidth-1)))
-    return;
+  if (!(ShiftAmtKZ & (BitWidth - 1)) && !(ShiftAmtKO & (BitWidth - 1))) {
+    ShifterOperandIsNonZero =
+        isKnownNonZero(I->getOperand(1), DL, Depth + 1, Q);
+    if (!*ShifterOperandIsNonZero)
+      return;
+  }
 
   computeKnownBits(I->getOperand(0), KnownZero2, KnownOne2, DL, Depth + 1, Q);
 
@@ -1024,6 +1026,16 @@ static void computeKnownBitsFromShiftOperator(Operator *I,
       continue;
     if ((ShiftAmt | ShiftAmtKO) != ShiftAmt)
       continue;
+    // If we know the shifter is nonzero, we may be able to infer more known
+    // bits. This check is sunk down as far as possible to avoid the expensive
+    // call to isKnownNonZero if the cheaper checks above fail.
+    if (ShiftAmt == 0) {
+      if (!ShifterOperandIsNonZero.hasValue())
+        ShifterOperandIsNonZero =
+            isKnownNonZero(I->getOperand(1), DL, Depth + 1, Q);
+      if (*ShifterOperandIsNonZero)
+        continue;
+    }
 
     KnownZero &= KZF(KnownZero2, ShiftAmt);
     KnownOne  &= KOF(KnownOne2, ShiftAmt);
@@ -4040,4 +4052,26 @@ SelectPatternResult llvm::matchSelectPattern(Value *V,
   }
   return ::matchSelectPattern(Pred, FMF, CmpLHS, CmpRHS, TrueVal, FalseVal,
                               LHS, RHS);
+}
+
+ConstantRange llvm::getConstantRangeFromMetadata(MDNode &Ranges) {
+  const unsigned NumRanges = Ranges.getNumOperands() / 2;
+  assert(NumRanges >= 1 && "Must have at least one range!");
+  assert(Ranges.getNumOperands() % 2 == 0 && "Must be a sequence of pairs");
+
+  auto *FirstLow = mdconst::extract<ConstantInt>(Ranges.getOperand(0));
+  auto *FirstHigh = mdconst::extract<ConstantInt>(Ranges.getOperand(1));
+
+  ConstantRange CR(FirstLow->getValue(), FirstHigh->getValue());
+
+  for (unsigned i = 1; i < NumRanges; ++i) {
+    auto *Low = mdconst::extract<ConstantInt>(Ranges.getOperand(2 * i + 0));
+    auto *High = mdconst::extract<ConstantInt>(Ranges.getOperand(2 * i + 1));
+
+    // Note: unionWith will potentially create a range that contains values not
+    // contained in any of the original N ranges.
+    CR = CR.unionWith(ConstantRange(Low->getValue(), High->getValue()));
+  }
+
+  return CR;
 }

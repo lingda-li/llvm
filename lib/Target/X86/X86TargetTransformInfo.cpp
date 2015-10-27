@@ -127,9 +127,9 @@ int X86TTIImpl::getArithmeticInstrCost(
 
   if (Op2Info == TargetTransformInfo::OK_UniformConstantValue &&
       ST->hasAVX2()) {
-    int Idx = CostTableLookup(AVX2UniformConstCostTable, ISD, LT.second);
-    if (Idx != -1)
-      return LT.first * AVX2UniformConstCostTable[Idx].Cost;
+    if (const auto *Entry = CostTableLookup(AVX2UniformConstCostTable, ISD,
+                                            LT.second))
+      return LT.first * Entry->Cost;
   }
 
   static const CostTblEntry<MVT::SimpleValueType> AVX512CostTable[] = {
@@ -142,9 +142,8 @@ int X86TTIImpl::getArithmeticInstrCost(
   };
 
   if (ST->hasAVX512()) {
-    int Idx = CostTableLookup(AVX512CostTable, ISD, LT.second);
-    if (Idx != -1)
-      return LT.first * AVX512CostTable[Idx].Cost;
+    if (const auto *Entry = CostTableLookup(AVX512CostTable, ISD, LT.second))
+      return LT.first * Entry->Cost;
   }
 
   static const CostTblEntry<MVT::SimpleValueType> AVX2CostTable[] = {
@@ -171,9 +170,8 @@ int X86TTIImpl::getArithmeticInstrCost(
       // is lowered into a vector multiply (vpmullw).
       return LT.first;
 
-    int Idx = CostTableLookup(AVX2CostTable, ISD, LT.second);
-    if (Idx != -1)
-      return LT.first * AVX2CostTable[Idx].Cost;
+    if (const auto *Entry = CostTableLookup(AVX2CostTable, ISD, LT.second))
+      return LT.first * Entry->Cost;
   }
 
   static const CostTblEntry<MVT::SimpleValueType> XOPCostTable[] = {
@@ -207,9 +205,8 @@ int X86TTIImpl::getArithmeticInstrCost(
 
   // Look for XOP lowering tricks.
   if (ST->hasXOP()) {
-    int Idx = CostTableLookup(XOPCostTable, ISD, LT.second);
-    if (Idx != -1)
-      return LT.first * XOPCostTable[Idx].Cost;
+    if (const auto *Entry = CostTableLookup(XOPCostTable, ISD, LT.second))
+      return LT.first * Entry->Cost;
   }
 
   static const CostTblEntry<MVT::SimpleValueType> AVX2CustomCostTable[] = {
@@ -237,9 +234,9 @@ int X86TTIImpl::getArithmeticInstrCost(
 
   // Look for AVX2 lowering tricks for custom cases.
   if (ST->hasAVX2()) {
-    int Idx = CostTableLookup(AVX2CustomCostTable, ISD, LT.second);
-    if (Idx != -1)
-      return LT.first * AVX2CustomCostTable[Idx].Cost;
+    if (const auto *Entry = CostTableLookup(AVX2CustomCostTable, ISD,
+                                            LT.second))
+      return LT.first * Entry->Cost;
   }
 
   static const CostTblEntry<MVT::SimpleValueType>
@@ -286,14 +283,14 @@ int X86TTIImpl::getArithmeticInstrCost(
     if (ISD == ISD::SDIV && LT.second == MVT::v4i32 && ST->hasSSE41())
       return LT.first * 15;
 
-    int Idx = CostTableLookup(SSE2UniformConstCostTable, ISD, LT.second);
-    if (Idx != -1)
-      return LT.first * SSE2UniformConstCostTable[Idx].Cost;
+    if (const auto *Entry = CostTableLookup(SSE2UniformConstCostTable, ISD,
+                                            LT.second))
+      return LT.first * Entry->Cost;
   }
 
   if (ISD == ISD::SHL &&
       Op2Info == TargetTransformInfo::OK_NonUniformConstantValue) {
-    EVT VT = LT.second;
+    MVT VT = LT.second;
     // Vector shift left by non uniform constant can be lowered
     // into vector multiply (pmullw/pmulld).
     if ((VT == MVT::v8i16 && ST->hasSSE2()) ||
@@ -366,9 +363,8 @@ int X86TTIImpl::getArithmeticInstrCost(
   };
 
   if (ST->hasSSE2()) {
-    int Idx = CostTableLookup(SSE2CostTable, ISD, LT.second);
-    if (Idx != -1)
-      return LT.first * SSE2CostTable[Idx].Cost;
+    if (const auto *Entry = CostTableLookup(SSE2CostTable, ISD, LT.second))
+      return LT.first * Entry->Cost;
   }
 
   static const CostTblEntry<MVT::SimpleValueType> AVX1CostTable[] = {
@@ -391,11 +387,10 @@ int X86TTIImpl::getArithmeticInstrCost(
 
   // Look for AVX1 lowering tricks.
   if (ST->hasAVX() && !ST->hasAVX2()) {
-    EVT VT = LT.second;
+    MVT VT = LT.second;
 
-    int Idx = CostTableLookup(AVX1CostTable, ISD, VT);
-    if (Idx != -1)
-      return LT.first * AVX1CostTable[Idx].Cost;
+    if (const auto *Entry = CostTableLookup(AVX1CostTable, ISD, VT))
+      return LT.first * Entry->Cost;
   }
 
   // Custom lowering of vectors.
@@ -405,9 +400,8 @@ int X86TTIImpl::getArithmeticInstrCost(
     { ISD::MUL,     MVT::v2i64,    9 },
     { ISD::MUL,     MVT::v4i64,    9 },
   };
-  int Idx = CostTableLookup(CustomLowered, ISD, LT.second);
-  if (Idx != -1)
-    return LT.first * CustomLowered[Idx].Cost;
+  if (const auto *Entry = CostTableLookup(CustomLowered, ISD, LT.second))
+    return LT.first * Entry->Cost;
 
   // Special lowering of v4i32 mul on sse2, sse3: Lower v4i32 mul as 2x shuffle,
   // 2x pmuludq, 2x shuffle.
@@ -461,11 +455,10 @@ int X86TTIImpl::getShuffleCost(TTI::ShuffleKind Kind, Type *Tp, int Index,
       {ISD::VECTOR_SHUFFLE, MVT::v32i8, 9}
     };
 
-    if (ST->hasAVX()) {
-      int Idx = CostTableLookup(AVXAltShuffleTbl, ISD::VECTOR_SHUFFLE, LT.second);
-      if (Idx != -1)
-        return LT.first * AVXAltShuffleTbl[Idx].Cost;
-    }
+    if (ST->hasAVX())
+      if (const auto *Entry = CostTableLookup(AVXAltShuffleTbl,
+                                              ISD::VECTOR_SHUFFLE, LT.second))
+        return LT.first * Entry->Cost;
 
     static const CostTblEntry<MVT::SimpleValueType> SSE41AltShuffleTbl[] = {
       // These are lowered into movsd.
@@ -485,11 +478,10 @@ int X86TTIImpl::getShuffleCost(TTI::ShuffleKind Kind, Type *Tp, int Index,
       {ISD::VECTOR_SHUFFLE, MVT::v16i8, 3}
     };
 
-    if (ST->hasSSE41()) {
-      int Idx = CostTableLookup(SSE41AltShuffleTbl, ISD::VECTOR_SHUFFLE, LT.second);
-      if (Idx != -1)
-        return LT.first * SSE41AltShuffleTbl[Idx].Cost;
-    }
+    if (ST->hasSSE41())
+      if (const auto *Entry = CostTableLookup(SSE41AltShuffleTbl, ISD::VECTOR_SHUFFLE,
+                                              LT.second))
+        return LT.first * Entry->Cost;
 
     static const CostTblEntry<MVT::SimpleValueType> SSSE3AltShuffleTbl[] = {
       {ISD::VECTOR_SHUFFLE, MVT::v2i64, 1},  // movsd
@@ -504,11 +496,10 @@ int X86TTIImpl::getShuffleCost(TTI::ShuffleKind Kind, Type *Tp, int Index,
       {ISD::VECTOR_SHUFFLE, MVT::v16i8, 3}  // pshufb + pshufb + or
     };
 
-    if (ST->hasSSSE3()) {
-      int Idx = CostTableLookup(SSSE3AltShuffleTbl, ISD::VECTOR_SHUFFLE, LT.second);
-      if (Idx != -1)
-        return LT.first * SSSE3AltShuffleTbl[Idx].Cost;
-    }
+    if (ST->hasSSSE3())
+      if (const auto *Entry = CostTableLookup(SSSE3AltShuffleTbl,
+                                              ISD::VECTOR_SHUFFLE, LT.second))
+        return LT.first * Entry->Cost;
 
     static const CostTblEntry<MVT::SimpleValueType> SSEAltShuffleTbl[] = {
       {ISD::VECTOR_SHUFFLE, MVT::v2i64, 1},  // movsd
@@ -525,9 +516,9 @@ int X86TTIImpl::getShuffleCost(TTI::ShuffleKind Kind, Type *Tp, int Index,
     };
 
     // Fall-back (SSE3 and SSE2).
-    int Idx = CostTableLookup(SSEAltShuffleTbl, ISD::VECTOR_SHUFFLE, LT.second);
-    if (Idx != -1)
-      return LT.first * SSEAltShuffleTbl[Idx].Cost;
+    if (const auto *Entry = CostTableLookup(SSEAltShuffleTbl,
+                                            ISD::VECTOR_SHUFFLE, LT.second))
+      return LT.first * Entry->Cost;
     return BaseT::getShuffleCost(Kind, Tp, Index, SubTp);
   }
 
@@ -702,17 +693,15 @@ int X86TTIImpl::getCastInstrCost(unsigned Opcode, Type *Dst, Type *Src) {
   std::pair<int, MVT> LTDest = TLI->getTypeLegalizationCost(DL, Dst);
 
   if (ST->hasSSE2() && !ST->hasAVX()) {
-    int Idx =
-        ConvertCostTableLookup(SSE2ConvTbl, ISD, LTDest.second, LTSrc.second);
-    if (Idx != -1)
-      return LTSrc.first * SSE2ConvTbl[Idx].Cost;
+    if (const auto *Entry = ConvertCostTableLookup(SSE2ConvTbl, ISD,
+                                                   LTDest.second, LTSrc.second))
+      return LTSrc.first * Entry->Cost;
   }
 
   if (ST->hasAVX512()) {
-    int Idx = ConvertCostTableLookup(AVX512ConversionTbl, ISD, LTDest.second,
-                                     LTSrc.second);
-    if (Idx != -1)
-      return AVX512ConversionTbl[Idx].Cost;
+    if (const auto *Entry = ConvertCostTableLookup(AVX512ConversionTbl, ISD,
+                                                   LTDest.second, LTSrc.second))
+      return Entry->Cost;
   }
 
   EVT SrcTy = TLI->getValueType(DL, Src);
@@ -723,17 +712,17 @@ int X86TTIImpl::getCastInstrCost(unsigned Opcode, Type *Dst, Type *Src) {
     return BaseT::getCastInstrCost(Opcode, Dst, Src);
 
   if (ST->hasAVX2()) {
-    int Idx = ConvertCostTableLookup(AVX2ConversionTbl, ISD,
-                                     DstTy.getSimpleVT(), SrcTy.getSimpleVT());
-    if (Idx != -1)
-      return AVX2ConversionTbl[Idx].Cost;
+    if (const auto *Entry = ConvertCostTableLookup(AVX2ConversionTbl, ISD,
+                                                   DstTy.getSimpleVT(),
+                                                   SrcTy.getSimpleVT()))
+      return Entry->Cost;
   }
 
   if (ST->hasAVX()) {
-    int Idx = ConvertCostTableLookup(AVXConversionTbl, ISD, DstTy.getSimpleVT(),
-                                     SrcTy.getSimpleVT());
-    if (Idx != -1)
-      return AVXConversionTbl[Idx].Cost;
+    if (const auto *Entry = ConvertCostTableLookup(AVXConversionTbl, ISD,
+                                                   DstTy.getSimpleVT(),
+                                                   SrcTy.getSimpleVT()))
+      return Entry->Cost;
   }
 
   return BaseT::getCastInstrCost(Opcode, Dst, Src);
@@ -781,29 +770,21 @@ int X86TTIImpl::getCmpSelInstrCost(unsigned Opcode, Type *ValTy, Type *CondTy) {
     { ISD::SETCC,   MVT::v16f32,  1 },
   };
 
-  if (ST->hasAVX512()) {
-    int Idx = CostTableLookup(AVX512CostTbl, ISD, MTy);
-    if (Idx != -1)
-      return LT.first * AVX512CostTbl[Idx].Cost;
-  }
+  if (ST->hasAVX512())
+    if (const auto *Entry = CostTableLookup(AVX512CostTbl, ISD, MTy))
+      return LT.first * Entry->Cost;
 
-  if (ST->hasAVX2()) {
-    int Idx = CostTableLookup(AVX2CostTbl, ISD, MTy);
-    if (Idx != -1)
-      return LT.first * AVX2CostTbl[Idx].Cost;
-  }
+  if (ST->hasAVX2())
+    if (const auto *Entry = CostTableLookup(AVX2CostTbl, ISD, MTy))
+      return LT.first * Entry->Cost;
 
-  if (ST->hasAVX()) {
-    int Idx = CostTableLookup(AVX1CostTbl, ISD, MTy);
-    if (Idx != -1)
-      return LT.first * AVX1CostTbl[Idx].Cost;
-  }
+  if (ST->hasAVX())
+    if (const auto *Entry = CostTableLookup(AVX1CostTbl, ISD, MTy))
+      return LT.first * Entry->Cost;
 
-  if (ST->hasSSE42()) {
-    int Idx = CostTableLookup(SSE42CostTbl, ISD, MTy);
-    if (Idx != -1)
-      return LT.first * SSE42CostTbl[Idx].Cost;
-  }
+  if (ST->hasSSE42())
+    if (const auto *Entry = CostTableLookup(SSE42CostTbl, ISD, MTy))
+      return LT.first * Entry->Cost;
 
   return BaseT::getCmpSelInstrCost(Opcode, ValTy, CondTy);
 }
@@ -1004,29 +985,21 @@ int X86TTIImpl::getReductionCost(unsigned Opcode, Type *ValTy,
   };
 
   if (IsPairwise) {
-    if (ST->hasAVX()) {
-      int Idx = CostTableLookup(AVX1CostTblPairWise, ISD, MTy);
-      if (Idx != -1)
-        return LT.first * AVX1CostTblPairWise[Idx].Cost;
-    }
+    if (ST->hasAVX())
+      if (const auto *Entry = CostTableLookup(AVX1CostTblPairWise, ISD, MTy))
+        return LT.first * Entry->Cost;
 
-    if (ST->hasSSE42()) {
-      int Idx = CostTableLookup(SSE42CostTblPairWise, ISD, MTy);
-      if (Idx != -1)
-        return LT.first * SSE42CostTblPairWise[Idx].Cost;
-    }
+    if (ST->hasSSE42())
+      if (const auto *Entry = CostTableLookup(SSE42CostTblPairWise, ISD, MTy))
+        return LT.first * Entry->Cost;
   } else {
-    if (ST->hasAVX()) {
-      int Idx = CostTableLookup(AVX1CostTblNoPairWise, ISD, MTy);
-      if (Idx != -1)
-        return LT.first * AVX1CostTblNoPairWise[Idx].Cost;
-    }
+    if (ST->hasAVX())
+      if (const auto *Entry = CostTableLookup(AVX1CostTblNoPairWise, ISD, MTy))
+        return LT.first * Entry->Cost;
 
-    if (ST->hasSSE42()) {
-      int Idx = CostTableLookup(SSE42CostTblNoPairWise, ISD, MTy);
-      if (Idx != -1)
-        return LT.first * SSE42CostTblNoPairWise[Idx].Cost;
-    }
+    if (ST->hasSSE42())
+      if (const auto *Entry = CostTableLookup(SSE42CostTblNoPairWise, ISD, MTy))
+        return LT.first * Entry->Cost;
   }
 
   return BaseT::getReductionCost(Opcode, ValTy, IsPairwise);
@@ -1201,6 +1174,33 @@ bool X86TTIImpl::isLegalMaskedLoad(Type *DataTy) {
 
 bool X86TTIImpl::isLegalMaskedStore(Type *DataType) {
   return isLegalMaskedLoad(DataType);
+}
+
+bool X86TTIImpl::isLegalMaskedGather(Type *DataTy) {
+  // This function is called now in two cases: from the Loop Vectorizer
+  // and from the Scalarizer.
+  // When the Loop Vectorizer asks about legality of the feature,
+  // the vectorization factor is not calculated yet. The Loop Vectorizer
+  // sends a scalar type and the decision is based on the width of the
+  // scalar element.
+  // Later on, the cost model will estimate usage this intrinsic based on
+  // the vector type.
+  // The Scalarizer asks again about legality. It sends a vector type.
+  // In this case we can reject non-power-of-2 vectors.
+  if (isa<VectorType>(DataTy) && !isPowerOf2_32(DataTy->getVectorNumElements()))
+    return false;
+  Type *ScalarTy = DataTy->getScalarType();
+  // TODO: Pointers should also be legal,
+  // but it requires additional support in composing intrinsics name.
+  // getPrimitiveSizeInBits() returns 0 for PointerType
+  int DataWidth = ScalarTy->getPrimitiveSizeInBits();
+
+  // AVX-512 allows gather and scatter
+  return DataWidth >= 32 && ST->hasAVX512();
+}
+
+bool X86TTIImpl::isLegalMaskedScatter(Type *DataType) {
+  return isLegalMaskedGather(DataType);
 }
 
 bool X86TTIImpl::areInlineCompatible(const Function *Caller,

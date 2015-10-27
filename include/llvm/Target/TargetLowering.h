@@ -996,13 +996,9 @@ public:
     return false;
   }
 
-  /// Return true if the target stores SafeStack pointer at a fixed offset in
-  /// some non-standard address space, and populates the address space and
-  /// offset as appropriate.
-  virtual bool getSafeStackPointerLocation(unsigned & /*AddressSpace*/,
-                                           unsigned & /*Offset*/) const {
-    return false;
-  }
+  /// If the target has a standard location for the unsafe stack pointer,
+  /// returns the address of that location. Otherwise, returns nullptr.
+  virtual Value *getSafeStackPointerLocation(IRBuilder<> &IRB) const;
 
   /// Returns true if a cast between SrcAS and DestAS is a noop.
   virtual bool isNoopAddrSpaceCast(unsigned SrcAS, unsigned DestAS) const {
@@ -2436,6 +2432,13 @@ public:
     }
 
   };
+
+  // Mark inreg arguments for lib-calls. For normal calls this is done by
+  // the frontend ABI code.
+  virtual void markInRegArguments(SelectionDAG &DAG, 
+                 TargetLowering::ArgListTy &Args) const {
+    return;
+  }
 
   /// This function lowers an abstract call to a function into an actual call.
   /// This returns a pair of operands.  The first element is the return value

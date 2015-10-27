@@ -2397,7 +2397,7 @@ void InnerLoopVectorizer::vectorizeMemoryInstruction(Instruction *Instr) {
     // We don't want to update the value in the map as it might be used in
     // another expression. So don't use a reference type for "StoredVal".
     VectorParts StoredVal = getVectorValue(SI->getValueOperand());
-    
+
     for (unsigned Part = 0; Part < UF; ++Part) {
       // Calculate the pointer for the specific unroll-part.
       Value *PartPtr =
@@ -5215,9 +5215,8 @@ static bool isLikelyComplexAddressComputation(Value *Ptr,
 }
 
 static bool isStrideMul(Instruction *I, LoopVectorizationLegality *Legal) {
-  if (Legal->hasStride(I->getOperand(0)) || Legal->hasStride(I->getOperand(1)))
-    return true;
-  return false;
+  return Legal->hasStride(I->getOperand(0)) ||
+         Legal->hasStride(I->getOperand(1));
 }
 
 unsigned

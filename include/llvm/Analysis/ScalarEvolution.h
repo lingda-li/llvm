@@ -128,11 +128,9 @@ namespace llvm {
     /// stream.  This should really only be used for debugging purposes.
     void print(raw_ostream &OS) const;
 
-#if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
     /// This method is used for debugging.
     ///
     void dump() const;
-#endif
   };
 
   // Specialize FoldingSetTrait for SCEV to avoid needing to compute
@@ -1092,6 +1090,12 @@ namespace llvm {
                      SmallVectorImpl<const SCEV *> &Subscripts,
                      SmallVectorImpl<const SCEV *> &Sizes,
                      const SCEV *ElementSize);
+
+    /// Return the DataLayout associated with the module this SCEV instance is
+    /// operating on.
+    const DataLayout &getDataLayout() const {
+      return F.getParent()->getDataLayout();
+    }
 
   private:
     /// Compute the backedge taken count knowing the interval difference, the
