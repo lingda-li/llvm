@@ -20,10 +20,41 @@
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/TypeBuilder.h"
+#include "llvm/ExecutionEngine/ExecutionEngine.h"
 #include "llvm/ExecutionEngine/Orc/JITSymbol.h"
+#include "llvm/Support/TargetSelect.h"
 #include <memory>
 
 namespace llvm {
+
+// Base class for Orc tests that will execute code.
+class OrcExecutionTest {
+public:
+
+  OrcExecutionTest() {
+    if (!NativeTargetInitialized) {
+      InitializeNativeTarget();
+      InitializeNativeTargetAsmParser();
+      InitializeNativeTargetAsmPrinter();
+      NativeTargetInitialized = true;
+    }
+
+    // Try to select a TargetMachine for the host.
+    TM.reset(EngineBuilder().selectTarget());
+
+    if (TM) {
+      // If we found a TargetMachine, check that it's one that Orc supports.
+      const Triple& TT = TM->getTargetTriple();
+      if (TT.getArch() != Triple::x86_64 || !TT.isOSDarwin())
+        TM = nullptr;
+    }
+  };
+
+protected:
+  std::unique_ptr<TargetMachine> TM;
+private:
+  static bool NativeTargetInitialized;
+};
 
 class ModuleBuilder {
 public:
@@ -31,10 +62,10 @@ public:
                 StringRef Name);
 
   template <typename FuncType>
-  Function* createFunctionDecl(Module *M, StringRef Name) {
+  Function* createFunctionDecl(StringRef Name) {
     return Function::Create(
              TypeBuilder<FuncType, false>::get(M->getContext()),
-             GlobalValue::ExternalLinkage, Name, M);
+             GlobalValue::ExternalLinkage, Name, M.get());
   }
 
   Module* getModule() { return M.get(); }
