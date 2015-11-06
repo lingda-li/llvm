@@ -33,6 +33,7 @@ class ScalarEvolution;
 class Loop;
 class SCEV;
 class SCEVUnionPredicate;
+class LoopAccessInfo;
 
 /// Optimization analysis message produced during vectorization. Messages inform
 /// the user why vectorization did not occur.
@@ -136,6 +137,14 @@ public:
       // We couldn't determine the direction or the distance.
       Unknown,
       // Lexically forward.
+      //
+      // FIXME: If we only have loop-independent forward dependences (e.g. a
+      // read and write of A[i]), LAA will locally deem the dependence "safe"
+      // without querying the MemoryDepChecker.  Therefore we can miss
+      // enumerating loop-independent forward dependences in
+      // getDependences.  Note that as soon as there are different
+      // indices used to access the same array, the MemoryDepChecker *is*
+      // queried and the dependence list is complete.
       Forward,
       // Forward, but if vectorized, is likely to prevent store-to-load
       // forwarding.
@@ -162,13 +171,20 @@ public:
     Dependence(unsigned Source, unsigned Destination, DepType Type)
         : Source(Source), Destination(Destination), Type(Type) {}
 
+    /// \brief Return the source instruction of the dependence.
+    Instruction *getSource(const LoopAccessInfo &LAI) const;
+    /// \brief Return the destination instruction of the dependence.
+    Instruction *getDestination(const LoopAccessInfo &LAI) const;
+
     /// \brief Dependence types that don't prevent vectorization.
     static bool isSafeForVectorization(DepType Type);
 
-    /// \brief Dependence types that can be queried from the analysis.
-    static bool isInterestingDependence(DepType Type);
+    /// \brief Lexically forward dependence.
+    bool isForward() const;
+    /// \brief Lexically backward dependence.
+    bool isBackward() const;
 
-    /// \brief Lexically backward dependence types.
+    /// \brief May be a lexically backward dependence type (includes Unknown).
     bool isPossiblyBackward() const;
 
     /// \brief Print the dependence.  \p Instr is used to map the instruction
@@ -181,7 +197,7 @@ public:
                    SCEVUnionPredicate &Preds)
       : SE(Se), InnermostLoop(L), AccessIdx(0),
         ShouldRetryWithRuntimeCheck(false), SafeForVectorization(true),
-        RecordInterestingDependences(true), Preds(Preds) {}
+        RecordDependences(true), Preds(Preds) {}
 
   /// \brief Register the location (instructions are given increasing numbers)
   /// of a write access.
@@ -219,19 +235,30 @@ public:
   /// vectorize the loop with a dynamic array access check.
   bool shouldRetryWithRuntimeCheck() { return ShouldRetryWithRuntimeCheck; }
 
-  /// \brief Returns the interesting dependences.  If null is returned we
-  /// exceeded the MaxInterestingDependence threshold and this information is
-  /// not available.
-  const SmallVectorImpl<Dependence> *getInterestingDependences() const {
-    return RecordInterestingDependences ? &InterestingDependences : nullptr;
+  /// \brief Returns the memory dependences.  If null is returned we exceeded
+  /// the MaxDependences threshold and this information is not
+  /// available.
+  const SmallVectorImpl<Dependence> *getDependences() const {
+    return RecordDependences ? &Dependences : nullptr;
   }
 
-  void clearInterestingDependences() { InterestingDependences.clear(); }
+  void clearDependences() { Dependences.clear(); }
 
   /// \brief The vector of memory access instructions.  The indices are used as
   /// instruction identifiers in the Dependence class.
   const SmallVectorImpl<Instruction *> &getMemoryInstructions() const {
     return InstMap;
+  }
+
+  /// \brief Generate a mapping between the memory instructions and their
+  /// indices according to program order.
+  DenseMap<Instruction *, unsigned> generateInstructionOrderMap() const {
+    DenseMap<Instruction *, unsigned> OrderMap;
+
+    for (unsigned I = 0; I < InstMap.size(); ++I)
+      OrderMap[InstMap[I]] = I;
+
+    return OrderMap;
   }
 
   /// \brief Find the set of instructions that read or write via \p Ptr.
@@ -262,15 +289,14 @@ private:
   /// vectorization.
   bool SafeForVectorization;
 
-  //// \brief True if InterestingDependences reflects the dependences in the
-  //// loop.  If false we exceeded MaxInterestingDependence and
-  //// InterestingDependences is invalid.
-  bool RecordInterestingDependences;
+  //// \brief True if Dependences reflects the dependences in the
+  //// loop.  If false we exceeded MaxDependences and
+  //// Dependences is invalid.
+  bool RecordDependences;
 
-  /// \brief Interesting memory dependences collected during the analysis as
-  /// defined by isInterestingDependence.  Only valid if
-  /// RecordInterestingDependences is true.
-  SmallVector<Dependence, 8> InterestingDependences;
+  /// \brief Memory dependences collected during the analysis.  Only valid if
+  /// RecordDependences is true.
+  SmallVector<Dependence, 8> Dependences;
 
   /// \brief Check whether there is a plausible dependence between the two
   /// accesses.
@@ -438,6 +464,11 @@ public:
   /// index \p I and \p J to prove their independence.
   bool needsChecking(unsigned I, unsigned J) const;
 
+  /// \brief Return PointerInfo for pointer at index \p PtrIdx.
+  const PointerInfo &getPointerInfo(unsigned PtrIdx) const {
+    return Pointers[PtrIdx];
+  }
+
 private:
   /// \brief Groups pointers such that a single memcheck is required
   /// between two different groups. This will clear the CheckingGroups vector
@@ -472,6 +503,13 @@ private:
 /// generates run-time checks to prove independence.  This is done by
 /// AccessAnalysis::canCheckPtrAtRT and the checks are maintained by the
 /// RuntimePointerCheck class.
+///
+/// If pointers can wrap or can't be expressed as affine AddRec expressions by
+/// ScalarEvolution, we will generate run-time checks by emitting a
+/// SCEVUnionPredicate.
+///
+/// Checks for both memory dependences and SCEV predicates must be emitted in
+/// order for the results of this analysis to be valid.
 class LoopAccessInfo {
 public:
   LoopAccessInfo(Loop *L, ScalarEvolution *SE, const DataLayout &DL,
@@ -675,6 +713,17 @@ private:
   DominatorTree *DT;
   LoopInfo *LI;
 };
+
+inline Instruction *MemoryDepChecker::Dependence::getSource(
+    const LoopAccessInfo &LAI) const {
+  return LAI.getDepChecker().getMemoryInstructions()[Source];
+}
+
+inline Instruction *MemoryDepChecker::Dependence::getDestination(
+    const LoopAccessInfo &LAI) const {
+  return LAI.getDepChecker().getMemoryInstructions()[Destination];
+}
+
 } // End llvm namespace
 
 #endif

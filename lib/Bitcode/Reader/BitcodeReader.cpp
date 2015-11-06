@@ -232,6 +232,10 @@ class BitcodeReader : public GVMaterializer {
 
   bool StripDebugInfo = false;
 
+  /// Functions that need to be matched with subprograms when upgrading old
+  /// metadata.
+  SmallDenseMap<Function *, DISubprogram *, 16> FunctionsWithSPs;
+
   std::vector<std::string> BundleTags;
 
 public:
@@ -526,19 +530,19 @@ static std::error_code error(DiagnosticHandlerFunction DiagnosticHandler,
 
 std::error_code BitcodeReader::error(BitcodeError E, const Twine &Message) {
   if (!ProducerIdentification.empty()) {
-    Twine MsgWithID = Message + " (Producer: '" + ProducerIdentification +
-                      "' Reader: 'LLVM " + LLVM_VERSION_STRING "')";
-    return ::error(DiagnosticHandler, make_error_code(E), MsgWithID);
+    return ::error(DiagnosticHandler, make_error_code(E),
+                   Message + " (Producer: '" + ProducerIdentification +
+                       "' Reader: 'LLVM " + LLVM_VERSION_STRING "')");
   }
   return ::error(DiagnosticHandler, make_error_code(E), Message);
 }
 
 std::error_code BitcodeReader::error(const Twine &Message) {
   if (!ProducerIdentification.empty()) {
-    Twine MsgWithID = Message + " (Producer: '" + ProducerIdentification +
-                      "' Reader: 'LLVM " + LLVM_VERSION_STRING "')";
     return ::error(DiagnosticHandler,
-                   make_error_code(BitcodeError::CorruptedBitcode), MsgWithID);
+                   make_error_code(BitcodeError::CorruptedBitcode),
+                   Message + " (Producer: '" + ProducerIdentification +
+                       "' Reader: 'LLVM " + LLVM_VERSION_STRING "')");
   }
   return ::error(DiagnosticHandler,
                  make_error_code(BitcodeError::CorruptedBitcode), Message);
@@ -1301,6 +1305,8 @@ static Attribute::AttrKind getAttrFromCode(uint64_t Code) {
     return Attribute::NoImplicitFloat;
   case bitc::ATTR_KIND_NO_INLINE:
     return Attribute::NoInline;
+  case bitc::ATTR_KIND_NO_RECURSE:
+    return Attribute::NoRecurse;
   case bitc::ATTR_KIND_NON_LAZY_BIND:
     return Attribute::NonLazyBind;
   case bitc::ATTR_KIND_NON_NULL:
@@ -1749,7 +1755,10 @@ ErrorOr<Value *> BitcodeReader::recordValue(SmallVectorImpl<uint64_t> &Record,
     return error("Invalid record");
   Value *V = ValueList[ValueID];
 
-  V->setName(StringRef(ValueName.data(), ValueName.size()));
+  StringRef NameStr(ValueName.data(), ValueName.size());
+  if (NameStr.find_first_of(0) != StringRef::npos)
+    return error("Invalid value name");
+  V->setName(NameStr);
   auto *GO = dyn_cast<GlobalObject>(V);
   if (GO) {
     if (GO->getComdat() == reinterpret_cast<Comdat *>(1)) {
@@ -2179,20 +2188,33 @@ std::error_code BitcodeReader::parseMetadata() {
       break;
     }
     case bitc::METADATA_SUBPROGRAM: {
-      if (Record.size() != 19)
+      if (Record.size() != 18 && Record.size() != 19)
         return error("Invalid record");
 
-      MDValueList.assignValue(
-          GET_OR_DISTINCT(
-              DISubprogram,
-              Record[0] || Record[8], // All definitions should be distinct.
-              (Context, getMDOrNull(Record[1]), getMDString(Record[2]),
-               getMDString(Record[3]), getMDOrNull(Record[4]), Record[5],
-               getMDOrNull(Record[6]), Record[7], Record[8], Record[9],
-               getMDOrNull(Record[10]), Record[11], Record[12], Record[13],
-               Record[14], getMDOrNull(Record[15]), getMDOrNull(Record[16]),
-               getMDOrNull(Record[17]), getMDOrNull(Record[18]))),
-          NextMDValueNo++);
+      bool HasFn = Record.size() == 19;
+      DISubprogram *SP = GET_OR_DISTINCT(
+          DISubprogram,
+          Record[0] || Record[8], // All definitions should be distinct.
+          (Context, getMDOrNull(Record[1]), getMDString(Record[2]),
+           getMDString(Record[3]), getMDOrNull(Record[4]), Record[5],
+           getMDOrNull(Record[6]), Record[7], Record[8], Record[9],
+           getMDOrNull(Record[10]), Record[11], Record[12], Record[13],
+           Record[14], getMDOrNull(Record[15 + HasFn]),
+           getMDOrNull(Record[16 + HasFn]), getMDOrNull(Record[17 + HasFn])));
+      MDValueList.assignValue(SP, NextMDValueNo++);
+
+      // Upgrade sp->function mapping to function->sp mapping.
+      if (HasFn && Record[15]) {
+        if (auto *CMD = dyn_cast<ConstantAsMetadata>(getMDOrNull(Record[15])))
+          if (auto *F = dyn_cast<Function>(CMD->getValue())) {
+            if (F->isMaterializable())
+              // Defer until materialized; unmaterialized functions may not have
+              // metadata.
+              FunctionsWithSPs[F] = SP;
+            else if (!F->empty())
+              F->setSubprogram(SP);
+          }
+      }
       break;
     }
     case bitc::METADATA_LEXICAL_BLOCK: {
@@ -3055,7 +3077,9 @@ std::error_code BitcodeReader::rememberAndSkipFunctionBodies() {
   if (Stream.AtEndOfStream())
     return error("Could not find function in stream");
 
-  assert(SeenFirstFunctionBody);
+  if (!SeenFirstFunctionBody)
+    return error("Trying to materialize functions before seeing function blocks");
+
   // An old bitcode file with the symbol table at the end would have
   // finished the parse greedily.
   assert(SeenValueSymbolTable);
@@ -5134,6 +5158,10 @@ std::error_code BitcodeReader::materialize(GlobalValue *GV) {
     }
   }
 
+  // Finish fn->subprogram upgrade for materialized functions.
+  if (DISubprogram *SP = FunctionsWithSPs.lookup(F))
+    F->setSubprogram(SP);
+
   // Bring in any functions that this function forward-referenced via
   // blockaddresses.
   return materializeForwardReferencedFunctions();
@@ -5813,12 +5841,12 @@ llvm::getBitcodeTargetTriple(MemoryBufferRef Buffer, LLVMContext &Context,
 ErrorOr<std::unique_ptr<FunctionInfoIndex>>
 llvm::getFunctionInfoIndex(MemoryBufferRef Buffer, LLVMContext &Context,
                            DiagnosticHandlerFunction DiagnosticHandler,
-                           bool IsLazy) {
+                           const Module *ExportingModule, bool IsLazy) {
   std::unique_ptr<MemoryBuffer> Buf = MemoryBuffer::getMemBuffer(Buffer, false);
   FunctionIndexBitcodeReader R(Buf.get(), Context, DiagnosticHandler, IsLazy);
 
   std::unique_ptr<FunctionInfoIndex> Index =
-      llvm::make_unique<FunctionInfoIndex>();
+      llvm::make_unique<FunctionInfoIndex>(ExportingModule);
 
   auto cleanupOnError = [&](std::error_code EC) {
     R.releaseBuffer(); // Never take ownership on error.

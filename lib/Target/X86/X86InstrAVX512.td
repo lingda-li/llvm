@@ -1122,10 +1122,10 @@ def Zrr : AVX512XS8I<opc, MRMSrcReg, (outs VR512:$dst), (ins KRC:$src),
                   []>, EVEX, EVEX_V512;
 
 let Predicates = [HasCDI, HasVLX] in {
-def Z128rr : AVX512XS8I<opc, MRMSrcReg, (outs VR128:$dst), (ins KRC:$src),
+def Z128rr : AVX512XS8I<opc, MRMSrcReg, (outs VR128X:$dst), (ins KRC:$src),
                   !strconcat(OpcodeStr, "\t{$src, $dst|$dst, $src}"),
                   []>, EVEX, EVEX_V128;
-def Z256rr : AVX512XS8I<opc, MRMSrcReg, (outs VR256:$dst), (ins KRC:$src),
+def Z256rr : AVX512XS8I<opc, MRMSrcReg, (outs VR256X:$dst), (ins KRC:$src),
                   !strconcat(OpcodeStr, "\t{$src, $dst|$dst, $src}"),
                   []>, EVEX, EVEX_V256;
 }
@@ -3084,7 +3084,7 @@ def VMOVZPQILo2PQIZrr : AVX512XSI<0x7E, MRMSrcReg, (outs VR128X:$dst),
                                                    (v2i64 VR128X:$src))))],
                                 IIC_SSE_MOVQ_RR>, EVEX, VEX_W;
 
-let AddedComplexity = 20 in
+let AddedComplexity = 20 , isCodeGenOnly = 1 in
 def VMOVZPQILo2PQIZrm : AVX512XSI<0x7E, MRMSrcMem, (outs VR128X:$dst),
                                  (ins i128mem:$src),
                                  "vmovq\t{$src, $dst|$dst, $src}",
