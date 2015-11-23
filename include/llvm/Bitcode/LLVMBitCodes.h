@@ -50,7 +50,9 @@ enum BlockIDs {
   MODULE_STRTAB_BLOCK_ID,
   FUNCTION_SUMMARY_BLOCK_ID,
 
-  OPERAND_BUNDLE_TAGS_BLOCK_ID
+  OPERAND_BUNDLE_TAGS_BLOCK_ID,
+
+  METADATA_KIND_BLOCK_ID
 };
 
 /// Identification block contains a string that describes the producer details,
@@ -100,6 +102,9 @@ enum { BITCODE_CURRENT_EPOCH = 0 };
 
     // ALIAS: [alias value type, addrspace, aliasee val#, linkage, visibility]
     MODULE_CODE_ALIAS       = 14,
+
+    // METADATA_VALUES: [numvals]
+    MODULE_CODE_METADATA_VALUES = 15,
   };
 
   /// PARAMATTR blocks have code for defining a parameter attribute set.
@@ -333,6 +338,15 @@ enum { BITCODE_CURRENT_EPOCH = 0 };
   enum AtomicSynchScopeCodes {
     SYNCHSCOPE_SINGLETHREAD = 0,
     SYNCHSCOPE_CROSSTHREAD = 1
+  };
+
+  /// Markers and flags for call instruction.
+  enum CallMarkersFlags {
+    CALL_TAIL = 0,
+    CALL_CCONV = 1,
+    CALL_MUSTTAIL = 14,
+    CALL_EXPLICIT_TYPE = 15,
+    CALL_NOTAIL = 16
   };
 
   // The function body block (FUNCTION_BLOCK_ID) describes function bodies.  It

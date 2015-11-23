@@ -65,7 +65,8 @@ private:
   void createNode(const MachineInstr &);
 };
 
-class MachineBasicBlock : public ilist_node<MachineBasicBlock> {
+class MachineBasicBlock
+    : public ilist_node_with_parent<MachineBasicBlock, MachineFunction> {
 public:
   /// Pair of physical register and lane mask.
   /// This is not simply a std::pair typedef because the members should be named
@@ -272,6 +273,11 @@ public:
   reverse_iterator       rend  ()       { return instr_rend();   }
   const_reverse_iterator rend  () const { return instr_rend();   }
 
+  /// Support for MachineInstr::getNextNode().
+  static Instructions MachineBasicBlock::*getSublistAccess(MachineInstr *) {
+    return &MachineBasicBlock::Insts;
+  }
+
   inline iterator_range<iterator> terminators() {
     return iterator_range<iterator>(getFirstTerminator(), end());
   }
@@ -470,7 +476,7 @@ public:
   /// Normalize probabilities of all successors so that the sum of them becomes
   /// one.
   void normalizeSuccProbs() {
-    BranchProbability::normalizeProbabilities(Probs);
+    BranchProbability::normalizeProbabilities(Probs.begin(), Probs.end());
   }
 
   /// Remove successor from the successors list of this MachineBasicBlock. The

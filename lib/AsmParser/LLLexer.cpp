@@ -523,10 +523,12 @@ lltok::Kind LLLexer::LexIdentifier() {
   KEYWORD(zeroinitializer);
   KEYWORD(undef);
   KEYWORD(null);
+  KEYWORD(none);
   KEYWORD(to);
   KEYWORD(caller);
   KEYWORD(tail);
   KEYWORD(musttail);
+  KEYWORD(notail);
   KEYWORD(target);
   KEYWORD(triple);
   KEYWORD(unwind);

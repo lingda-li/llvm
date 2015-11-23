@@ -1715,6 +1715,14 @@ void Verifier::visitFunction(const Function &F) {
   assert(F.hasMetadata() != MDs.empty() && "Bit out-of-sync");
   VerifyFunctionMetadata(MDs);
 
+  // Check validity of the personality function
+  if (F.hasPersonalityFn()) {
+    auto *Per = dyn_cast<Function>(F.getPersonalityFn()->stripPointerCasts());
+    if (Per)
+      Assert(Per->getParent() == F.getParent(),
+             "Referencing personality function in another module!", &F, Per);
+  }
+
   if (F.isMaterializable()) {
     // Function has a body somewhere we can't see.
     Assert(MDs.empty(), "unmaterialized function cannot have metadata", &F,
@@ -2323,6 +2331,15 @@ void Verifier::VerifyCallSite(CallSite CS) {
   if (Function *F = CS.getCalledFunction())
     if (Intrinsic::ID ID = (Intrinsic::ID)F->getIntrinsicID())
       visitIntrinsicCallSite(ID, CS);
+
+  // Verify that a callsite has at most one "deopt" operand bundle.
+  bool FoundDeoptBundle = false;
+  for (unsigned i = 0, e = CS.getNumOperandBundles(); i < e; ++i) {
+    if (CS.getOperandBundleAt(i).getTagID() == LLVMContext::OB_deopt) {
+      Assert(!FoundDeoptBundle, "Multiple deopt operand bundles", I);
+      FoundDeoptBundle = true;
+    }
+  }
 
   visitInstruction(*I);
 }

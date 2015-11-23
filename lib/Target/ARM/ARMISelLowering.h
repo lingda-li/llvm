@@ -63,8 +63,6 @@ namespace llvm {
 
       BCC_i64,
 
-      RBIT,         // ARM bitreverse instruction
-
       SRL_FLAG,     // V,Flag = srl_flag X -> srl X, 1 + save carry out.
       SRA_FLAG,     // V,Flag = sra_flag X -> sra X, 1 + save carry out.
       RRX,          // V = RRX X, Flag     -> srl X, 1 + shift in carry flag.
@@ -423,6 +421,16 @@ namespace llvm {
     bool functionArgumentNeedsConsecutiveRegisters(
         Type *Ty, CallingConv::ID CallConv, bool isVarArg) const override;
 
+    /// If a physical register, this returns the register that receives the
+    /// exception address on entry to an EH pad.
+    unsigned
+    getExceptionPointerRegister(const Constant *PersonalityFn) const override;
+
+    /// If a physical register, this returns the register that receives the
+    /// exception typeid on entry to a landing pad.
+    unsigned
+    getExceptionSelectorRegister(const Constant *PersonalityFn) const override;
+
     Instruction *makeDMB(IRBuilder<> &Builder, ARM_MB::MemBOpt Domain) const;
     Value *emitLoadLinked(IRBuilder<> &Builder, Value *Addr,
                           AtomicOrdering Ord) const override;
@@ -456,6 +464,9 @@ namespace llvm {
 
     bool canCombineStoreAndExtract(Type *VectorTy, Value *Idx,
                                    unsigned &Cost) const override;
+
+    bool isCheapToSpeculateCttz() const override;
+    bool isCheapToSpeculateCtlz() const override;
 
   protected:
     std::pair<const TargetRegisterClass *, uint8_t>
@@ -532,10 +543,10 @@ namespace llvm {
                               const ARMSubtarget *ST) const;
     SDValue LowerFSINCOS(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerDivRem(SDValue Op, SelectionDAG &DAG) const;
-    SDValue LowerDIV_Windows(SDValue Op, SelectionDAG &DAG, bool Signed) const;
-    void ExpandDIV_Windows(SDValue Op, SelectionDAG &DAG, bool Signed,
+    SDValue LowerDIV_Windows(SDValue Op, SelectionDAG &DAG) const;
+    void ExpandDIV_Windows(SDValue Op, SelectionDAG &DAG,
                            SmallVectorImpl<SDValue> &Results) const;
-    SDValue LowerWindowsDIVLibCall(SDValue Op, SelectionDAG &DAG, bool Signed,
+    SDValue LowerWindowsDIVLibCall(SDValue Op, SelectionDAG &DAG,
                                    SDValue &Chain) const;
     SDValue LowerREM(SDNode *N, SelectionDAG &DAG) const;
     SDValue LowerDYNAMIC_STACKALLOC(SDValue Op, SelectionDAG &DAG) const;

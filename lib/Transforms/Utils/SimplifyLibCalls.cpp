@@ -53,16 +53,8 @@ static cl::opt<bool>
 //===----------------------------------------------------------------------===//
 
 static bool ignoreCallingConv(LibFunc::Func Func) {
-  switch (Func) {
-  case LibFunc::abs:
-  case LibFunc::labs:
-  case LibFunc::llabs:
-  case LibFunc::strlen:
-    return true;
-  default:
-    return false;
-  }
-  llvm_unreachable("All cases should be covered in the switch.");
+  return Func == LibFunc::abs || Func == LibFunc::labs ||
+         Func == LibFunc::llabs || Func == LibFunc::strlen;
 }
 
 /// isOnlyUsedInZeroEqualityComparison - Return true if it only matters that the
@@ -124,8 +116,8 @@ static bool canUseUnsafeFPMath(Function *F) {
   // FIXME: For finer-grain optimization, we need intrinsics to have the same
   // fast-math flag decorations that are applied to FP instructions. For now,
   // we have to rely on the function-level unsafe-fp-math attribute to do this
-  // optimization because there's no other way to express that the sqrt can be
-  // reassociated.
+  // optimization because there's no other way to express that the call can be
+  // relaxed.
   if (F->hasFnAttribute("unsafe-fp-math")) {
     Attribute Attr = F->getFnAttribute("unsafe-fp-math");
     if (Attr.getValueAsString() == "true")
@@ -1103,6 +1095,8 @@ Value *LibCallSimplifier::optimizePow(CallInst *CI, IRBuilder<> &B) {
                                   Callee->getAttributes());
   }
 
+  bool unsafeFPMath = canUseUnsafeFPMath(CI->getParent()->getParent());
+
   // pow(exp(x), y) -> exp(x*y)
   // pow(exp2(x), y) -> exp2(x * y)
   // We enable these only under fast-math. Besides rounding
@@ -1110,7 +1104,7 @@ Value *LibCallSimplifier::optimizePow(CallInst *CI, IRBuilder<> &B) {
   // underflow behavior quite dramatically.
   // Example: x = 1000, y = 0.001.
   // pow(exp(x), y) = pow(inf, 0.001) = inf, whereas exp(x*y) = exp(1).
-  if (canUseUnsafeFPMath(CI->getParent()->getParent())) {
+  if (unsafeFPMath) {
     if (auto *OpC = dyn_cast<CallInst>(Op1)) {
       IRBuilder<>::FastMathFlagGuard Guard(B);
       FastMathFlags FMF;
@@ -1141,10 +1135,15 @@ Value *LibCallSimplifier::optimizePow(CallInst *CI, IRBuilder<> &B) {
                       LibFunc::sqrtl) &&
       hasUnaryFloatFn(TLI, Op2->getType(), LibFunc::fabs, LibFunc::fabsf,
                       LibFunc::fabsl)) {
+
+    // In -ffast-math, pow(x, 0.5) -> sqrt(x).
+    if (unsafeFPMath)
+      return EmitUnaryFloatFnCall(Op1, TLI->getName(LibFunc::sqrt), B,
+                                  Callee->getAttributes());
+
     // Expand pow(x, 0.5) to (x == -infinity ? +infinity : fabs(sqrt(x))).
     // This is faster than calling pow, and still handles negative zero
     // and negative infinity correctly.
-    // TODO: In fast-math mode, this could be just sqrt(x).
     // TODO: In finite-only mode, this could be just fabs(sqrt(x)).
     Value *Inf = ConstantFP::getInfinity(CI->getType());
     Value *NegInf = ConstantFP::getInfinity(CI->getType(), true);
@@ -2274,7 +2273,6 @@ void LibCallSimplifier::replaceAllUsesWith(Instruction *I, Value *With) {
 //   * lround(cnst) -> cnst'
 //
 // pow, powf, powl:
-//   * pow(exp(x),y)  -> exp(x*y)
 //   * pow(sqrt(x),y) -> pow(x,y*0.5)
 //   * pow(pow(x,y),z)-> pow(x,y*z)
 //
@@ -2289,9 +2287,6 @@ void LibCallSimplifier::replaceAllUsesWith(Instruction *I, Value *With) {
 //   * sqrt(expN(x))  -> expN(x*0.5)
 //   * sqrt(Nroot(x)) -> pow(x,1/(2*N))
 //   * sqrt(pow(x,y)) -> pow(|x|,y*0.5)
-//
-// tan, tanf, tanl:
-//   * tan(atan(x)) -> x
 //
 // trunc, truncf, truncl:
 //   * trunc(cnst) -> cnst'

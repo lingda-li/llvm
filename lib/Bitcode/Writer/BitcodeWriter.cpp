@@ -776,6 +776,21 @@ static uint64_t WriteModuleInfo(const Module *M, const ValueEnumerator &VE,
     Vals.clear();
   }
 
+  // Write a record indicating the number of module-level metadata IDs
+  // This is needed because the ids of metadata are assigned implicitly
+  // based on their ordering in the bitcode, with the function-level
+  // metadata ids starting after the module-level metadata ids. For
+  // function importing where we lazy load the metadata as a postpass,
+  // we want to avoid parsing the module-level metadata before parsing
+  // the imported functions.
+  BitCodeAbbrev *Abbv = new BitCodeAbbrev();
+  Abbv->Add(BitCodeAbbrevOp(bitc::MODULE_CODE_METADATA_VALUES));
+  Abbv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::VBR, 6));
+  unsigned MDValsAbbrev = Stream.EmitAbbrev(Abbv);
+  Vals.push_back(VE.numMDs());
+  Stream.EmitRecord(bitc::MODULE_CODE_METADATA_VALUES, Vals, MDValsAbbrev);
+  Vals.clear();
+
   uint64_t VSTOffsetPlaceholder =
       WriteValueSymbolTableForwardDecl(M->getValueSymbolTable(), Stream);
   return VSTOffsetPlaceholder;
@@ -1383,7 +1398,7 @@ static void WriteModuleMetadataStore(const Module *M, BitstreamWriter &Stream) {
 
   if (Names.empty()) return;
 
-  Stream.EnterSubblock(bitc::METADATA_BLOCK_ID, 3);
+  Stream.EnterSubblock(bitc::METADATA_KIND_BLOCK_ID, 3);
 
   for (unsigned MDKindID = 0, e = Names.size(); MDKindID != e; ++MDKindID) {
     Record.push_back(MDKindID);
@@ -1738,8 +1753,8 @@ static void WriteOperandBundles(BitstreamWriter &Stream, ImmutableCallSite CS,
   LLVMContext &C = CS.getInstruction()->getContext();
 
   for (unsigned i = 0, e = CS.getNumOperandBundles(); i != e; ++i) {
-    const auto &Bundle = CS.getOperandBundle(i);
-    Record.push_back(C.getOperandBundleTagID(Bundle.Tag));
+    const auto &Bundle = CS.getOperandBundleAt(i);
+    Record.push_back(C.getOperandBundleTagID(Bundle.getTagName()));
 
     for (auto &Input : Bundle.Inputs)
       PushValueAndType(Input, InstID, Record, VE);
@@ -1891,10 +1906,9 @@ static void WriteInstruction(const Instruction &I, unsigned InstID,
       Vals.push_back(VE.getTypeID(SI.getCondition()->getType()));
       pushValue(SI.getCondition(), InstID, Vals, VE);
       Vals.push_back(VE.getValueID(SI.getDefaultDest()));
-      for (SwitchInst::ConstCaseIt i = SI.case_begin(), e = SI.case_end();
-           i != e; ++i) {
-        Vals.push_back(VE.getValueID(i.getCaseValue()));
-        Vals.push_back(VE.getValueID(i.getCaseSuccessor()));
+      for (SwitchInst::ConstCaseIt Case : SI.cases()) {
+        Vals.push_back(VE.getValueID(Case.getCaseValue()));
+        Vals.push_back(VE.getValueID(Case.getCaseSuccessor()));
       }
     }
     break;
@@ -2130,8 +2144,11 @@ static void WriteInstruction(const Instruction &I, unsigned InstID,
     Code = bitc::FUNC_CODE_INST_CALL;
 
     Vals.push_back(VE.getAttributeID(CI.getAttributes()));
-    Vals.push_back((CI.getCallingConv() << 1) | unsigned(CI.isTailCall()) |
-                   unsigned(CI.isMustTailCall()) << 14 | 1 << 15);
+    Vals.push_back(CI.getCallingConv() << bitc::CALL_CCONV |
+                   unsigned(CI.isTailCall()) << bitc::CALL_TAIL |
+                   unsigned(CI.isMustTailCall()) << bitc::CALL_MUSTTAIL |
+                   1 << bitc::CALL_EXPLICIT_TYPE |
+                   unsigned(CI.isNoTailCall()) << bitc::CALL_NOTAIL);
     Vals.push_back(VE.getTypeID(FTy));
     PushValueAndType(CI.getCalledValue(), InstID, Vals, VE);  // Callee
 
