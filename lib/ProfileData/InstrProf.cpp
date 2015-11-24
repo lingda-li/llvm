@@ -131,20 +131,6 @@ GlobalVariable *createPGOFuncNameVar(Function &F, StringRef FuncName) {
   return createPGOFuncNameVar(*F.getParent(), F.getLinkage(), FuncName);
 }
 
-uint32_t ValueProfRecord::getHeaderSize(uint32_t NumValueSites) {
-  uint32_t Size = offsetof(ValueProfRecord, SiteCountArray) +
-                  sizeof(uint8_t) * NumValueSites;
-  // Round the size to multiple of 8 bytes.
-  Size = (Size + 7) & ~7;
-  return Size;
-}
-
-uint32_t ValueProfRecord::getSize(uint32_t NumValueSites,
-                                  uint32_t NumValueData) {
-  return getHeaderSize(NumValueSites) +
-         sizeof(InstrProfValueData) * NumValueData;
-}
-
 void ValueProfRecord::deserializeTo(InstrProfRecord &Record,
                                     InstrProfRecord::ValueMapType *VMap) {
   Record.reserveSites(Kind, NumValueSites);
@@ -166,10 +152,8 @@ void ValueProfRecord::serializeFrom(const InstrProfRecord &Record,
   for (uint32_t S = 0; S < NumValueSites; S++) {
     uint32_t ND = Record.getNumValueDataForSite(ValueKind, S);
     SiteCountArray[S] = ND;
-    std::unique_ptr<InstrProfValueData[]> SrcVD =
-        Record.getValueForSite(ValueKind, S);
+    Record.getValueForSite(DstVD, ValueKind, S);
     for (uint32_t I = 0; I < ND; I++) {
-      DstVD[I] = SrcVD[I];
       switch (ValueKind) {
       case IPVK_IndirectCallTarget:
         DstVD[I].Value = IndexedInstrProf::ComputeHash(
@@ -230,7 +214,7 @@ uint32_t ValueProfData::getSize(const InstrProfRecord &Record) {
     if (!NumValueSites)
       continue;
     TotalSize +=
-        ValueProfRecord::getSize(NumValueSites, Record.getNumValueData(Kind));
+        getValueProfRecordSize(NumValueSites, Record.getNumValueData(Kind));
   }
   return TotalSize;
 }
@@ -357,7 +341,7 @@ ValueProfRecord *ValueProfRecord::getNext() {
 }
 
 InstrProfValueData *ValueProfRecord::getValueData() {
-  return reinterpret_cast<InstrProfValueData *>((char *)this +
-                                                getHeaderSize(NumValueSites));
+  return reinterpret_cast<InstrProfValueData *>(
+      (char *)this + getValueProfRecordHeaderSize(NumValueSites));
 }
 }

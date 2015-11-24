@@ -15,19 +15,34 @@ entry:
   %call2 = call i32 (...) @referencecommon()
   call void (...) @setfuncptr()
   call void (...) @callfuncptr()
-  call void (...) @callweakfunc()
+  call void (...) @weakfunc()
   ret i32 0
 }
 
-; Won't import alias
+; Won't import weak alias
+; CHECK-DAG: declare extern_weak void @weakalias()
 declare void @weakalias(...) #1
+
+; Aliases import the aliasee function
+; CHECK-DAG: @analias = alias void (...), bitcast (void ()* @globalfunc2 to void (...)*)
+; CHECK-DAG: define available_externally void @globalfunc2()
 declare void @analias(...) #1
 
 ; CHECK-DAG: define available_externally i32 @referencestatics(i32 %i)
 declare i32 @referencestatics(...) #1
 
+; The import of referencestatics will expose call to staticfunc that
+; should in turn be imported as a promoted/renamed and hidden function.
+; Ensure that the call is to the properly-renamed function.
+; CHECK-DAG: %call = call i32 @staticfunc.llvm.2()
+; CHECK-DAG: define available_externally hidden i32 @staticfunc.llvm.2()
+
 ; CHECK-DAG: define available_externally i32 @referenceglobals(i32 %i)
 declare i32 @referenceglobals(...) #1
+
+; The import of referenceglobals will expose call to globalfunc1 that
+; should in turn be imported.
+; CHECK-DAG: define available_externally void @globalfunc1()
 
 ; CHECK-DAG: define available_externally i32 @referencecommon(i32 %i)
 declare i32 @referencecommon(...) #1
@@ -38,5 +53,13 @@ declare void @setfuncptr(...) #1
 ; CHECK-DAG: define available_externally void @callfuncptr()
 declare void @callfuncptr(...) #1
 
+; Ensure that all uses of local variable @P which has used in setfuncptr
+; and callfuncptr are to the same promoted/renamed global.
+; CHECK-DAG: @P.llvm.2 = available_externally hidden global void ()* null
+; CHECK-DAG: %0 = load void ()*, void ()** @P.llvm.2,
+; CHECK-DAG: store void ()* @staticfunc2.llvm.2, void ()** @P.llvm.2,
+
 ; Won't import weak func
-declare void @callweakfunc(...) #1
+; CHECK-DAG: declare void @weakfunc(...)
+declare void @weakfunc(...) #1
+
