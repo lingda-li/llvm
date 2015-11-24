@@ -56,14 +56,14 @@ class MVT {
       FIRST_FP_VALUETYPE = f16,
       LAST_FP_VALUETYPE  = ppcf128,
 
-      v2i1           =  13,   //  2 x i1
-      v4i1           =  14,   //  4 x i1
-      v8i1           =  15,   //  8 x i1
-      v16i1          =  16,   // 16 x i1
-      v32i1          =  17,   // 32 x i1
-      v64i1          =  18,   // 64 x i1
-      v512i1         =  19,   //   512 x i1
-      v1024i1        =  20,   //  1024 x i1
+      v2i1           =  13,   //    2 x i1
+      v4i1           =  14,   //    4 x i1
+      v8i1           =  15,   //    8 x i1
+      v16i1          =  16,   //   16 x i1
+      v32i1          =  17,   //   32 x i1
+      v64i1          =  18,   //   64 x i1
+      v512i1         =  19,   //  512 x i1
+      v1024i1        =  20,   // 1024 x i1
 
       v1i8           =  21,   //  1 x i8
       v2i8           =  22,   //  2 x i8
@@ -139,7 +139,7 @@ class MVT {
       // This is the current maximum for LAST_VALUETYPE.
       // MVT::MAX_ALLOWED_VALUETYPE is used for asserts and to size bit vectors
       // This value must be a multiple of 32.
-      MAX_ALLOWED_VALUETYPE = 128,
+      MAX_ALLOWED_VALUETYPE = 96,
 
       // Token - A value of type llvm::TokenTy
       token          = 249,
@@ -254,23 +254,23 @@ class MVT {
 
     /// is512BitVector - Return true if this is a 512-bit vector type.
     bool is512BitVector() const {
-      return (SimpleTy == MVT::v8f64  || SimpleTy == MVT::v16f32 ||
-              SimpleTy == MVT::v64i8  || SimpleTy == MVT::v32i16 ||
-              SimpleTy == MVT::v512i1 ||
-              SimpleTy == MVT::v8i64  || SimpleTy == MVT::v16i32);
+      return (SimpleTy == MVT::v16f32 || SimpleTy == MVT::v8f64  ||
+              SimpleTy == MVT::v512i1 || SimpleTy == MVT::v64i8  ||
+              SimpleTy == MVT::v32i16 || SimpleTy == MVT::v16i32 ||
+              SimpleTy == MVT::v8i64);
     }
 
     /// is1024BitVector - Return true if this is a 1024-bit vector type.
     bool is1024BitVector() const {
-      return (SimpleTy == MVT::v16i64  || SimpleTy == MVT::v32i32 ||
-              SimpleTy == MVT::v1024i1 ||
-              SimpleTy == MVT::v64i16  || SimpleTy == MVT::v128i8);
+      return (SimpleTy == MVT::v1024i1 || SimpleTy == MVT::v128i8 ||
+              SimpleTy == MVT::v64i16  || SimpleTy == MVT::v32i32 ||
+              SimpleTy == MVT::v16i64);
     }
 
     /// is2048BitVector - Return true if this is a 1024-bit vector type.
     bool is2048BitVector() const {
-      return (SimpleTy == MVT::v32i64  || SimpleTy == MVT::v64i32 ||
-              SimpleTy == MVT::v128i16 || SimpleTy == MVT::v256i8);
+      return (SimpleTy == MVT::v256i8 || SimpleTy == MVT::v128i16 ||
+              SimpleTy == MVT::v64i32 || SimpleTy == MVT::v32i64);
     }
 
     /// isOverloaded - Return true if this is an overloaded type for TableGen.
@@ -583,34 +583,34 @@ class MVT {
       default:
         break;
       case MVT::i1:
-        if (NumElements == 2)  return MVT::v2i1;
-        if (NumElements == 4)  return MVT::v4i1;
-        if (NumElements == 8)  return MVT::v8i1;
-        if (NumElements == 16) return MVT::v16i1;
-        if (NumElements == 32) return MVT::v32i1;
-        if (NumElements == 64) return MVT::v64i1;
-        if (NumElements == 512) return MVT::v512i1;
+        if (NumElements == 2)    return MVT::v2i1;
+        if (NumElements == 4)    return MVT::v4i1;
+        if (NumElements == 8)    return MVT::v8i1;
+        if (NumElements == 16)   return MVT::v16i1;
+        if (NumElements == 32)   return MVT::v32i1;
+        if (NumElements == 64)   return MVT::v64i1;
+        if (NumElements == 512)  return MVT::v512i1;
         if (NumElements == 1024) return MVT::v1024i1;
         break;
       case MVT::i8:
-        if (NumElements == 1)  return MVT::v1i8;
-        if (NumElements == 2)  return MVT::v2i8;
-        if (NumElements == 4)  return MVT::v4i8;
-        if (NumElements == 8)  return MVT::v8i8;
-        if (NumElements == 16) return MVT::v16i8;
-        if (NumElements == 32) return MVT::v32i8;
-        if (NumElements == 64) return MVT::v64i8;
+        if (NumElements == 1)   return MVT::v1i8;
+        if (NumElements == 2)   return MVT::v2i8;
+        if (NumElements == 4)   return MVT::v4i8;
+        if (NumElements == 8)   return MVT::v8i8;
+        if (NumElements == 16)  return MVT::v16i8;
+        if (NumElements == 32)  return MVT::v32i8;
+        if (NumElements == 64)  return MVT::v64i8;
         if (NumElements == 128) return MVT::v128i8;
         if (NumElements == 256) return MVT::v256i8;
         break;
       case MVT::i16:
-        if (NumElements == 1)  return MVT::v1i16;
-        if (NumElements == 2)  return MVT::v2i16;
-        if (NumElements == 4)  return MVT::v4i16;
-        if (NumElements == 8)  return MVT::v8i16;
-        if (NumElements == 16) return MVT::v16i16;
-        if (NumElements == 32) return MVT::v32i16;
-        if (NumElements == 64) return MVT::v64i16;
+        if (NumElements == 1)   return MVT::v1i16;
+        if (NumElements == 2)   return MVT::v2i16;
+        if (NumElements == 4)   return MVT::v4i16;
+        if (NumElements == 8)   return MVT::v8i16;
+        if (NumElements == 16)  return MVT::v16i16;
+        if (NumElements == 32)  return MVT::v32i16;
+        if (NumElements == 64)  return MVT::v64i16;
         if (NumElements == 128) return MVT::v128i16;
         break;
       case MVT::i32:
