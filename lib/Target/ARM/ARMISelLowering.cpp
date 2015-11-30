@@ -396,7 +396,9 @@ ARMTargetLowering::ARMTargetLowering(const TargetMachine &TM,
       { RTLIB::UINTTOFP_I64_F32, "__u64tos", CallingConv::ARM_AAPCS_VFP },
       { RTLIB::UINTTOFP_I64_F64, "__u64tod", CallingConv::ARM_AAPCS_VFP },
       { RTLIB::SDIV_I32, "__rt_sdiv",   CallingConv::ARM_AAPCS_VFP },
+      { RTLIB::UDIV_I32, "__rt_udiv",   CallingConv::ARM_AAPCS_VFP },
       { RTLIB::SDIV_I64, "__rt_sdiv64", CallingConv::ARM_AAPCS_VFP },
+      { RTLIB::UDIV_I64, "__rt_udiv64", CallingConv::ARM_AAPCS_VFP },
     };
 
     for (const auto &LC : LibraryCalls) {
@@ -781,12 +783,6 @@ ARMTargetLowering::ARMTargetLowering(const TargetMachine &TM,
     // These are expanded into libcalls if the cpu doesn't have HW divider.
     setOperationAction(ISD::SDIV,  MVT::i32, LibCall);
     setOperationAction(ISD::UDIV,  MVT::i32, LibCall);
-  }
-
-  if (Subtarget->isTargetWindows() && !Subtarget->hasDivide()) {
-    setOperationAction(ISD::UDIV, MVT::i32, Custom);
-
-    setOperationAction(ISD::UDIV, MVT::i64, Custom);
   }
 
   setOperationAction(ISD::SREM,  MVT::i32, Expand);
@@ -3287,13 +3283,9 @@ static bool isFloatingPointZero(SDValue Op) {
     // Handle (ISD::BITCAST (ARMISD::VMOVIMM (ISD::TargetConstant 0)) MVT::f64)
     // created by LowerConstantFP().
     SDValue BitcastOp = Op->getOperand(0);
-    if (BitcastOp->getOpcode() == ARMISD::VMOVIMM) {
-      SDValue MoveOp = BitcastOp->getOperand(0);
-      if (MoveOp->getOpcode() == ISD::TargetConstant &&
-          cast<ConstantSDNode>(MoveOp)->getZExtValue() == 0) {
-        return true;
-      }
-    }
+    if (BitcastOp->getOpcode() == ARMISD::VMOVIMM &&
+        isNullConstant(BitcastOp->getOperand(0)))
+      return true;
   }
   return false;
 }
@@ -4538,8 +4530,7 @@ static SDValue Expand64BitShift(SDNode *N, SelectionDAG &DAG,
          "Unknown shift to lower!");
 
   // We only lower SRA, SRL of 1 here, all others use generic lowering.
-  if (!isa<ConstantSDNode>(N->getOperand(1)) ||
-      cast<ConstantSDNode>(N->getOperand(1))->getZExtValue() != 1)
+  if (!isOneConstant(N->getOperand(1)))
     return SDValue();
 
   // If we are in thumb mode, we don't have RRX.
@@ -5421,16 +5412,14 @@ SDValue ARMTargetLowering::LowerBUILD_VECTOR(SDValue Op, SelectionDAG &DAG,
       // just use VDUPLANE. We can only do this if the lane being extracted
       // is at a constant index, as the VDUP from lane instructions only have
       // constant-index forms.
+      ConstantSDNode *constIndex;
       if (Value->getOpcode() == ISD::EXTRACT_VECTOR_ELT &&
-          isa<ConstantSDNode>(Value->getOperand(1))) {
+          (constIndex = dyn_cast<ConstantSDNode>(Value->getOperand(1)))) {
         // We need to create a new undef vector to use for the VDUPLANE if the
         // size of the vector from which we get the value is different than the
         // size of the vector that we need to create. We will insert the element
         // such that the register coalescer will remove unnecessary copies.
         if (VT != Value->getOperand(0).getValueType()) {
-          ConstantSDNode *constIndex;
-          constIndex = dyn_cast<ConstantSDNode>(Value->getOperand(1));
-          assert(constIndex && "The index is not a constant!");
           unsigned index = constIndex->getAPIntValue().getLimitedValue() %
                              VT.getVectorNumElements();
           N =  DAG.getNode(ARMISD::VDUPLANE, dl, VT,
@@ -6667,6 +6656,7 @@ SDValue ARMTargetLowering::LowerFSINCOS(SDValue Op, SelectionDAG &DAG) const {
 }
 
 SDValue ARMTargetLowering::LowerWindowsDIVLibCall(SDValue Op, SelectionDAG &DAG,
+                                                  bool Signed,
                                                   SDValue &Chain) const {
   EVT VT = Op.getValueType();
   assert((VT == MVT::i32 || VT == MVT::i64) &&
@@ -6677,7 +6667,10 @@ SDValue ARMTargetLowering::LowerWindowsDIVLibCall(SDValue Op, SelectionDAG &DAG,
   const auto &TLI = DAG.getTargetLoweringInfo();
 
   const char *Name = nullptr;
-  Name = (VT == MVT::i32) ? "__rt_udiv" : "__rt_udiv64";
+  if (Signed)
+    Name = (VT == MVT::i32) ? "__rt_sdiv" : "__rt_sdiv64";
+  else
+    Name = (VT == MVT::i32) ? "__rt_udiv" : "__rt_udiv64";
 
   SDValue ES = DAG.getExternalSymbol(Name, TLI.getPointerTy(DL));
 
@@ -6699,8 +6692,8 @@ SDValue ARMTargetLowering::LowerWindowsDIVLibCall(SDValue Op, SelectionDAG &DAG,
   return LowerCallTo(CLI).first;
 }
 
-SDValue ARMTargetLowering::LowerDIV_Windows(SDValue Op,
-                                            SelectionDAG &DAG) const {
+SDValue ARMTargetLowering::LowerDIV_Windows(SDValue Op, SelectionDAG &DAG,
+                                            bool Signed) const {
   assert(Op.getValueType() == MVT::i32 &&
          "unexpected type for custom lowering DIV");
   SDLoc dl(Op);
@@ -6708,11 +6701,11 @@ SDValue ARMTargetLowering::LowerDIV_Windows(SDValue Op,
   SDValue DBZCHK = DAG.getNode(ARMISD::WIN__DBZCHK, dl, MVT::Other,
                                DAG.getEntryNode(), Op.getOperand(1));
 
-  return LowerWindowsDIVLibCall(Op, DAG, DBZCHK);
+  return LowerWindowsDIVLibCall(Op, DAG, Signed, DBZCHK);
 }
 
 void ARMTargetLowering::ExpandDIV_Windows(
-    SDValue Op, SelectionDAG &DAG,
+    SDValue Op, SelectionDAG &DAG, bool Signed,
     SmallVectorImpl<SDValue> &Results) const {
   const auto &DL = DAG.getDataLayout();
   const auto &TLI = DAG.getTargetLoweringInfo();
@@ -6730,7 +6723,7 @@ void ARMTargetLowering::ExpandDIV_Windows(
   SDValue DBZCHK =
       DAG.getNode(ARMISD::WIN__DBZCHK, dl, MVT::Other, DAG.getEntryNode(), Or);
 
-  SDValue Result = LowerWindowsDIVLibCall(Op, DAG, DBZCHK);
+  SDValue Result = LowerWindowsDIVLibCall(Op, DAG, Signed, DBZCHK);
 
   SDValue Lower = DAG.getNode(ISD::TRUNCATE, dl, MVT::i32, Result);
   SDValue Upper = DAG.getNode(ISD::SRL, dl, MVT::i64, Result,
@@ -6832,10 +6825,7 @@ SDValue ARMTargetLowering::LowerOperation(SDValue Op, SelectionDAG &DAG) const {
   case ISD::FLT_ROUNDS_:   return LowerFLT_ROUNDS_(Op, DAG);
   case ISD::MUL:           return LowerMUL(Op, DAG);
   case ISD::SDIV:          return LowerSDIV(Op, DAG);
-  case ISD::UDIV:
-    if (Subtarget->isTargetWindows())
-      return LowerDIV_Windows(Op, DAG);
-    return LowerUDIV(Op, DAG);
+  case ISD::UDIV:          return LowerUDIV(Op, DAG);
   case ISD::ADDC:
   case ISD::ADDE:
   case ISD::SUBC:
@@ -6887,8 +6877,10 @@ void ARMTargetLowering::ReplaceNodeResults(SDNode *N,
     ReplaceREADCYCLECOUNTER(N, Results, DAG, Subtarget);
     return;
   case ISD::UDIV:
+  case ISD::SDIV:
     assert(Subtarget->isTargetWindows() && "can only expand DIV on Windows");
-    return ExpandDIV_Windows(SDValue(N, 0), DAG, Results);
+    return ExpandDIV_Windows(SDValue(N, 0), DAG, N->getOpcode() == ISD::SDIV,
+                             Results);
   }
   if (Res.getNode())
     Results.push_back(Res);
@@ -8198,10 +8190,7 @@ void ARMTargetLowering::AdjustInstrPostInstrSelection(MachineInstr *MI,
 
 // Helper function that checks if N is a null or all ones constant.
 static inline bool isZeroOrAllOnes(SDValue N, bool AllOnes) {
-  ConstantSDNode *C = dyn_cast<ConstantSDNode>(N);
-  if (!C)
-    return false;
-  return AllOnes ? C->isAllOnesValue() : C->isNullValue();
+  return AllOnes ? isAllOnesConstant(N) : isNullConstant(N);
 }
 
 // Return true if N is conditionally 0 or all ones.
@@ -10390,9 +10379,7 @@ SDValue ARMTargetLowering::PerformCMOVToBFICombine(SDNode *CMOV, SelectionDAG &D
   SDValue CmpZ = CMOV->getOperand(4);
 
   // The compare must be against zero.
-  SDValue Zero = CmpZ->getOperand(1);
-  if (!isa<ConstantSDNode>(Zero.getNode()) ||
-      !cast<ConstantSDNode>(Zero.getNode())->isNullValue())
+  if (!isNullConstant(CmpZ->getOperand(1)))
     return SDValue();
 
   assert(CmpZ->getOpcode() == ARMISD::CMPZ);

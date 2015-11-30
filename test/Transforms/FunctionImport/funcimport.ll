@@ -4,12 +4,17 @@
 ; RUN: llvm-lto -thinlto -o %t3 %t.bc %t2.bc
 
 ; Do the import now
-; RUN: opt -function-import -summary-file %t3.thinlto.bc %s -S | FileCheck %s
+; RUN: opt -function-import -summary-file %t3.thinlto.bc %s -S | FileCheck %s --check-prefix=CHECK --check-prefix=INSTLIMDEF
+
+; Test import with smaller instruction limit
+; RUN: opt -function-import -summary-file %t3.thinlto.bc %s -import-instr-limit=5 -S | FileCheck %s --check-prefix=CHECK --check-prefix=INSTLIM5
+; INSTLIM5-NOT: @staticfunc.llvm.2
 
 define i32 @main() #0 {
 entry:
   call void (...) @weakalias()
   call void (...) @analias()
+  call void (...) @linkoncealias()
   %call = call i32 (...) @referencestatics()
   %call1 = call i32 (...) @referenceglobals()
   %call2 = call i32 (...) @referencecommon()
@@ -23,19 +28,24 @@ entry:
 ; CHECK-DAG: declare extern_weak void @weakalias()
 declare void @weakalias(...) #1
 
-; Aliases import the aliasee function
-; CHECK-DAG: @analias = alias void (...), bitcast (void ()* @globalfunc2 to void (...)*)
-; CHECK-DAG: define available_externally void @globalfunc2()
+; Cannot create an alias to available_externally
+; CHECK-DAG: declare void @analias()
 declare void @analias(...) #1
 
-; CHECK-DAG: define available_externally i32 @referencestatics(i32 %i)
+; Aliases import the aliasee function
+declare void @linkoncealias(...) #1
+; CHECK-DAG: define linkonce_odr void @linkoncefunc()
+; CHECK-DAG: @linkoncealias = alias void (...), bitcast (void ()* @linkoncefunc to void (...)*
+
+; INSTLIMDEF-DAG: define available_externally i32 @referencestatics(i32 %i)
+; INSTLIM5-DAG: declare i32 @referencestatics(...)
 declare i32 @referencestatics(...) #1
 
 ; The import of referencestatics will expose call to staticfunc that
 ; should in turn be imported as a promoted/renamed and hidden function.
 ; Ensure that the call is to the properly-renamed function.
-; CHECK-DAG: %call = call i32 @staticfunc.llvm.2()
-; CHECK-DAG: define available_externally hidden i32 @staticfunc.llvm.2()
+; INSTLIMDEF-DAG: %call = call i32 @staticfunc.llvm.2()
+; INSTLIMDEF-DAG: define available_externally hidden i32 @staticfunc.llvm.2()
 
 ; CHECK-DAG: define available_externally i32 @referenceglobals(i32 %i)
 declare i32 @referenceglobals(...) #1

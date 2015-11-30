@@ -17,9 +17,7 @@
 #include "WebAssemblyMachineFunctionInfo.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/CodeGen/AsmPrinter.h"
-#include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/CodeGen/MachineFunction.h"
-#include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/MC/MCAsmInfo.h"
 #include "llvm/MC/MCContext.h"
@@ -32,6 +30,11 @@ using namespace llvm;
 MCSymbol *
 WebAssemblyMCInstLower::GetGlobalAddressSymbol(const MachineOperand &MO) const {
   return Printer.getSymbol(MO.getGlobal());
+}
+
+MCSymbol *WebAssemblyMCInstLower::GetExternalSymbolSymbol(
+    const MachineOperand &MO) const {
+  return Printer.GetExternalSymbolSymbol(MO.getSymbolName());
 }
 
 MCOperand WebAssemblyMCInstLower::LowerSymbolOperand(const MachineOperand &MO,
@@ -61,7 +64,6 @@ void WebAssemblyMCInstLower::Lower(const MachineInstr *MI,
       // Ignore all implicit register operands.
       if (MO.isImplicit())
         continue;
-      // TODO: Handle physical registers.
       const WebAssemblyFunctionInfo &MFI =
           *MI->getParent()->getParent()->getInfo<WebAssemblyFunctionInfo>();
       unsigned WAReg = MFI.getWAReg(MO.getReg());
@@ -89,6 +91,9 @@ void WebAssemblyMCInstLower::Lower(const MachineInstr *MI,
       break;
     case MachineOperand::MO_GlobalAddress:
       MCOp = LowerSymbolOperand(MO, GetGlobalAddressSymbol(MO));
+      break;
+    case MachineOperand::MO_ExternalSymbol:
+      MCOp = LowerSymbolOperand(MO, GetExternalSymbolSymbol(MO));
       break;
     }
 

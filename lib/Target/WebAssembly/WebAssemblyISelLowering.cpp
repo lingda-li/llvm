@@ -32,15 +32,15 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetOptions.h"
-
 using namespace llvm;
 
 #define DEBUG_TYPE "wasm-lower"
 
 namespace {
 // Diagnostic information for unimplemented or unsupported feature reporting.
-// FIXME copied from BPF and AMDGPU.
-class DiagnosticInfoUnsupported : public DiagnosticInfo {
+// TODO: This code is copied from BPF and AMDGPU; consider factoring it out
+// and sharing code.
+class DiagnosticInfoUnsupported final : public DiagnosticInfo {
 private:
   // Debug location where this diagnostic is triggered.
   DebugLoc DLoc;
@@ -115,6 +115,7 @@ WebAssemblyTargetLowering::WebAssemblyTargetLowering(
   computeRegisterProperties(Subtarget->getRegisterInfo());
 
   setOperationAction(ISD::GlobalAddress, MVTPtr, Custom);
+  setOperationAction(ISD::ExternalSymbol, MVTPtr, Custom);
   setOperationAction(ISD::JumpTable, MVTPtr, Custom);
 
   for (auto T : {MVT::f32, MVT::f64}) {
@@ -129,8 +130,8 @@ WebAssemblyTargetLowering::WebAssemblyTargetLowering(
       setOperationAction(Op, T, Expand);
     // Note supported floating-point library function operators that otherwise
     // default to expand.
-    for (auto Op : {ISD::FCEIL, ISD::FFLOOR, ISD::FTRUNC, ISD::FNEARBYINT,
-                    ISD::FRINT})
+    for (auto Op :
+         {ISD::FCEIL, ISD::FFLOOR, ISD::FTRUNC, ISD::FNEARBYINT, ISD::FRINT})
       setOperationAction(Op, T, Legal);
     // Support minnan and maxnan, which otherwise default to expand.
     setOperationAction(ISD::FMINNAN, T, Legal);
@@ -139,11 +140,11 @@ WebAssemblyTargetLowering::WebAssemblyTargetLowering(
 
   for (auto T : {MVT::i32, MVT::i64}) {
     // Expand unavailable integer operations.
-    for (auto Op : {ISD::BSWAP, ISD::ROTL, ISD::ROTR,
-                    ISD::SMUL_LOHI, ISD::UMUL_LOHI,
-                    ISD::MULHS, ISD::MULHU, ISD::SDIVREM, ISD::UDIVREM,
-                    ISD::SHL_PARTS, ISD::SRA_PARTS, ISD::SRL_PARTS,
-                    ISD::ADDC, ISD::ADDE, ISD::SUBC, ISD::SUBE}) {
+    for (auto Op :
+         {ISD::BSWAP, ISD::ROTL, ISD::ROTR, ISD::SMUL_LOHI, ISD::UMUL_LOHI,
+          ISD::MULHS, ISD::MULHU, ISD::SDIVREM, ISD::UDIVREM, ISD::SHL_PARTS,
+          ISD::SRA_PARTS, ISD::SRL_PARTS, ISD::ADDC, ISD::ADDE, ISD::SUBC,
+          ISD::SUBE}) {
       setOperationAction(Op, T, Expand);
     }
   }
@@ -186,13 +187,13 @@ FastISel *WebAssemblyTargetLowering::createFastISel(
 }
 
 bool WebAssemblyTargetLowering::isOffsetFoldingLegal(
-    const GlobalAddressSDNode *GA) const {
+    const GlobalAddressSDNode * /*GA*/) const {
   // The WebAssembly target doesn't support folding offsets into global
   // addresses.
   return false;
 }
 
-MVT WebAssemblyTargetLowering::getScalarShiftAmountTy(const DataLayout &DL,
+MVT WebAssemblyTargetLowering::getScalarShiftAmountTy(const DataLayout & /*DL*/,
                                                       EVT VT) const {
   return VT.getSimpleVT();
 }
@@ -219,7 +220,11 @@ WebAssemblyTargetLowering::getRegForInlineAsmConstraint(
   if (Constraint.size() == 1) {
     switch (Constraint[0]) {
     case 'r':
-      return std::make_pair(0U, &WebAssembly::I32RegClass);
+      if (VT == MVT::i32)
+        return std::make_pair(0U, &WebAssembly::I32RegClass);
+      if (VT == MVT::i64)
+        return std::make_pair(0U, &WebAssembly::I64RegClass);
+      break;
     default:
       break;
     }
@@ -262,8 +267,7 @@ WebAssemblyTargetLowering::LowerCall(CallLoweringInfo &CLI,
   MachineFunction &MF = DAG.getMachineFunction();
 
   CallingConv::ID CallConv = CLI.CallConv;
-  if (CallConv != CallingConv::C &&
-      CallConv != CallingConv::Fast &&
+  if (CallConv != CallingConv::C && CallConv != CallingConv::Fast &&
       CallConv != CallingConv::Cold)
     fail(DL, DAG,
          "WebAssembly doesn't support language-specific or target-specific "
@@ -325,8 +329,9 @@ WebAssemblyTargetLowering::LowerCall(CallLoweringInfo &CLI,
 }
 
 bool WebAssemblyTargetLowering::CanLowerReturn(
-    CallingConv::ID CallConv, MachineFunction &MF, bool IsVarArg,
-    const SmallVectorImpl<ISD::OutputArg> &Outs, LLVMContext &Context) const {
+    CallingConv::ID /*CallConv*/, MachineFunction & /*MF*/, bool /*IsVarArg*/,
+    const SmallVectorImpl<ISD::OutputArg> &Outs,
+    LLVMContext & /*Context*/) const {
   // WebAssembly can't currently handle returning tuples.
   return Outs.size() <= 1;
 }
@@ -376,6 +381,10 @@ SDValue WebAssemblyTargetLowering::LowerFormalArguments(
   if (IsVarArg)
     fail(DL, DAG, "WebAssembly doesn't support varargs yet");
 
+  // Set up the incoming ARGUMENTS value, which serves to represent the liveness
+  // of the incoming values before they're represented by virtual registers.
+  MF.getRegInfo().addLiveIn(WebAssembly::ARGUMENTS);
+
   for (const ISD::InputArg &In : Ins) {
     if (In.Flags.isByVal())
       fail(DL, DAG, "WebAssembly hasn't implemented byval arguments");
@@ -387,7 +396,8 @@ SDValue WebAssemblyTargetLowering::LowerFormalArguments(
       fail(DL, DAG, "WebAssembly hasn't implemented cons regs arguments");
     if (In.Flags.isInConsecutiveRegsLast())
       fail(DL, DAG, "WebAssembly hasn't implemented cons regs last arguments");
-    // FIXME Do something with In.getOrigAlign()?
+    // Ignore In.getOrigAlign() because all our arguments are passed in
+    // registers.
     InVals.push_back(
         In.Used
             ? DAG.getNode(WebAssemblyISD::ARGUMENT, DL, In.VT,
@@ -413,6 +423,8 @@ SDValue WebAssemblyTargetLowering::LowerOperation(SDValue Op,
     return SDValue();
   case ISD::GlobalAddress:
     return LowerGlobalAddress(Op, DAG);
+  case ISD::ExternalSymbol:
+    return LowerExternalSymbol(Op, DAG);
   case ISD::JumpTable:
     return LowerJumpTable(Op, DAG);
   case ISD::BR_JT:
@@ -432,6 +444,17 @@ SDValue WebAssemblyTargetLowering::LowerGlobalAddress(SDValue Op,
     fail(DL, DAG, "WebAssembly only expects the 0 address space");
   return DAG.getNode(WebAssemblyISD::Wrapper, DL, VT,
                      DAG.getTargetGlobalAddress(GA->getGlobal(), DL, VT));
+}
+
+SDValue
+WebAssemblyTargetLowering::LowerExternalSymbol(SDValue Op,
+                                               SelectionDAG &DAG) const {
+  SDLoc DL(Op);
+  const auto *ES = cast<ExternalSymbolSDNode>(Op);
+  EVT VT = Op.getValueType();
+  assert(ES->getTargetFlags() == 0 && "WebAssembly doesn't set target flags");
+  return DAG.getNode(WebAssemblyISD::Wrapper, DL, VT,
+                     DAG.getTargetExternalSymbol(ES->getSymbol(), VT));
 }
 
 SDValue WebAssemblyTargetLowering::LowerJumpTable(SDValue Op,
@@ -476,8 +499,8 @@ SDValue WebAssemblyTargetLowering::LowerBR_JT(SDValue Op,
 //===----------------------------------------------------------------------===//
 
 MCSection *WebAssemblyTargetObjectFile::SelectSectionForGlobal(
-    const GlobalValue *GV, SectionKind Kind, Mangler &Mang,
-    const TargetMachine &TM) const {
+    const GlobalValue *GV, SectionKind /*Kind*/, Mangler & /*Mang*/,
+    const TargetMachine & /*TM*/) const {
   // TODO: Be more sophisticated than this.
   return isa<Function>(GV) ? getTextSection() : getDataSection();
 }

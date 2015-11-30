@@ -295,6 +295,7 @@ class CMP_EQ_QB_R3_DESC_BASE<string instr_asm, SDPatternOperator OpNode,
   string AsmString = !strconcat(instr_asm, "\t$rd, $rs, $rt");
   list<dag> Pattern = [(set ROD:$rd, (OpNode ROS:$rs, ROT:$rt))];
   InstrItinClass Itinerary = itin;
+  string BaseOpcode = instr_asm;
 }
 
 class PRECR_SRA_PH_W_DESC_BASE<string instr_asm, SDPatternOperator OpNode,
@@ -306,6 +307,7 @@ class PRECR_SRA_PH_W_DESC_BASE<string instr_asm, SDPatternOperator OpNode,
   list<dag> Pattern = [(set ROT:$rt, (OpNode ROS:$src, ROS:$rs, immZExt5:$sa))];
   InstrItinClass Itinerary = itin;
   string Constraints = "$src = $rt";
+  string BaseOpcode = instr_asm;
 }
 
 class ABSQ_S_PH_R2_DESC_BASE<string instr_asm, SDPatternOperator OpNode,
@@ -358,6 +360,7 @@ class LX_DESC_BASE<string instr_asm, SDPatternOperator OpNode,
   list<dag> Pattern = [(set GPR32Opnd:$rd, (OpNode iPTR:$base, iPTR:$index))];
   InstrItinClass Itinerary = itin;
   bit mayLoad = 1;
+  string BaseOpcode = instr_asm;
 }
 
 class ADDUH_QB_DESC_BASE<string instr_asm, SDPatternOperator OpNode,
@@ -372,12 +375,12 @@ class ADDUH_QB_DESC_BASE<string instr_asm, SDPatternOperator OpNode,
 }
 
 class APPEND_DESC_BASE<string instr_asm, SDPatternOperator OpNode,
-                       SDPatternOperator ImmOp, InstrItinClass itin> {
+                       Operand ImmOp, SDPatternOperator Imm, InstrItinClass itin> {
   dag OutOperandList = (outs GPR32Opnd:$rt);
-  dag InOperandList = (ins GPR32Opnd:$rs, uimm5:$sa, GPR32Opnd:$src);
+  dag InOperandList = (ins GPR32Opnd:$rs, ImmOp:$sa, GPR32Opnd:$src);
   string AsmString = !strconcat(instr_asm, "\t$rt, $rs, $sa");
   list<dag> Pattern =  [(set GPR32Opnd:$rt,
-                        (OpNode GPR32Opnd:$src, GPR32Opnd:$rs, ImmOp:$sa))];
+                        (OpNode GPR32Opnd:$src, GPR32Opnd:$rs, Imm:$sa))];
   InstrItinClass Itinerary = itin;
   string Constraints = "$src = $rt";
 }
@@ -485,6 +488,7 @@ class MFHI_DESC_BASE<string instr_asm, RegisterOperand RO, SDNode OpNode,
   string AsmString = !strconcat(instr_asm, "\t$rd, $ac");
   list<dag> Pattern = [(set GPR32Opnd:$rd, (OpNode RO:$ac))];
   InstrItinClass Itinerary = itin;
+  string BaseOpcode = instr_asm;
 }
 
 class MTHI_DESC_BASE<string instr_asm, RegisterOperand RO, InstrItinClass itin> {
@@ -492,6 +496,7 @@ class MTHI_DESC_BASE<string instr_asm, RegisterOperand RO, InstrItinClass itin> 
   dag InOperandList = (ins GPR32Opnd:$rs);
   string AsmString = !strconcat(instr_asm, "\t$rs, $ac");
   InstrItinClass Itinerary = itin;
+  string BaseOpcode = instr_asm;
 }
 
 class BPOSGE32_PSEUDO_DESC_BASE<SDPatternOperator OpNode, InstrItinClass itin> :
@@ -1074,14 +1079,14 @@ class SHRLV_PH_DESC : SHLL_QB_R3_DESC_BASE<"shrlv.ph", int_mips_shrl_ph,
                                            NoItinerary, DSPROpnd>;
 
 // Misc
-class APPEND_DESC : APPEND_DESC_BASE<"append", int_mips_append, immZExt5,
+class APPEND_DESC : APPEND_DESC_BASE<"append", int_mips_append, uimm5, immZExt5,
                                      NoItinerary>;
 
-class BALIGN_DESC : APPEND_DESC_BASE<"balign", int_mips_balign, immZExt2,
+class BALIGN_DESC : APPEND_DESC_BASE<"balign", int_mips_balign, uimm2, immZExt2,
                                      NoItinerary>;
 
-class PREPEND_DESC : APPEND_DESC_BASE<"prepend", int_mips_prepend, immZExt5,
-                                      NoItinerary>;
+class PREPEND_DESC : APPEND_DESC_BASE<"prepend", int_mips_prepend, uimm5,
+                                      immZExt5, NoItinerary>;
 
 // Pseudos.
 def BPOSGE32_PSEUDO : BPOSGE32_PSEUDO_DESC_BASE<int_mips_bposge32,
@@ -1105,10 +1110,10 @@ def MODSUB : MODSUB_ENC, MODSUB_DESC;
 def RADDU_W_QB : RADDU_W_QB_ENC, RADDU_W_QB_DESC;
 def ABSQ_S_PH : DspMMRel, ABSQ_S_PH_ENC, ABSQ_S_PH_DESC;
 def ABSQ_S_W : DspMMRel, ABSQ_S_W_ENC, ABSQ_S_W_DESC;
-def PRECRQ_QB_PH : PRECRQ_QB_PH_ENC, PRECRQ_QB_PH_DESC;
-def PRECRQ_PH_W : PRECRQ_PH_W_ENC, PRECRQ_PH_W_DESC;
-def PRECRQ_RS_PH_W : PRECRQ_RS_PH_W_ENC, PRECRQ_RS_PH_W_DESC;
-def PRECRQU_S_QB_PH : PRECRQU_S_QB_PH_ENC, PRECRQU_S_QB_PH_DESC;
+def PRECRQ_QB_PH : DspMMRel, PRECRQ_QB_PH_ENC, PRECRQ_QB_PH_DESC;
+def PRECRQ_PH_W : DspMMRel, PRECRQ_PH_W_ENC, PRECRQ_PH_W_DESC;
+def PRECRQ_RS_PH_W : DspMMRel, PRECRQ_RS_PH_W_ENC, PRECRQ_RS_PH_W_DESC;
+def PRECRQU_S_QB_PH : DspMMRel, PRECRQU_S_QB_PH_ENC, PRECRQU_S_QB_PH_DESC;
 def PRECEQ_W_PHL : DspMMRel, PRECEQ_W_PHL_ENC, PRECEQ_W_PHL_DESC;
 def PRECEQ_W_PHR : DspMMRel, PRECEQ_W_PHR_ENC, PRECEQ_W_PHR_DESC;
 def PRECEQU_PH_QBL : DspMMRel, PRECEQU_PH_QBL_ENC, PRECEQU_PH_QBL_DESC;
@@ -1141,14 +1146,14 @@ def MULEQ_S_W_PHL : DspMMRel, MULEQ_S_W_PHL_ENC, MULEQ_S_W_PHL_DESC;
 def MULEQ_S_W_PHR : DspMMRel, MULEQ_S_W_PHR_ENC, MULEQ_S_W_PHR_DESC;
 def MULQ_RS_PH : DspMMRel, MULQ_RS_PH_ENC, MULQ_RS_PH_DESC;
 def MULSAQ_S_W_PH : MULSAQ_S_W_PH_ENC, MULSAQ_S_W_PH_DESC;
-def MAQ_S_W_PHL : MAQ_S_W_PHL_ENC, MAQ_S_W_PHL_DESC;
-def MAQ_S_W_PHR : MAQ_S_W_PHR_ENC, MAQ_S_W_PHR_DESC;
-def MAQ_SA_W_PHL : MAQ_SA_W_PHL_ENC, MAQ_SA_W_PHL_DESC;
-def MAQ_SA_W_PHR : MAQ_SA_W_PHR_ENC, MAQ_SA_W_PHR_DESC;
-def MFHI_DSP : MFHI_ENC, MFHI_DESC;
-def MFLO_DSP : MFLO_ENC, MFLO_DESC;
-def MTHI_DSP : MTHI_ENC, MTHI_DESC;
-def MTLO_DSP : MTLO_ENC, MTLO_DESC;
+def MAQ_S_W_PHL : DspMMRel, MAQ_S_W_PHL_ENC, MAQ_S_W_PHL_DESC;
+def MAQ_S_W_PHR : DspMMRel, MAQ_S_W_PHR_ENC, MAQ_S_W_PHR_DESC;
+def MAQ_SA_W_PHL : DspMMRel, MAQ_SA_W_PHL_ENC, MAQ_SA_W_PHL_DESC;
+def MAQ_SA_W_PHR : DspMMRel, MAQ_SA_W_PHR_ENC, MAQ_SA_W_PHR_DESC;
+def MFHI_DSP : DspMMRel, MFHI_ENC, MFHI_DESC;
+def MFLO_DSP : DspMMRel, MFLO_ENC, MFLO_DESC;
+def MTHI_DSP : DspMMRel, MTHI_ENC, MTHI_DESC;
+def MTLO_DSP : DspMMRel, MTLO_ENC, MTLO_DESC;
 def DPAU_H_QBL : DspMMRel, DPAU_H_QBL_ENC, DPAU_H_QBL_DESC;
 def DPAU_H_QBR : DspMMRel, DPAU_H_QBR_ENC, DPAU_H_QBR_DESC;
 def DPSU_H_QBL : DspMMRel, DPSU_H_QBL_ENC, DPSU_H_QBL_DESC;
@@ -1180,9 +1185,9 @@ def REPLV_QB : REPLV_QB_ENC, REPLV_QB_DESC;
 def REPLV_PH : REPLV_PH_ENC, REPLV_PH_DESC;
 def PICK_QB : PICK_QB_ENC, PICK_QB_DESC;
 def PICK_PH : PICK_PH_ENC, PICK_PH_DESC;
-def LWX : LWX_ENC, LWX_DESC;
-def LHX : LHX_ENC, LHX_DESC;
-def LBUX : LBUX_ENC, LBUX_DESC;
+def LWX : DspMMRel, LWX_ENC, LWX_DESC;
+def LHX : DspMMRel, LHX_ENC, LHX_DESC;
+def LBUX : DspMMRel, LBUX_ENC, LBUX_DESC;
 def BPOSGE32 : BPOSGE32_ENC, BPOSGE32_DESC;
 def INSV : DspMMRel, INSV_ENC, INSV_DESC;
 def EXTP : DspMMRel, EXTP_ENC, EXTP_DESC;
@@ -1240,9 +1245,9 @@ def DPSX_W_PH : DspMMRel, DPSX_W_PH_ENC, DPSX_W_PH_DESC;
 def DPSQX_S_W_PH : DspMMRel, DPSQX_S_W_PH_ENC, DPSQX_S_W_PH_DESC;
 def DPSQX_SA_W_PH : DspMMRel, DPSQX_SA_W_PH_ENC, DPSQX_SA_W_PH_DESC;
 def MULSA_W_PH : MULSA_W_PH_ENC, MULSA_W_PH_DESC;
-def PRECR_QB_PH : PRECR_QB_PH_ENC, PRECR_QB_PH_DESC;
-def PRECR_SRA_PH_W : PRECR_SRA_PH_W_ENC, PRECR_SRA_PH_W_DESC;
-def PRECR_SRA_R_PH_W : PRECR_SRA_R_PH_W_ENC, PRECR_SRA_R_PH_W_DESC;
+def PRECR_QB_PH : DspMMRel, PRECR_QB_PH_ENC, PRECR_QB_PH_DESC;
+def PRECR_SRA_PH_W : DspMMRel, PRECR_SRA_PH_W_ENC, PRECR_SRA_PH_W_DESC;
+def PRECR_SRA_R_PH_W : DspMMRel, PRECR_SRA_R_PH_W_ENC, PRECR_SRA_R_PH_W_DESC;
 def SHRA_QB : DspMMRel, SHRA_QB_ENC, SHRA_QB_DESC;
 def SHRAV_QB : DspMMRel, SHRAV_QB_ENC, SHRAV_QB_DESC;
 def SHRA_R_QB : DspMMRel, SHRA_R_QB_ENC, SHRA_R_QB_DESC;
