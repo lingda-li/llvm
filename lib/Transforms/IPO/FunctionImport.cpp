@@ -51,7 +51,7 @@ static std::unique_ptr<Module> loadFile(const std::string &FileName,
 }
 
 // Get a Module for \p FileName from the cache, or load it lazily.
-Module &FunctionImporter::getOrLoadModule(StringRef FileName) {
+Module &ModuleLazyLoaderCache::operator()(StringRef FileName) {
   auto &Module = ModuleMap[FileName];
   if (!Module)
     Module = loadFile(FileName, Context);
@@ -86,7 +86,6 @@ static void findExternalCalls(const Function &F, StringSet<> &CalledFunctions,
 // The current implementation imports every called functions that exists in the
 // summaries index.
 bool FunctionImporter::importFunctions(Module &M) {
-  assert(&Context == &M.getContext());
 
   bool Changed = false;
 
@@ -102,7 +101,7 @@ bool FunctionImporter::importFunctions(Module &M) {
   /// Second step: for every call to an external function, try to import it.
 
   // Linker that will be used for importing function
-  Linker L(&M, DiagnosticHandler);
+  Linker L(M, DiagnosticHandler);
 
   while (!Worklist.empty()) {
     auto CalledFunctionName = Worklist.pop_back_val();
@@ -124,21 +123,17 @@ bool FunctionImporter::importFunctions(Module &M) {
     auto *Summary = Info->functionSummary();
     if (!Summary) {
       // FIXME: in case we are lazyloading summaries, we can do it now.
-      dbgs() << "Missing summary for  " << CalledFunctionName
-             << ", error at import?\n";
+      DEBUG(dbgs() << "Missing summary for  " << CalledFunctionName
+                   << ", error at import?\n");
       llvm_unreachable("Missing summary");
     }
 
     if (Summary->instCount() > ImportInstrLimit) {
-      dbgs() << "Skip import of " << CalledFunctionName << " with "
-             << Summary->instCount() << " instructions (limit "
-             << ImportInstrLimit << ")\n";
+      DEBUG(dbgs() << "Skip import of " << CalledFunctionName << " with "
+                   << Summary->instCount() << " instructions (limit "
+                   << ImportInstrLimit << ")\n");
       continue;
     }
-
-    //
-    // No profitability notion right now, just import all the time...
-    //
 
     // Get the module path from the summary.
     auto FileName = Summary->modulePath();
@@ -146,7 +141,8 @@ bool FunctionImporter::importFunctions(Module &M) {
                  << "\n");
 
     // Get the module for the import (potentially from the cache).
-    auto &Module = getOrLoadModule(FileName);
+    auto &Module = getLazyModule(FileName);
+    assert(&Module.getContext() == &M.getContext());
 
     // The function that we will import!
     GlobalValue *SGV = Module.getNamedValue(CalledFunctionName);
@@ -186,7 +182,10 @@ bool FunctionImporter::importFunctions(Module &M) {
     }
 
     // Link in the specified function.
-    if (L.linkInModule(&Module, Linker::Flags::None, &Index, F))
+    DenseSet<const GlobalValue *> FunctionsToImport;
+    FunctionsToImport.insert(F);
+    if (L.linkInModule(Module, Linker::Flags::None, &Index,
+                       &FunctionsToImport))
       report_fatal_error("Function Import: link error");
 
     // Process the newly imported function and add callees to the worklist.
@@ -198,6 +197,7 @@ bool FunctionImporter::importFunctions(Module &M) {
 
     Changed = true;
   }
+
   return Changed;
 }
 
@@ -259,7 +259,10 @@ public:
     }
 
     // Perform the import now.
-    FunctionImporter Importer(M.getContext(), *Index, diagnosticHandler);
+    ModuleLazyLoaderCache Loader(M.getContext());
+    FunctionImporter Importer(*Index, diagnosticHandler,
+                              [&](StringRef Name)
+                                  -> Module &{ return Loader(Name); });
     return Importer.importFunctions(M);
 
     return false;

@@ -1104,11 +1104,14 @@ void BranchFolder::setCommonTailEdgeWeights(MachineBasicBlock &TailMBB) {
           .getFrequency();
   auto EdgeFreq = EdgeFreqLs.begin();
 
-  for (auto SuccI = TailMBB.succ_begin(), SuccE = TailMBB.succ_end();
-       SuccI != SuccE; ++SuccI, ++EdgeFreq)
-    TailMBB.setSuccProbability(
-        SuccI, BranchProbability::getBranchProbability(EdgeFreq->getFrequency(),
-                                                       SumEdgeFreq));
+  if (SumEdgeFreq > 0) {
+    for (auto SuccI = TailMBB.succ_begin(), SuccE = TailMBB.succ_end();
+         SuccI != SuccE; ++SuccI, ++EdgeFreq) {
+      auto Prob = BranchProbability::getBranchProbability(
+          EdgeFreq->getFrequency(), SumEdgeFreq);
+      TailMBB.setSuccProbability(SuccI, Prob);
+    }
+  }
 }
 
 //===----------------------------------------------------------------------===//

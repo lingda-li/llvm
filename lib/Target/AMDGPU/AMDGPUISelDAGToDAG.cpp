@@ -11,6 +11,8 @@
 /// \brief Defines an instruction selector for the AMDGPU target.
 //
 //===----------------------------------------------------------------------===//
+
+#include "AMDGPUDiagnosticInfoUnsupported.h"
 #include "AMDGPUInstrInfo.h"
 #include "AMDGPUISelLowering.h" // For AMDGPUISD
 #include "AMDGPURegisterInfo.h"
@@ -457,41 +459,6 @@ SDNode *AMDGPUDAGToDAGISel::Select(SDNode *N) {
   case ISD::STORE: {
     N = glueCopyToM0(N);
     break;
-  }
-  case AMDGPUISD::REGISTER_LOAD: {
-    if (Subtarget->getGeneration() <= AMDGPUSubtarget::NORTHERN_ISLANDS)
-      break;
-    SDValue Addr, Offset;
-
-    SDLoc DL(N);
-    SelectADDRIndirect(N->getOperand(1), Addr, Offset);
-    const SDValue Ops[] = {
-      Addr,
-      Offset,
-      CurDAG->getTargetConstant(0, DL, MVT::i32),
-      N->getOperand(0),
-    };
-    return CurDAG->getMachineNode(AMDGPU::SI_RegisterLoad, DL,
-                                  CurDAG->getVTList(MVT::i32, MVT::i64,
-                                                    MVT::Other),
-                                  Ops);
-  }
-  case AMDGPUISD::REGISTER_STORE: {
-    if (Subtarget->getGeneration() <= AMDGPUSubtarget::NORTHERN_ISLANDS)
-      break;
-    SDValue Addr, Offset;
-    SelectADDRIndirect(N->getOperand(2), Addr, Offset);
-    SDLoc DL(N);
-    const SDValue Ops[] = {
-      N->getOperand(1),
-      Addr,
-      Offset,
-      CurDAG->getTargetConstant(0, DL, MVT::i32),
-      N->getOperand(0),
-    };
-    return CurDAG->getMachineNode(AMDGPU::SI_RegisterStorePseudo, DL,
-                                        CurDAG->getVTList(MVT::Other),
-                                        Ops);
   }
 
   case AMDGPUISD::BFE_I32:
@@ -1243,12 +1210,13 @@ SDNode *AMDGPUDAGToDAGISel::SelectAddrSpaceCast(SDNode *N) {
   AddrSpaceCastSDNode *ASC = cast<AddrSpaceCastSDNode>(N);
   SDLoc DL(N);
 
+  const MachineFunction &MF = CurDAG->getMachineFunction();
+  DiagnosticInfoUnsupported NotImplemented(*MF.getFunction(),
+                                           "addrspacecast not implemented");
+  CurDAG->getContext()->diagnose(NotImplemented);
+
   assert(Subtarget->hasFlatAddressSpace() &&
          "addrspacecast only supported with flat address space!");
-
-  assert((ASC->getSrcAddressSpace() != AMDGPUAS::CONSTANT_ADDRESS &&
-          ASC->getDestAddressSpace() != AMDGPUAS::CONSTANT_ADDRESS) &&
-         "Cannot cast address space to / from constant address!");
 
   assert((ASC->getSrcAddressSpace() == AMDGPUAS::FLAT_ADDRESS ||
           ASC->getDestAddressSpace() == AMDGPUAS::FLAT_ADDRESS) &&
