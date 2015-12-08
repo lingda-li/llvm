@@ -16,9 +16,9 @@
 #ifndef LLVM_PROFILEDATA_INSTRPROF_H_
 #define LLVM_PROFILEDATA_INSTRPROF_H_
 
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSet.h"
-#include "llvm/ADT/STLExtras.h"
 #include "llvm/IR/GlobalValue.h"
 #include "llvm/ProfileData/InstrProfData.inc"
 #include "llvm/Support/Endian.h"
@@ -30,6 +30,7 @@
 #include <system_error>
 #include <vector>
 
+#define INSTR_PROF_INDEX_VERSION 3
 namespace llvm {
 
 class Function;
@@ -132,7 +133,8 @@ inline StringRef getInstrProfFileOverriderFuncName() {
 
 /// Return the modified name for function \c F suitable to be
 /// used the key for profile lookup.
-std::string getPGOFuncName(const Function &F);
+std::string getPGOFuncName(const Function &F,
+                           uint64_t Version = INSTR_PROF_INDEX_VERSION);
 
 /// Return the modified name for a function suitable to be
 /// used the key for profile lookup. The function's original
@@ -140,7 +142,8 @@ std::string getPGOFuncName(const Function &F);
 /// The function is defined in module \c FileName.
 std::string getPGOFuncName(StringRef RawFuncName,
                            GlobalValue::LinkageTypes Linkage,
-                           StringRef FileName);
+                           StringRef FileName,
+                           uint64_t Version = INSTR_PROF_INDEX_VERSION);
 
 /// Create and return the global variable for function name used in PGO
 /// instrumentation. \c FuncName is the name of the function returned
@@ -428,19 +431,22 @@ instrprof_error InstrProfRecord::merge(InstrProfRecord &Other) {
   if (Counts.size() != Other.Counts.size())
     return instrprof_error::count_mismatch;
 
+  instrprof_error Result = instrprof_error::success;
+
   for (size_t I = 0, E = Other.Counts.size(); I < E; ++I) {
-    if (Counts[I] + Other.Counts[I] < Counts[I])
-      return instrprof_error::counter_overflow;
-    Counts[I] += Other.Counts[I];
+    bool ResultOverflowed;
+    Counts[I] = SaturatingAdd(Counts[I], Other.Counts[I], ResultOverflowed);
+    if (ResultOverflowed)
+      Result = instrprof_error::counter_overflow;
   }
 
   for (uint32_t Kind = IPVK_First; Kind <= IPVK_Last; ++Kind) {
-    instrprof_error result = mergeValueProfData(Kind, Other);
-    if (result != instrprof_error::success)
-      return result;
+    instrprof_error MergeValueResult = mergeValueProfData(Kind, Other);
+    if (MergeValueResult != instrprof_error::success)
+      Result = MergeValueResult;
   }
 
-  return instrprof_error::success;
+  return Result;
 }
 
 inline support::endianness getHostEndianness() {
@@ -501,7 +507,7 @@ static inline uint64_t ComputeHash(HashT Type, StringRef K) {
 }
 
 const uint64_t Magic = 0x8169666f72706cff; // "\xfflprofi\x81"
-const uint64_t Version = 3;
+const uint64_t Version = INSTR_PROF_INDEX_VERSION;
 const HashT HashType = HashT::MD5;
 
 // This structure defines the file header of the LLVM profile

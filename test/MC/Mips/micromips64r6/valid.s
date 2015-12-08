@@ -19,7 +19,7 @@ a:
         dati $3, 4               # CHECK: dati $3, 4          # encoding: [0x42,0x03,0x00,0x04]
         dext $9, $6, 3, 7        # CHECK: dext $9, $6, 3, 7   # encoding: [0x59,0x26,0x30,0xec]
         dextm $9, $6, 3, 7       # CHECK: dextm $9, $6, 3, 7  # encoding: [0x59,0x26,0x30,0xe4]
-        dextu $9, $6, 3, 7       # CHECK: dextu $9, $6, 3, 7  # encoding: [0x59,0x26,0x30,0xd4]
+        dextu $9, $6, 35, 7      # CHECK: dextu $9, $6, 35, 7  # encoding: [0x59,0x26,0x30,0xd4]
         dalign $4, $2, $3, 5     # CHECK: dalign $4, $2, $3, 5  # encoding: [0x58,0x43,0x25,0x1c]
         lw $3, 32($gp)           # CHECK: lw $3, 32($gp)        # encoding: [0x65,0x88]
         lw $3, 24($sp)           # CHECK: lw $3, 24($sp)        # encoding: [0x48,0x66]
@@ -146,5 +146,9 @@ a:
         selnez.d $f2, $f4, $f8   # CHECK: selnez.d $f2, $f4, $f8  # encoding: [0x55,0x04,0x12,0x78]
         class.s $f2, $f3         # CHECK: class.s $f2, $f3        # encoding: [0x54,0x62,0x00,0x60]
         class.d $f2, $f4         # CHECK: class.d $f2, $f4        # encoding: [0x54,0x82,0x02,0x60]
+        lh $2, 8($4)             # CHECK: lh $2, 8($4)        # encoding: [0x3c,0x44,0x00,0x08]
+        lhe $4, 8($2)            # CHECK: lhe $4, 8($2)       # encoding: [0x60,0x82,0x6a,0x08]
+        lhu $4, 8($2)            # CHECK: lhu $4, 8($2)       # encoding: [0x34,0x82,0x00,0x08]
+        lhue $4, 8($2)           # CHECK: lhue $4, 8($2)      # encoding: [0x60,0x82,0x62,0x08]
 
 1:
