@@ -2452,9 +2452,8 @@ const SCEV *ScalarEvolution::getMulExpr(SmallVectorImpl<const SCEV *> &Ops,
         if (const SCEVAddExpr *Add = dyn_cast<SCEVAddExpr>(Ops[1])) {
           SmallVector<const SCEV *, 4> NewOps;
           bool AnyFolded = false;
-          for (SCEVAddRecExpr::op_iterator I = Add->op_begin(),
-                 E = Add->op_end(); I != E; ++I) {
-            const SCEV *Mul = getMulExpr(Ops[0], *I);
+          for (const SCEV *AddOp : Add->operands()) {
+            const SCEV *Mul = getMulExpr(Ops[0], AddOp);
             if (!isa<SCEVMulExpr>(Mul)) AnyFolded = true;
             NewOps.push_back(Mul);
           }
@@ -2463,10 +2462,9 @@ const SCEV *ScalarEvolution::getMulExpr(SmallVectorImpl<const SCEV *> &Ops,
         } else if (const auto *AddRec = dyn_cast<SCEVAddRecExpr>(Ops[1])) {
           // Negation preserves a recurrence's no self-wrap property.
           SmallVector<const SCEV *, 4> Operands;
-          for (SCEVAddRecExpr::op_iterator I = AddRec->op_begin(),
-                 E = AddRec->op_end(); I != E; ++I) {
-            Operands.push_back(getMulExpr(Ops[0], *I));
-          }
+          for (const SCEV *AddRecOp : AddRec->operands())
+            Operands.push_back(getMulExpr(Ops[0], AddRecOp));
+
           return getAddRecExpr(Operands, AddRec->getLoop(),
                                AddRec->getNoWrapFlags(SCEV::FlagNW));
         }
@@ -3550,13 +3548,12 @@ const SCEV *ScalarEvolution::getPointerBase(const SCEV *V) {
     return getPointerBase(Cast->getOperand());
   } else if (const SCEVNAryExpr *NAry = dyn_cast<SCEVNAryExpr>(V)) {
     const SCEV *PtrOp = nullptr;
-    for (SCEVNAryExpr::op_iterator I = NAry->op_begin(), E = NAry->op_end();
-         I != E; ++I) {
-      if ((*I)->getType()->isPointerTy()) {
+    for (const SCEV *NAryOp : NAry->operands()) {
+      if (NAryOp->getType()->isPointerTy()) {
         // Cannot find the base of an expression with multiple pointer operands.
         if (PtrOp)
           return V;
-        PtrOp = *I;
+        PtrOp = NAryOp;
       }
     }
     if (!PtrOp)
@@ -5827,12 +5824,10 @@ getConstantEvolvingPHIOperands(Instruction *UseInst, const Loop *L,
   // Otherwise, we can evaluate this instruction if all of its operands are
   // constant or derived from a PHI node themselves.
   PHINode *PHI = nullptr;
-  for (Instruction::op_iterator OpI = UseInst->op_begin(),
-         OpE = UseInst->op_end(); OpI != OpE; ++OpI) {
+  for (Value *Op : UseInst->operands()) {
+    if (isa<Constant>(Op)) continue;
 
-    if (isa<Constant>(*OpI)) continue;
-
-    Instruction *OpInst = dyn_cast<Instruction>(*OpI);
+    Instruction *OpInst = dyn_cast<Instruction>(Op);
     if (!OpInst || !canConstantEvolve(OpInst, L)) return nullptr;
 
     PHINode *P = dyn_cast<PHINode>(OpInst);
@@ -9353,9 +9348,8 @@ ScalarEvolution::computeBlockDisposition(const SCEV *S, const BasicBlock *BB) {
   case scSMaxExpr: {
     const SCEVNAryExpr *NAry = cast<SCEVNAryExpr>(S);
     bool Proper = true;
-    for (SCEVNAryExpr::op_iterator I = NAry->op_begin(), E = NAry->op_end();
-         I != E; ++I) {
-      BlockDisposition D = getBlockDisposition(*I, BB);
+    for (const SCEV *NAryOp : NAry->operands()) {
+      BlockDisposition D = getBlockDisposition(NAryOp, BB);
       if (D == DoesNotDominateBlock)
         return DoesNotDominateBlock;
       if (D == DominatesBlock)
@@ -9712,4 +9706,47 @@ void SCEVUnionPredicate::add(const SCEVPredicate *N) {
 
   SCEVToPreds[Key].push_back(N);
   Preds.push_back(N);
+}
+
+PredicatedScalarEvolution::PredicatedScalarEvolution(ScalarEvolution &SE)
+    : SE(SE), Generation(0) {}
+
+const SCEV *PredicatedScalarEvolution::getSCEV(Value *V) {
+  const SCEV *Expr = SE.getSCEV(V);
+  RewriteEntry &Entry = RewriteMap[Expr];
+
+  // If we already have an entry and the version matches, return it.
+  if (Entry.second && Generation == Entry.first)
+    return Entry.second;
+
+  // We found an entry but it's stale. Rewrite the stale entry
+  // acording to the current predicate.
+  if (Entry.second)
+    Expr = Entry.second;
+
+  const SCEV *NewSCEV = SE.rewriteUsingPredicate(Expr, Preds);
+  Entry = {Generation, NewSCEV};
+
+  return NewSCEV;
+}
+
+void PredicatedScalarEvolution::addPredicate(const SCEVPredicate &Pred) {
+  if (Preds.implies(&Pred))
+    return;
+  Preds.add(&Pred);
+  updateGeneration();
+}
+
+const SCEVUnionPredicate &PredicatedScalarEvolution::getUnionPredicate() const {
+  return Preds;
+}
+
+void PredicatedScalarEvolution::updateGeneration() {
+  // If the generation number wrapped recompute everything.
+  if (++Generation == 0) {
+    for (auto &II : RewriteMap) {
+      const SCEV *Rewritten = II.second.second;
+      II.second = {Generation, SE.rewriteUsingPredicate(Rewritten, Preds)};
+    }
+  }
 }

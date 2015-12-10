@@ -1003,7 +1003,7 @@ void X86FrameLowering::emitPrologue(MachineFunction &MF,
   else if (IsFunclet)
     Establisher = Uses64BitFramePtr ? X86::RDX : X86::EDX;
 
-  if (IsWin64Prologue && IsFunclet & !IsClrFunclet) {
+  if (IsWin64Prologue && IsFunclet && !IsClrFunclet) {
     // Immediately spill establisher into the home slot.
     // The runtime cares about this.
     // MOV64mr %rdx, 16(%rsp)
@@ -2593,6 +2593,12 @@ bool X86FrameLowering::canUseAsEpilogue(const MachineBasicBlock &MBB) const {
   // otherwise, conservatively assume this is not
   // safe to insert the epilogue here.
   return !flagsNeedToBePreservedBeforeTheTerminators(MBB);
+}
+
+bool X86FrameLowering::enableShrinkWrapping(const MachineFunction &MF) const {
+  // If we may need to emit frameless compact unwind information, give
+  // up as this is currently broken: PR25614.
+  return MF.getFunction()->hasFnAttribute(Attribute::NoUnwind) || hasFP(MF);
 }
 
 MachineBasicBlock::iterator X86FrameLowering::restoreWin32EHStackPointers(
