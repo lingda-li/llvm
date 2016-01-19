@@ -2311,6 +2311,18 @@ X86TargetLowering::LowerReturn(SDValue Chain,
         DAG.getRegister(RetValReg, getPointerTy(DAG.getDataLayout())));
   }
 
+  const X86RegisterInfo *TRI = Subtarget->getRegisterInfo();
+  const MCPhysReg *I =
+      TRI->getCalleeSavedRegsViaCopy(&DAG.getMachineFunction());
+  if (I) {
+    for (; *I; ++I) {
+      if (X86::GR64RegClass.contains(*I))
+        RetOps.push_back(DAG.getRegister(*I, MVT::i64));
+      else
+        llvm_unreachable("Unexpected register class in CSRsViaCopy!");
+    }
+  }
+
   RetOps[0] = Chain;  // Update chain.
 
   // Add the flag if we have it.
@@ -4157,6 +4169,77 @@ static bool hasFPCMov(unsigned X86CC) {
   case X86::COND_NP:
     return true;
   }
+}
+
+
+bool X86TargetLowering::getTgtMemIntrinsic(IntrinsicInfo &Info,
+                                           const CallInst &I,
+                                           unsigned Intrinsic) const {
+
+  const IntrinsicData* IntrData = getIntrinsicWithChain(Intrinsic);
+  if (!IntrData)
+    return false;
+
+  Info.opc = ISD::INTRINSIC_W_CHAIN;
+  Info.readMem = false;
+  Info.writeMem = false;
+  Info.vol = false;
+  Info.offset = 0;
+
+  switch (IntrData->Type) {
+  case LOADA:
+  case LOADU: {
+    Info.ptrVal = I.getArgOperand(0);
+    Info.memVT = MVT::getVT(I.getType());
+    Info.align = (IntrData->Type == LOADA ? Info.memVT.getSizeInBits()/8 : 1);
+    Info.readMem = true;
+    break;
+  }
+  case EXPAND_FROM_MEM: {
+    Info.ptrVal = I.getArgOperand(0);
+    Info.memVT = MVT::getVT(I.getType());
+    Info.align = 1;
+    Info.readMem = true;
+    break;
+  }
+  case COMPRESS_TO_MEM: {
+    Info.ptrVal = I.getArgOperand(0);
+    Info.memVT = MVT::getVT(I.getArgOperand(1)->getType());
+    Info.align = 1;
+    Info.writeMem = true;
+    break;
+  }
+  case TRUNCATE_TO_MEM_VI8:
+  case TRUNCATE_TO_MEM_VI16:
+  case TRUNCATE_TO_MEM_VI32: {
+    Info.ptrVal = I.getArgOperand(0);
+    MVT VT  = MVT::getVT(I.getArgOperand(1)->getType());
+    MVT ScalarVT = MVT::INVALID_SIMPLE_VALUE_TYPE;
+    if (IntrData->Type == TRUNCATE_TO_MEM_VI8)
+      ScalarVT = MVT::i8;
+    else if (IntrData->Type == TRUNCATE_TO_MEM_VI16)
+      ScalarVT = MVT::i16;
+    else if (IntrData->Type == TRUNCATE_TO_MEM_VI32)
+      ScalarVT = MVT::i32;
+
+    Info.memVT = MVT::getVectorVT(ScalarVT, VT.getVectorNumElements());
+    Info.align = 1;
+    Info.writeMem = true;
+    break;
+  }
+  case STOREA:
+  case STOREU: {
+    Info.ptrVal = I.getArgOperand(0);
+    Info.memVT = MVT::getVT(I.getArgOperand(1)->getType());
+    Info.align = (IntrData->Type == STOREA ? Info.memVT.getSizeInBits()/8 : 1);
+    Info.writeMem = true;
+    break;
+  }
+  default:
+    return false;
+  }
+
+  return true;
 }
 
 /// Returns true if the target can instruction select the
@@ -8208,10 +8291,28 @@ static SDValue lowerVectorShuffleAsBroadcast(SDLoc DL, MVT VT, SDValue V,
     V = DAG.getLoad(SVT, DL, Ld->getChain(), NewAddr,
                     DAG.getMachineFunction().getMachineMemOperand(
                         Ld->getMemOperand(), Offset, SVT.getStoreSize()));
-  } else if (BroadcastIdx != 0 || !Subtarget->hasAVX2()) {
-    // We can't broadcast from a vector register without AVX2, and we can only
-    // broadcast from the zero-element of a vector register.
+  } else if (!Subtarget->hasAVX2()) {
+    // We can't broadcast from a vector register without AVX2.
     return SDValue();
+  } else if (BroadcastIdx != 0) {
+    // We can only broadcast from the zero-element of a vector register,
+    // but it can be advantageous to broadcast from the zero-element of a
+    // subvector.
+    if (!VT.is256BitVector() && !VT.is512BitVector())
+      return SDValue();
+
+    // VPERMQ/VPERMPD can perform the cross-lane shuffle directly.
+    if (VT == MVT::v4f64 || VT == MVT::v4i64)
+      return SDValue();
+
+    // Only broadcast the zero-element of a 128-bit subvector.
+    unsigned EltSize = VT.getScalarSizeInBits();
+    if (((BroadcastIdx * EltSize) % 128) != 0)
+      return SDValue();
+
+    MVT ExtVT = MVT::getVectorVT(VT.getScalarType(), 128 / EltSize);
+    V = DAG.getNode(ISD::EXTRACT_SUBVECTOR, DL, ExtVT, V,
+                    DAG.getIntPtrConstant(BroadcastIdx, DL));
   }
 
   V = DAG.getNode(X86ISD::VBROADCAST, DL, BroadcastVT, V);
@@ -10384,7 +10485,7 @@ static SDValue lowerVectorShuffleWithUndefHalf(SDLoc DL, MVT VT, SDValue V1,
                                                SDValue V2, ArrayRef<int> Mask,
                                                const X86Subtarget *Subtarget,
                                                SelectionDAG &DAG) {
-  assert(VT.getSizeInBits() == 256 && "Expected 256-bit vector");
+  assert(VT.is256BitVector() && "Expected 256-bit vector");
 
   unsigned NumElts = VT.getVectorNumElements();
   unsigned HalfNumElts = NumElts / 2;
@@ -10415,11 +10516,6 @@ static SDValue lowerVectorShuffleWithUndefHalf(SDLoc DL, MVT VT, SDValue V1,
                        DAG.getIntPtrConstant(HalfNumElts, DL));
   }
 
-  // AVX2 supports efficient immediate 64-bit element cross-lane shuffles.
-  if (UndefLower && Subtarget->hasAVX2() &&
-      (VT == MVT::v4f64 || VT == MVT::v4i64))
-    return SDValue();
-
   // If the shuffle only uses the lower halves of the input operands,
   // then extract them and perform the 'half' shuffle at half width.
   // e.g. vector_shuffle <X, X, X, X, u, u, u, u> or <X, X, u, u>
@@ -10436,11 +10532,6 @@ static SDValue lowerVectorShuffleWithUndefHalf(SDLoc DL, MVT VT, SDValue V1,
     // Determine which of the 4 half vectors this element is from.
     // i.e. 0 = Lower V1, 1 = Upper V1, 2 = Lower V2, 3 = Upper V2.
     int HalfIdx = M / HalfNumElts;
-
-    // Only shuffle using the lower halves of the inputs.
-    // TODO: Investigate usefulness of shuffling with upper halves.
-    if (HalfIdx != 0 && HalfIdx != 2)
-      return SDValue();
 
     // Determine the element index into its half vector source.
     int HalfElt = M % HalfNumElts;
@@ -10462,6 +10553,33 @@ static SDValue lowerVectorShuffleWithUndefHalf(SDLoc DL, MVT VT, SDValue V1,
     return SDValue();
   }
   assert(HalfMask.size() == HalfNumElts && "Unexpected shuffle mask length");
+
+  // Only shuffle the halves of the inputs when useful.
+  int NumLowerHalves =
+      (HalfIdx1 == 0 || HalfIdx1 == 2) + (HalfIdx2 == 0 || HalfIdx2 == 2);
+  int NumUpperHalves =
+      (HalfIdx1 == 1 || HalfIdx1 == 3) + (HalfIdx2 == 1 || HalfIdx2 == 3);
+
+  // uuuuXXXX - don't extract uppers just to insert again.
+  if (UndefLower && NumUpperHalves != 0)
+    return SDValue();
+
+  // XXXXuuuu - don't extract both uppers, instead shuffle and then extract.
+  if (UndefUpper && NumUpperHalves == 2)
+    return SDValue();
+
+  // AVX2 - XXXXuuuu - always extract lowers.
+  if (Subtarget->hasAVX2() && !(UndefUpper && NumUpperHalves == 0)) {
+    // AVX2 supports efficient immediate 64-bit element cross-lane shuffles.
+    if (VT == MVT::v4f64 || VT == MVT::v4i64)
+      return SDValue();
+    // AVX2 supports variable 32-bit element cross-lane shuffles.
+    if (VT == MVT::v8f32 || VT == MVT::v8i32) {
+      // XXXXuuuu - don't extract lowers and uppers.
+      if (UndefUpper && NumLowerHalves != 0 && NumUpperHalves != 0)
+        return SDValue();
+    }
+  }
 
   auto GetHalfVector = [&](int HalfIdx) {
     if (HalfIdx < 0)
@@ -12436,17 +12554,13 @@ X86TargetLowering::LowerGlobalTLSAddress(SDValue Op, SelectionDAG &DAG) const {
 
   GlobalAddressSDNode *GA = cast<GlobalAddressSDNode>(Op);
 
-  // Cygwin uses emutls.
-  // FIXME: It may be EmulatedTLS-generic also for X86-Android.
-  if (Subtarget->isTargetWindowsCygwin())
+  if (DAG.getTarget().Options.EmulatedTLS)
     return LowerToTLSEmulatedModel(GA, DAG);
 
   const GlobalValue *GV = GA->getGlobal();
   auto PtrVT = getPointerTy(DAG.getDataLayout());
 
   if (Subtarget->isTargetELF()) {
-    if (DAG.getTarget().Options.EmulatedTLS)
-      return LowerToTLSEmulatedModel(GA, DAG);
     TLSModel::Model model = DAG.getTarget().getTLSModel(GV);
     switch (model) {
       case TLSModel::GeneralDynamic:
@@ -16910,6 +17024,35 @@ static SDValue LowerINTRINSIC_WO_CHAIN(SDValue Op, const X86Subtarget *Subtarget
                                 Src2, Src1);
       return DAG.getBitcast(VT, Res);
     }
+    case FIXUPIMMS:
+    case FIXUPIMMS_MASKZ:
+    case FIXUPIMM:
+    case FIXUPIMM_MASKZ:{
+      SDValue Src1 = Op.getOperand(1);
+      SDValue Src2 = Op.getOperand(2);
+      SDValue Src3 = Op.getOperand(3);
+      SDValue Imm = Op.getOperand(4);
+      SDValue Mask = Op.getOperand(5);
+      SDValue Passthru = (IntrData->Type == FIXUPIMM || IntrData->Type == FIXUPIMMS ) ?
+                                         Src1 : getZeroVector(VT, Subtarget, DAG, dl);
+      // We specify 2 possible modes for intrinsics, with/without rounding
+      // modes.
+      // First, we check if the intrinsic have rounding mode (7 operands),
+      // if not, we set rounding mode to "current".
+      SDValue Rnd;
+      if (Op.getNumOperands() == 7)
+        Rnd = Op.getOperand(6);
+      else
+        Rnd = DAG.getConstant(X86::STATIC_ROUNDING::CUR_DIRECTION, dl, MVT::i32);
+      if (IntrData->Type == FIXUPIMM || IntrData->Type == FIXUPIMM_MASKZ) 
+        return getVectorMaskingNode(DAG.getNode(IntrData->Opc0, dl, VT,
+                                                Src1, Src2, Src3, Imm, Rnd),
+                                    Mask, Passthru, Subtarget, DAG);
+      else // Scalar - FIXUPIMMS, FIXUPIMMS_MASKZ
+        return getScalarMaskingNode(DAG.getNode(IntrData->Opc0, dl, VT,
+                                       Src1, Src2, Src3, Imm, Rnd),
+                                    Mask, Passthru, Subtarget, DAG);
+    }
     case CONVERT_TO_MASK: {
       MVT SrcVT = Op.getOperand(1).getSimpleValueType();
       MVT MaskVT = MVT::getVectorVT(MVT::i1, SrcVT.getVectorNumElements());
@@ -17365,43 +17508,6 @@ static SDValue MarkEHRegistrationNode(SDValue Op, SelectionDAG &DAG) {
   return Chain;
 }
 
-/// \brief Lower intrinsics for TRUNCATE_TO_MEM case
-/// return truncate Store/MaskedStore Node
-static SDValue LowerINTRINSIC_TRUNCATE_TO_MEM(const SDValue & Op,
-                                               SelectionDAG &DAG,
-                                               MVT ElementType) {
-  SDLoc dl(Op);
-  SDValue Mask = Op.getOperand(4);
-  SDValue DataToTruncate = Op.getOperand(3);
-  SDValue Addr = Op.getOperand(2);
-  SDValue Chain = Op.getOperand(0);
-
-  MVT VT  = DataToTruncate.getSimpleValueType();
-  MVT SVT = MVT::getVectorVT(ElementType, VT.getVectorNumElements());
-
-  if (isAllOnesConstant(Mask)) // return just a truncate store
-    return DAG.getTruncStore(Chain, dl, DataToTruncate, Addr,
-                             MachinePointerInfo(), SVT, false, false,
-                             SVT.getScalarSizeInBits()/8);
-
-  MVT MaskVT = MVT::getVectorVT(MVT::i1, VT.getVectorNumElements());
-  MVT BitcastVT = MVT::getVectorVT(MVT::i1,
-                                   Mask.getSimpleValueType().getSizeInBits());
-  // In case when MaskVT equals v2i1 or v4i1, low 2 or 4 elements
-  // are extracted by EXTRACT_SUBVECTOR.
-  SDValue VMask = DAG.getNode(ISD::EXTRACT_SUBVECTOR, dl, MaskVT,
-                              DAG.getBitcast(BitcastVT, Mask),
-                              DAG.getIntPtrConstant(0, dl));
-
-  MachineMemOperand *MMO = DAG.getMachineFunction().
-    getMachineMemOperand(MachinePointerInfo(),
-                         MachineMemOperand::MOStore, SVT.getStoreSize(),
-                         SVT.getScalarSizeInBits()/8);
-
-  return DAG.getMaskedStore(Chain, dl, DataToTruncate, Addr,
-                            VMask, SVT, MMO, true);
-}
-
 static SDValue LowerINTRINSIC_W_CHAIN(SDValue Op, const X86Subtarget *Subtarget,
                                       SelectionDAG &DAG) {
   unsigned IntNo = cast<ConstantSDNode>(Op.getOperand(1))->getZExtValue();
@@ -17417,7 +17523,7 @@ static SDValue LowerINTRINSIC_W_CHAIN(SDValue Op, const X86Subtarget *Subtarget,
       // We need a frame pointer because this will get lowered to a PUSH/POP
       // sequence.
       MachineFrameInfo *MFI = DAG.getMachineFunction().getFrameInfo();
-      MFI->setHasOpaqueSPAdjustment(true);
+      MFI->setHasCopyImplyingStackAdjustment(true);
       // Don't do anything here, we will expand these intrinsics out later
       // during ExpandISelPseudos in EmitInstrWithCustomInserter.
       return SDValue();
@@ -17526,51 +17632,107 @@ static SDValue LowerINTRINSIC_W_CHAIN(SDValue Op, const X86Subtarget *Subtarget,
     return DAG.getMergeValues(Results, dl);
   }
   case COMPRESS_TO_MEM: {
-    SDLoc dl(Op);
     SDValue Mask = Op.getOperand(4);
     SDValue DataToCompress = Op.getOperand(3);
     SDValue Addr = Op.getOperand(2);
     SDValue Chain = Op.getOperand(0);
-
     MVT VT = DataToCompress.getSimpleValueType();
+
+    MemIntrinsicSDNode *MemIntr = dyn_cast<MemIntrinsicSDNode>(Op);
+    assert(MemIntr && "Expected MemIntrinsicSDNode!");
+
     if (isAllOnesConstant(Mask)) // return just a store
       return DAG.getStore(Chain, dl, DataToCompress, Addr,
-                          MachinePointerInfo(), false, false,
-                          VT.getScalarSizeInBits()/8);
+                          MemIntr->getMemOperand());
 
     SDValue Compressed =
       getVectorMaskingNode(DAG.getNode(IntrData->Opc0, dl, VT, DataToCompress),
                            Mask, DAG.getUNDEF(VT), Subtarget, DAG);
     return DAG.getStore(Chain, dl, Compressed, Addr,
-                        MachinePointerInfo(), false, false,
-                        VT.getScalarSizeInBits()/8);
+                        MemIntr->getMemOperand());
   }
   case TRUNCATE_TO_MEM_VI8:
-    return LowerINTRINSIC_TRUNCATE_TO_MEM(Op, DAG, MVT::i8);
   case TRUNCATE_TO_MEM_VI16:
-    return LowerINTRINSIC_TRUNCATE_TO_MEM(Op, DAG, MVT::i16);
-  case TRUNCATE_TO_MEM_VI32:
-    return LowerINTRINSIC_TRUNCATE_TO_MEM(Op, DAG, MVT::i32);
+  case TRUNCATE_TO_MEM_VI32: {
+    SDValue Mask = Op.getOperand(4);
+    SDValue DataToTruncate = Op.getOperand(3);
+    SDValue Addr = Op.getOperand(2);
+    SDValue Chain = Op.getOperand(0);
+
+    MemIntrinsicSDNode *MemIntr = dyn_cast<MemIntrinsicSDNode>(Op);
+    assert(MemIntr && "Expected MemIntrinsicSDNode!");
+
+    EVT VT  = MemIntr->getMemoryVT();
+
+    if (isAllOnesConstant(Mask)) // return just a truncate store
+      return DAG.getTruncStore(Chain, dl, DataToTruncate, Addr, VT,
+                               MemIntr->getMemOperand());
+
+    MVT MaskVT = MVT::getVectorVT(MVT::i1, VT.getVectorNumElements());
+    SDValue VMask = getMaskNode(Mask, MaskVT, Subtarget, DAG, dl);
+
+    return DAG.getMaskedStore(Chain, dl, DataToTruncate, Addr, VMask, VT,
+                              MemIntr->getMemOperand(), true);
+  }
   case EXPAND_FROM_MEM: {
-    SDLoc dl(Op);
     SDValue Mask = Op.getOperand(4);
     SDValue PassThru = Op.getOperand(3);
     SDValue Addr = Op.getOperand(2);
     SDValue Chain = Op.getOperand(0);
     MVT VT = Op.getSimpleValueType();
 
-    if (isAllOnesConstant(Mask)) // return just a load
-      return DAG.getLoad(VT, dl, Chain, Addr, MachinePointerInfo(), false, false,
-                         false, VT.getScalarSizeInBits()/8);
+    MemIntrinsicSDNode *MemIntr = dyn_cast<MemIntrinsicSDNode>(Op);
+    assert(MemIntr && "Expected MemIntrinsicSDNode!");
 
-    SDValue DataToExpand = DAG.getLoad(VT, dl, Chain, Addr, MachinePointerInfo(),
-                                       false, false, false,
-                                       VT.getScalarSizeInBits()/8);
+    SDValue DataToExpand = DAG.getLoad(VT, dl, Chain, Addr,
+                                       MemIntr->getMemOperand());
+
+    if (isAllOnesConstant(Mask)) // return just a load
+      return DataToExpand;
 
     SDValue Results[] = {
       getVectorMaskingNode(DAG.getNode(IntrData->Opc0, dl, VT, DataToExpand),
                            Mask, PassThru, Subtarget, DAG), Chain};
     return DAG.getMergeValues(Results, dl);
+  }
+  case LOADU:
+  case LOADA: {
+    SDValue Mask = Op.getOperand(4);
+    SDValue PassThru = Op.getOperand(3);
+    SDValue Addr = Op.getOperand(2);
+    SDValue Chain = Op.getOperand(0);
+    MVT VT = Op.getSimpleValueType();
+
+    MemIntrinsicSDNode *MemIntr = dyn_cast<MemIntrinsicSDNode>(Op);
+    assert(MemIntr && "Expected MemIntrinsicSDNode!");
+
+    if (isAllOnesConstant(Mask)) // return just a load
+      return DAG.getLoad(VT, dl, Chain, Addr, MemIntr->getMemOperand());
+
+    MVT MaskVT = MVT::getVectorVT(MVT::i1, VT.getVectorNumElements());
+    SDValue VMask = getMaskNode(Mask, MaskVT, Subtarget, DAG, dl);
+    return DAG.getMaskedLoad(VT, dl, Chain, Addr, VMask, PassThru, VT,
+                             MemIntr->getMemOperand(), ISD::NON_EXTLOAD);
+  }
+  case STOREU:
+  case STOREA: {
+    SDValue Mask = Op.getOperand(4);
+    SDValue Data = Op.getOperand(3);
+    SDValue Addr = Op.getOperand(2);
+    SDValue Chain = Op.getOperand(0);
+
+    MemIntrinsicSDNode *MemIntr = dyn_cast<MemIntrinsicSDNode>(Op);
+    assert(MemIntr && "Expected MemIntrinsicSDNode!");
+
+    if (isAllOnesConstant(Mask)) // return just a store
+      return DAG.getStore(Chain, dl, Data, Addr, MemIntr->getMemOperand());
+
+    EVT VT  = MemIntr->getMemoryVT();
+    MVT MaskVT = MVT::getVectorVT(MVT::i1, VT.getVectorNumElements());
+    SDValue VMask = getMaskNode(Mask, MaskVT, Subtarget, DAG, dl);
+
+    return DAG.getMaskedStore(Chain, dl, Data, Addr, VMask, VT,
+                              MemIntr->getMemOperand(), false);
   }
   }
 }
@@ -20737,6 +20899,8 @@ const char *X86TargetLowering::getTargetNodeName(unsigned Opcode) const {
   case X86ISD::VSHLI:              return "X86ISD::VSHLI";
   case X86ISD::VSRLI:              return "X86ISD::VSRLI";
   case X86ISD::VSRAI:              return "X86ISD::VSRAI";
+  case X86ISD::VROTLI:             return "X86ISD::VROTLI";
+  case X86ISD::VROTRI:             return "X86ISD::VROTRI";
   case X86ISD::CMPP:               return "X86ISD::CMPP";
   case X86ISD::PCMPEQ:             return "X86ISD::PCMPEQ";
   case X86ISD::PCMPGT:             return "X86ISD::PCMPGT";
@@ -20799,6 +20963,7 @@ const char *X86TargetLowering::getTargetNodeName(unsigned Opcode) const {
   case X86ISD::VPERMI:             return "X86ISD::VPERMI";
   case X86ISD::VPTERNLOG:          return "X86ISD::VPTERNLOG";
   case X86ISD::VFIXUPIMM:          return "X86ISD::VFIXUPIMM";
+  case X86ISD::VFIXUPIMMS:          return "X86ISD::VFIXUPIMMS";
   case X86ISD::VRANGE:             return "X86ISD::VRANGE";
   case X86ISD::PMULUDQ:            return "X86ISD::PMULUDQ";
   case X86ISD::PMULDQ:             return "X86ISD::PMULDQ";
@@ -28826,4 +28991,53 @@ bool X86TargetLowering::isIntDivCheap(EVT VT, AttributeSet Attr) const {
   bool OptSize = Attr.hasAttribute(AttributeSet::FunctionIndex,
                                    Attribute::MinSize);
   return OptSize && !VT.isVector();
+}
+
+void X86TargetLowering::initializeSplitCSR(MachineBasicBlock *Entry) const {
+  if (!Subtarget->is64Bit())
+    return;
+
+  // Update IsSplitCSR in X86MachineFunctionInfo.
+  X86MachineFunctionInfo *AFI =
+    Entry->getParent()->getInfo<X86MachineFunctionInfo>();
+  AFI->setIsSplitCSR(true);
+}
+
+void X86TargetLowering::insertCopiesSplitCSR(
+    MachineBasicBlock *Entry,
+    const SmallVectorImpl<MachineBasicBlock *> &Exits) const {
+  const X86RegisterInfo *TRI = Subtarget->getRegisterInfo();
+  const MCPhysReg *IStart = TRI->getCalleeSavedRegsViaCopy(Entry->getParent());
+  if (!IStart)
+    return;
+
+  const TargetInstrInfo *TII = Subtarget->getInstrInfo();
+  MachineRegisterInfo *MRI = &Entry->getParent()->getRegInfo();
+  MachineBasicBlock::iterator MBBI = Entry->begin();
+  for (const MCPhysReg *I = IStart; *I; ++I) {
+    const TargetRegisterClass *RC = nullptr;
+    if (X86::GR64RegClass.contains(*I))
+      RC = &X86::GR64RegClass;
+    else
+      llvm_unreachable("Unexpected register class in CSRsViaCopy!");
+
+    unsigned NewVR = MRI->createVirtualRegister(RC);
+    // Create copy from CSR to a virtual register.
+    // FIXME: this currently does not emit CFI pseudo-instructions, it works
+    // fine for CXX_FAST_TLS since the C++-style TLS access functions should be
+    // nounwind. If we want to generalize this later, we may need to emit
+    // CFI pseudo-instructions.
+    assert(Entry->getParent()->getFunction()->hasFnAttribute(
+               Attribute::NoUnwind) &&
+           "Function should be nounwind in insertCopiesSplitCSR!");
+    Entry->addLiveIn(*I);
+    BuildMI(*Entry, MBBI, DebugLoc(), TII->get(TargetOpcode::COPY), NewVR)
+        .addReg(*I);
+
+    // Insert the copy-back instructions right before the terminator.
+    for (auto *Exit : Exits)
+      BuildMI(*Exit, Exit->getFirstTerminator(), DebugLoc(),
+              TII->get(TargetOpcode::COPY), *I)
+          .addReg(NewVR);
+  }
 }

@@ -18,6 +18,7 @@
 
 #include "IndirectionUtils.h"
 #include "OrcRemoteTargetRPCAPI.h"
+#include <system_error>
 
 #define DEBUG_TYPE "orc-remote"
 
@@ -41,6 +42,19 @@ public:
     RCMemoryManager(OrcRemoteTargetClient &Client, ResourceIdMgr::ResourceId Id)
         : Client(Client), Id(Id) {
       DEBUG(dbgs() << "Created remote allocator " << Id << "\n");
+    }
+
+    RCMemoryManager(RCMemoryManager &&Other)
+        : Client(std::move(Other.Client)), Id(std::move(Other.Id)),
+          Unmapped(std::move(Other.Unmapped)),
+          Unfinalized(std::move(Other.Unfinalized)) {}
+
+    RCMemoryManager operator=(RCMemoryManager &&Other) {
+      Client = std::move(Other.Client);
+      Id = std::move(Other.Id);
+      Unmapped = std::move(Other.Unmapped);
+      Unfinalized = std::move(Other.Unfinalized);
+      return *this;
     }
 
     ~RCMemoryManager() {
@@ -78,7 +92,7 @@ public:
           Unmapped.back().RWDataAllocs.back().getLocalAddress());
       DEBUG(dbgs() << "Allocator " << Id << " allocated rw-data for "
                    << SectionName << ": " << Alloc << " (" << Size
-                   << " bytes, alignment " << Alignment << "\n");
+                   << " bytes, alignment " << Alignment << ")\n");
       return Alloc;
     }
 
@@ -91,12 +105,11 @@ public:
       DEBUG(dbgs() << "Allocator " << Id << " reserved:\n");
 
       if (CodeSize != 0) {
-        if (std::error_code EC = Client.reserveMem(
-                Unmapped.back().RemoteCodeAddr, Id, CodeSize, CodeAlign)) {
-          (void)EC;
-          // FIXME; Add error to poll.
-          llvm_unreachable("Failed reserving remote memory.");
-        }
+        std::error_code EC = Client.reserveMem(Unmapped.back().RemoteCodeAddr,
+                                               Id, CodeSize, CodeAlign);
+        // FIXME; Add error to poll.
+        assert(!EC && "Failed reserving remote memory.");
+        (void)EC;
         DEBUG(dbgs() << "  code: "
                      << format("0x%016x", Unmapped.back().RemoteCodeAddr)
                      << " (" << CodeSize << " bytes, alignment " << CodeAlign
@@ -104,11 +117,11 @@ public:
       }
 
       if (RODataSize != 0) {
-        if (auto EC = Client.reserveMem(Unmapped.back().RemoteRODataAddr, Id,
-                                        RODataSize, RODataAlign)) {
-          // FIXME; Add error to poll.
-          llvm_unreachable("Failed reserving remote memory.");
-        }
+        std::error_code EC = Client.reserveMem(Unmapped.back().RemoteRODataAddr,
+                                               Id, RODataSize, RODataAlign);
+        // FIXME; Add error to poll.
+        assert(!EC && "Failed reserving remote memory.");
+        (void)EC;
         DEBUG(dbgs() << "  ro-data: "
                      << format("0x%016x", Unmapped.back().RemoteRODataAddr)
                      << " (" << RODataSize << " bytes, alignment "
@@ -116,11 +129,11 @@ public:
       }
 
       if (RWDataSize != 0) {
-        if (auto EC = Client.reserveMem(Unmapped.back().RemoteRWDataAddr, Id,
-                                        RWDataSize, RWDataAlign)) {
-          // FIXME; Add error to poll.
-          llvm_unreachable("Failed reserving remote memory.");
-        }
+        std::error_code EC = Client.reserveMem(Unmapped.back().RemoteRWDataAddr,
+                                               Id, RWDataSize, RWDataAlign);
+        // FIXME; Add error to poll.
+        assert(!EC && "Failed reserving remote memory.");
+        (void)EC;
         DEBUG(dbgs() << "  rw-data: "
                      << format("0x%016x", Unmapped.back().RemoteRWDataAddr)
                      << " (" << RWDataSize << " bytes, alignment "
@@ -131,10 +144,18 @@ public:
     bool needsToReserveAllocationSpace() override { return true; }
 
     void registerEHFrames(uint8_t *Addr, uint64_t LoadAddr,
-                          size_t Size) override {}
+                          size_t Size) override {
+      UnfinalizedEHFrames.push_back(
+          std::make_pair(LoadAddr, static_cast<uint32_t>(Size)));
+    }
 
-    void deregisterEHFrames(uint8_t *addr, uint64_t LoadAddr,
-                            size_t Size) override {}
+    void deregisterEHFrames(uint8_t *Addr, uint64_t LoadAddr,
+                            size_t Size) override {
+      auto EC = Client.deregisterEHFrames(LoadAddr, Size);
+      // FIXME: Add error poll.
+      assert(!EC && "Failed to register remote EH frames.");
+      (void)EC;
+    }
 
     void notifyObjectLoaded(RuntimeDyld &Dyld,
                             const object::ObjectFile &Obj) override {
@@ -143,7 +164,7 @@ public:
         {
           TargetAddress NextCodeAddr = ObjAllocs.RemoteCodeAddr;
           for (auto &Alloc : ObjAllocs.CodeAllocs) {
-            NextCodeAddr = RoundUpToAlignment(NextCodeAddr, Alloc.getAlign());
+            NextCodeAddr = alignTo(NextCodeAddr, Alloc.getAlign());
             Dyld.mapSectionAddress(Alloc.getLocalAddress(), NextCodeAddr);
             DEBUG(dbgs() << "     code: "
                          << static_cast<void *>(Alloc.getLocalAddress())
@@ -155,8 +176,7 @@ public:
         {
           TargetAddress NextRODataAddr = ObjAllocs.RemoteRODataAddr;
           for (auto &Alloc : ObjAllocs.RODataAllocs) {
-            NextRODataAddr =
-                RoundUpToAlignment(NextRODataAddr, Alloc.getAlign());
+            NextRODataAddr = alignTo(NextRODataAddr, Alloc.getAlign());
             Dyld.mapSectionAddress(Alloc.getLocalAddress(), NextRODataAddr);
             DEBUG(dbgs() << "  ro-data: "
                          << static_cast<void *>(Alloc.getLocalAddress())
@@ -169,8 +189,7 @@ public:
         {
           TargetAddress NextRWDataAddr = ObjAllocs.RemoteRWDataAddr;
           for (auto &Alloc : ObjAllocs.RWDataAllocs) {
-            NextRWDataAddr =
-                RoundUpToAlignment(NextRWDataAddr, Alloc.getAlign());
+            NextRWDataAddr = alignTo(NextRWDataAddr, Alloc.getAlign());
             Dyld.mapSectionAddress(Alloc.getLocalAddress(), NextRWDataAddr);
             DEBUG(dbgs() << "  rw-data: "
                          << static_cast<void *>(Alloc.getLocalAddress())
@@ -242,6 +261,14 @@ public:
       }
       Unfinalized.clear();
 
+      for (auto &EHFrame : UnfinalizedEHFrames) {
+        auto EC = Client.registerEHFrames(EHFrame.first, EHFrame.second);
+        // FIXME: Add error poll.
+        assert(!EC && "Failed to register remote EH frames.");
+        (void)EC;
+      }
+      UnfinalizedEHFrames.clear();
+
       return false;
     }
 
@@ -249,8 +276,7 @@ public:
     class Alloc {
     public:
       Alloc(uint64_t Size, unsigned Align)
-          : Size(Size), Align(Align), Contents(new char[Size + Align - 1]),
-            RemoteAddr(0) {}
+          : Size(Size), Align(Align), Contents(new char[Size + Align - 1]) {}
 
       Alloc(Alloc &&Other)
           : Size(std::move(Other.Size)), Align(std::move(Other.Align)),
@@ -271,7 +297,7 @@ public:
 
       char *getLocalAddress() const {
         uintptr_t LocalAddr = reinterpret_cast<uintptr_t>(Contents.get());
-        LocalAddr = RoundUpToAlignment(LocalAddr, Align);
+        LocalAddr = alignTo(LocalAddr, Align);
         return reinterpret_cast<char *>(LocalAddr);
       }
 
@@ -285,15 +311,33 @@ public:
       uint64_t Size;
       unsigned Align;
       std::unique_ptr<char[]> Contents;
-      TargetAddress RemoteAddr;
+      TargetAddress RemoteAddr = 0;
     };
 
     struct ObjectAllocs {
-      ObjectAllocs()
-          : RemoteCodeAddr(0), RemoteRODataAddr(0), RemoteRWDataAddr(0) {}
-      TargetAddress RemoteCodeAddr;
-      TargetAddress RemoteRODataAddr;
-      TargetAddress RemoteRWDataAddr;
+      ObjectAllocs() = default;
+
+      ObjectAllocs(ObjectAllocs &&Other)
+          : RemoteCodeAddr(std::move(Other.RemoteCodeAddr)),
+            RemoteRODataAddr(std::move(Other.RemoteRODataAddr)),
+            RemoteRWDataAddr(std::move(Other.RemoteRWDataAddr)),
+            CodeAllocs(std::move(Other.CodeAllocs)),
+            RODataAllocs(std::move(Other.RODataAllocs)),
+            RWDataAllocs(std::move(Other.RWDataAllocs)) {}
+
+      ObjectAllocs &operator=(ObjectAllocs &&Other) {
+        RemoteCodeAddr = std::move(Other.RemoteCodeAddr);
+        RemoteRODataAddr = std::move(Other.RemoteRODataAddr);
+        RemoteRWDataAddr = std::move(Other.RemoteRWDataAddr);
+        CodeAllocs = std::move(Other.CodeAllocs);
+        RODataAllocs = std::move(Other.RODataAllocs);
+        RWDataAllocs = std::move(Other.RWDataAllocs);
+        return *this;
+      }
+
+      TargetAddress RemoteCodeAddr = 0;
+      TargetAddress RemoteRODataAddr = 0;
+      TargetAddress RemoteRWDataAddr = 0;
       std::vector<Alloc> CodeAllocs, RODataAllocs, RWDataAllocs;
     };
 
@@ -301,6 +345,7 @@ public:
     ResourceIdMgr::ResourceId Id;
     std::vector<ObjectAllocs> Unmapped;
     std::vector<ObjectAllocs> Unfinalized;
+    std::vector<std::pair<uint64_t, uint32_t>> UnfinalizedEHFrames;
   };
 
   /// Remote indirect stubs manager.
@@ -363,9 +408,6 @@ public:
 
   private:
     struct RemoteIndirectStubsInfo {
-      RemoteIndirectStubsInfo(TargetAddress StubBase, TargetAddress PtrBase,
-                              unsigned NumStubs)
-          : StubBase(StubBase), PtrBase(PtrBase), NumStubs(NumStubs) {}
       TargetAddress StubBase;
       TargetAddress PtrBase;
       unsigned NumStubs;
@@ -391,8 +433,7 @@ public:
                                NewStubsRequired);
 
       unsigned NewBlockId = RemoteIndirectStubsInfos.size();
-      RemoteIndirectStubsInfos.push_back(
-          RemoteIndirectStubsInfo(StubBase, PtrBase, NumStubsEmitted));
+      RemoteIndirectStubsInfos.push_back({StubBase, PtrBase, NumStubsEmitted});
 
       for (unsigned I = 0; I < NumStubsEmitted; ++I)
         FreeStubs.push_back(std::make_pair(NewBlockId, I));
@@ -580,14 +621,17 @@ public:
 
 private:
   OrcRemoteTargetClient(ChannelT &Channel, std::error_code &EC)
-      : Channel(Channel), RemotePointerSize(0), RemotePageSize(0),
-        RemoteTrampolineSize(0), RemoteIndirectStubSize(0) {
+      : Channel(Channel) {
     if ((EC = call<GetRemoteInfo>(Channel)))
       return;
 
     EC = expect<GetRemoteInfoResponse>(
         Channel, readArgs(RemoteTargetTriple, RemotePointerSize, RemotePageSize,
                           RemoteTrampolineSize, RemoteIndirectStubSize));
+  }
+
+  std::error_code deregisterEHFrames(TargetAddress Addr, uint32_t Size) {
+    return call<RegisterEHFrames>(Channel, Addr, Size);
   }
 
   void destroyRemoteAllocator(ResourceIdMgr::ResourceId Id) {
@@ -686,6 +730,10 @@ private:
     return std::error_code();
   }
 
+  std::error_code registerEHFrames(TargetAddress &RAddr, uint32_t Size) {
+    return call<RegisterEHFrames>(Channel, RAddr, Size);
+  }
+
   std::error_code reserveMem(TargetAddress &RemoteAddr,
                              ResourceIdMgr::ResourceId Id, uint64_t Size,
                              uint32_t Align) {
@@ -694,16 +742,10 @@ private:
     if (ExistingError)
       return ExistingError;
 
-    if (auto EC = call<ReserveMem>(Channel, Id, Size, Align))
+    if (std::error_code EC = call<ReserveMem>(Channel, Id, Size, Align))
       return EC;
 
-    if (auto EC = expect<ReserveMemResponse>(Channel, [&](TargetAddress Addr) {
-          RemoteAddr = Addr;
-          return std::error_code();
-        }))
-      return EC;
-
-    return std::error_code();
+    return expect<ReserveMemResponse>(Channel, readArgs(RemoteAddr));
   }
 
   std::error_code setProtections(ResourceIdMgr::ResourceId Id,
@@ -741,10 +783,10 @@ private:
   ChannelT &Channel;
   std::error_code ExistingError;
   std::string RemoteTargetTriple;
-  uint32_t RemotePointerSize;
-  uint32_t RemotePageSize;
-  uint32_t RemoteTrampolineSize;
-  uint32_t RemoteIndirectStubSize;
+  uint32_t RemotePointerSize = 0;
+  uint32_t RemotePageSize = 0;
+  uint32_t RemoteTrampolineSize = 0;
+  uint32_t RemoteIndirectStubSize = 0;
   ResourceIdMgr AllocatorIds, IndirectStubOwnerIds;
   std::function<TargetAddress(TargetAddress)> CompileCallback;
 };

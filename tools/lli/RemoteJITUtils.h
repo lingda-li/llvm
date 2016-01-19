@@ -24,14 +24,14 @@
 #endif
 
 /// RPC channel that reads from and writes from file descriptors.
-class FDRPCChannel : public llvm::orc::remote::RPCChannel {
+class FDRPCChannel final : public llvm::orc::remote::RPCChannel {
 public:
   FDRPCChannel(int InFD, int OutFD) : InFD(InFD), OutFD(OutFD) {}
 
   std::error_code readBytes(char *Dst, unsigned Size) override {
     assert(Dst && "Attempt to read into null.");
     ssize_t ReadResult = ::read(InFD, Dst, Size);
-    if (ReadResult != Size)
+    if (ReadResult != (ssize_t)Size)
       return std::error_code(errno, std::generic_category());
     return std::error_code();
   }
@@ -39,7 +39,7 @@ public:
   std::error_code appendBytes(const char *Src, unsigned Size) override {
     assert(Src && "Attempt to append from null.");
     ssize_t WriteResult = ::write(OutFD, Src, Size);
-    if (WriteResult != Size)
+    if (WriteResult != (ssize_t)Size)
       std::error_code(errno, std::generic_category());
     return std::error_code();
   }

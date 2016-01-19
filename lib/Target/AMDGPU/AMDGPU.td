@@ -59,6 +59,12 @@ def FeatureFastFMAF32 : SubtargetFeature<"fast-fmaf",
         "Assuming f32 fma is at least as fast as mul + add",
         []>;
 
+def HalfRate64Ops : SubtargetFeature<"half-rate-64-ops",
+        "HalfRate64Ops",
+        "true",
+        "Most fp64 instructions are half rate instead of quarter",
+        []>;
+
 // Some instructions do not support denormals despite this flag. Using
 // fp32 denormals also causes instructions to run at the double
 // precision rate for the device.
@@ -178,6 +184,7 @@ def FeatureISAVersion7_0_0 : SubtargetFeatureISAVersion <7,0,0>;
 def FeatureISAVersion7_0_1 : SubtargetFeatureISAVersion <7,0,1>;
 def FeatureISAVersion8_0_0 : SubtargetFeatureISAVersion <8,0,0>;
 def FeatureISAVersion8_0_1 : SubtargetFeatureISAVersion <8,0,1>;
+def FeatureISAVersion8_0_3 : SubtargetFeatureISAVersion <8,0,3>;
 
 class SubtargetFeatureLocalMemorySize <int Value> : SubtargetFeature<
         "localmemorysize"#Value,

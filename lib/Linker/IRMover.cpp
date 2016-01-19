@@ -719,7 +719,7 @@ GlobalVariable *IRLinker::copyGlobalVariableProto(const GlobalVariable *SGVar) {
   // identical version of the symbol over in the dest module... the
   // initializer will be filled in later by LinkGlobalInits.
   GlobalVariable *NewDGV =
-      new GlobalVariable(DstM, TypeMap.get(SGVar->getType()->getElementType()),
+      new GlobalVariable(DstM, TypeMap.get(SGVar->getValueType()),
                          SGVar->isConstant(), GlobalValue::ExternalLinkage,
                          /*init*/ nullptr, SGVar->getName(),
                          /*insertbefore*/ nullptr, SGVar->getThreadLocalMode(),
@@ -759,7 +759,7 @@ GlobalValue *IRLinker::copyGlobalValueProto(const GlobalValue *SGV,
       NewGV = copyGlobalAliasProto(cast<GlobalAlias>(SGV));
     else
       NewGV = new GlobalVariable(
-          DstM, TypeMap.get(SGV->getType()->getElementType()),
+          DstM, TypeMap.get(SGV->getValueType()),
           /*isConstant*/ false, GlobalValue::ExternalLinkage,
           /*init*/ nullptr, SGV->getName(),
           /*insertbefore*/ nullptr, SGV->getThreadLocalMode(),
@@ -773,6 +773,16 @@ GlobalValue *IRLinker::copyGlobalValueProto(const GlobalValue *SGV,
     NewGV->setLinkage(GlobalValue::ExternalWeakLinkage);
 
   NewGV->copyAttributesFrom(SGV);
+
+  // Remove these copied constants in case this stays a declaration, since
+  // they point to the source module. If the def is linked the values will
+  // be mapped in during linkFunctionBody.
+  if (auto *NewF = dyn_cast<Function>(NewGV)) {
+    NewF->setPersonalityFn(nullptr);
+    NewF->setPrefixData(nullptr);
+    NewF->setPrologueData(nullptr);
+  }
+
   return NewGV;
 }
 
@@ -792,8 +802,8 @@ void IRLinker::computeTypeMapping() {
     }
 
     // Unify the element type of appending arrays.
-    ArrayType *DAT = cast<ArrayType>(DGV->getType()->getElementType());
-    ArrayType *SAT = cast<ArrayType>(SGV.getType()->getElementType());
+    ArrayType *DAT = cast<ArrayType>(DGV->getValueType());
+    ArrayType *SAT = cast<ArrayType>(SGV.getValueType());
     TypeMap.addTypeMapping(DAT->getElementType(), SAT->getElementType());
   }
 
@@ -864,7 +874,7 @@ static void getArrayElements(const Constant *C,
 /// Return true on error.
 Constant *IRLinker::linkAppendingVarProto(GlobalVariable *DstGV,
                                           const GlobalVariable *SrcGV) {
-  Type *EltTy = cast<ArrayType>(TypeMap.get(SrcGV->getType()->getElementType()))
+  Type *EltTy = cast<ArrayType>(TypeMap.get(SrcGV->getValueType()))
                     ->getElementType();
 
   StringRef Name = SrcGV->getName();
@@ -885,7 +895,7 @@ Constant *IRLinker::linkAppendingVarProto(GlobalVariable *DstGV,
   }
 
   if (DstGV) {
-    ArrayType *DstTy = cast<ArrayType>(DstGV->getType()->getElementType());
+    ArrayType *DstTy = cast<ArrayType>(DstGV->getValueType());
 
     if (!SrcGV->hasAppendingLinkage() || !DstGV->hasAppendingLinkage()) {
       emitError(
