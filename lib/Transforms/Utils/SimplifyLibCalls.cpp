@@ -104,23 +104,6 @@ static bool hasUnaryFloatFn(const TargetLibraryInfo *TLI, Type *Ty,
   }
 }
 
-/// \brief Check whether we can use unsafe floating point math for
-/// the function passed as input.
-static bool canUseUnsafeFPMath(Function *F) {
-
-  // FIXME: For finer-grain optimization, we need intrinsics to have the same
-  // fast-math flag decorations that are applied to FP instructions. For now,
-  // we have to rely on the function-level unsafe-fp-math attribute to do this
-  // optimization because there's no other way to express that the call can be
-  // relaxed.
-  if (F->hasFnAttribute("unsafe-fp-math")) {
-    Attribute Attr = F->getFnAttribute("unsafe-fp-math");
-    if (Attr.getValueAsString() == "true")
-      return true;
-  }
-  return false;
-}
-
 /// \brief Returns whether \p F matches the signature expected for the
 /// string/memory copying library function \p Func.
 /// Acceptable functions are st[rp][n]?cpy, memove, memcpy, and memset.
@@ -1127,9 +1110,6 @@ Value *LibCallSimplifier::optimizePow(CallInst *CI, IRBuilder<> &B) {
                                   Callee->getAttributes());
   }
 
-  // FIXME: Use instruction-level FMF.
-  bool UnsafeFPMath = canUseUnsafeFPMath(CI->getParent()->getParent());
-
   // pow(exp(x), y) -> exp(x * y)
   // pow(exp2(x), y) -> exp2(x * y)
   // We enable these only with fast-math. Besides rounding differences, the
@@ -1193,7 +1173,7 @@ Value *LibCallSimplifier::optimizePow(CallInst *CI, IRBuilder<> &B) {
     return B.CreateFDiv(ConstantFP::get(CI->getType(), 1.0), Op1, "powrecip");
 
   // In -ffast-math, generate repeated fmul instead of generating pow(x, n).
-  if (UnsafeFPMath) {
+  if (CI->hasUnsafeAlgebra()) {
     APFloat V = abs(Op2C->getValueAPF());
     // We limit to a max of 7 fmul(s). Thus max exponent is 32.
     // This transformation applies to integer exponents only.
@@ -1210,6 +1190,8 @@ Value *LibCallSimplifier::optimizePow(CallInst *CI, IRBuilder<> &B) {
     // So we first convert V to something which could be converted to double.
     bool ignored;
     V.convert(APFloat::IEEEdouble, APFloat::rmTowardZero, &ignored);
+    
+    // TODO: Should the new instructions propagate the 'fast' flag of the pow()?
     Value *FMul = getPow(InnerChain, V.convertToDouble(), B);
     // For negative exponents simply compute the reciprocal.
     if (Op2C->isNegative())
@@ -2185,10 +2167,10 @@ Value *LibCallSimplifier::optimizeCall(CallInst *CI) {
   IRBuilder<> Builder(CI, /*FPMathTag=*/nullptr, OpBundles);
   bool isCallingConvC = CI->getCallingConv() == llvm::CallingConv::C;
 
-  // Command-line parameter overrides function attribute.
+  // Command-line parameter overrides instruction attribute.
   if (EnableUnsafeFPShrink.getNumOccurrences() > 0)
     UnsafeFPShrink = EnableUnsafeFPShrink;
-  else if (canUseUnsafeFPMath(Callee))
+  else if (isa<FPMathOperator>(CI) && CI->hasUnsafeAlgebra())
     UnsafeFPShrink = true;
 
   // First, check for intrinsics.
