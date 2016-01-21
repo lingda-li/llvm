@@ -1007,7 +1007,7 @@ std::unique_ptr<X86Operand> X86AsmParser::DefaultMemDIOperand(SMLoc Loc) {
 bool X86AsmParser::IsSIReg(unsigned Reg) {
   switch (Reg) {
   default:
-    assert("Only (R|E)SI and (R|E)DI are expected!");
+    llvm_unreachable("Only (R|E)SI and (R|E)DI are expected!");
     return false;
   case X86::RSI:
   case X86::ESI:
@@ -1024,7 +1024,7 @@ unsigned X86AsmParser::GetSIDIForRegClass(unsigned RegClassID, unsigned Reg,
                                           bool IsSIReg) {
   switch (RegClassID) {
   default:
-    assert("Unexpected register class");
+    llvm_unreachable("Unexpected register class");
     return Reg;
   case X86::GR64RegClassID:
     return IsSIReg ? X86::RSI : X86::RDI;
@@ -1056,6 +1056,7 @@ bool X86AsmParser::VerifyAndAdjustOperands(OperandVector &OrigOperands,
     assert(OrigOperands.size() == FinalOperands.size() + 1 &&
            "Opernand size mismatch");
 
+    SmallVector<std::pair<SMLoc, std::string>, 2> Warnings;
     // Verify types match
     int RegClassID = -1;
     for (unsigned int i = 0; i < FinalOperands.size(); ++i) {
@@ -1090,15 +1091,20 @@ bool X86AsmParser::VerifyAndAdjustOperands(OperandVector &OrigOperands,
           RegClassID = X86::GR32RegClassID;
         else if (X86MCRegisterClasses[X86::GR16RegClassID].contains(OrigReg))
           RegClassID = X86::GR16RegClassID;
+        else
+          // Unexpexted register class type
+          // Return false and let a normal complaint about bogus operands happen
+          return false;
 
         bool IsSI = IsSIReg(FinalReg);
         FinalReg = GetSIDIForRegClass(RegClassID, FinalReg, IsSI);
 
         if (FinalReg != OrigReg) {
           std::string RegName = IsSI ? "ES:(R|E)SI" : "ES:(R|E)DI";
-          Warning(OrigOp.getStartLoc(),
-                  "memory operand is only for determining the size, " +
-                      RegName + " will be used for the location");
+          Warnings.push_back(std::make_pair(
+              OrigOp.getStartLoc(),
+              "memory operand is only for determining the size, " + RegName +
+                  " will be used for the location"));
         }
 
         FinalOp.Mem.Size = OrigOp.Mem.Size;
@@ -1107,7 +1113,14 @@ bool X86AsmParser::VerifyAndAdjustOperands(OperandVector &OrigOperands,
       }
     }
 
-    // Remove old operandss
+    // Produce warnings only if all the operands passed the adjustment - prevent
+    // legal cases like "movsd (%rax), %xmm0" mistakenly produce warnings
+    for (auto WarningMsg = Warnings.begin(); WarningMsg < Warnings.end();
+         ++WarningMsg) {
+      Warning((*WarningMsg).first, (*WarningMsg).second);
+    }
+
+    // Remove old operands
     for (unsigned int i = 0; i < FinalOperands.size(); ++i)
       OrigOperands.pop_back();
   }

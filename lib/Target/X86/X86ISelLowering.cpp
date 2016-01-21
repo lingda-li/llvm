@@ -3939,6 +3939,7 @@ static bool isTargetShuffle(unsigned Opcode) {
   case X86ISD::VPERMI:
   case X86ISD::VPERMV:
   case X86ISD::VPERMV3:
+  case X86ISD::VZEXT_MOVL:
     return true;
   }
 }
@@ -4228,10 +4229,11 @@ bool X86TargetLowering::getTgtMemIntrinsic(IntrinsicInfo &Info,
     break;
   }
   case STOREA:
+  case STOREANT:
   case STOREU: {
     Info.ptrVal = I.getArgOperand(0);
     Info.memVT = MVT::getVT(I.getArgOperand(1)->getType());
-    Info.align = (IntrData->Type == STOREA ? Info.memVT.getSizeInBits()/8 : 1);
+    Info.align = (IntrData->Type == STOREU ? 1 : Info.memVT.getSizeInBits()/8);
     Info.writeMem = true;
     break;
   }
@@ -4884,6 +4886,10 @@ static bool getTargetShuffleMask(SDNode *N, MVT VT, bool AllowSentinelZero,
   case X86ISD::PSHUFLW:
     ImmN = N->getOperand(N->getNumOperands()-1);
     DecodePSHUFLWMask(VT, cast<ConstantSDNode>(ImmN)->getZExtValue(), Mask);
+    IsUnary = true;
+    break;
+  case X86ISD::VZEXT_MOVL:
+    DecodeZeroMoveLowMask(VT, Mask);
     IsUnary = true;
     break;
   case X86ISD::PSHUFB: {
@@ -17734,6 +17740,20 @@ static SDValue LowerINTRINSIC_W_CHAIN(SDValue Op, const X86Subtarget *Subtarget,
     return DAG.getMaskedStore(Chain, dl, Data, Addr, VMask, VT,
                               MemIntr->getMemOperand(), false);
   }
+  case STOREANT: {
+    // Store (MOVNTPD, MOVNTPS, MOVNTDQ) using non-temporal hint intrinsic implementation. 
+    SDValue Data = Op.getOperand(3);
+    SDValue Addr = Op.getOperand(2);
+    SDValue Chain = Op.getOperand(0);
+
+    MemIntrinsicSDNode *MemIntr = dyn_cast<MemIntrinsicSDNode>(Op);
+    assert(MemIntr && "Expected MemIntrinsicSDNode!");
+    MachineMemOperand *MMO = MemIntr->getMemOperand();
+
+    MMO->setFlags(MachineMemOperand::MONonTemporal);
+
+    return DAG.getStore(Chain, dl, Data, Addr, MMO);
+  }
   }
 }
 
@@ -23733,6 +23753,52 @@ static bool combineRedundantHalfShuffle(SDValue N, MutableArrayRef<int> Mask,
   return true;
 }
 
+/// Check a target shuffle mask's inputs to see if we can set any values to
+/// SM_SentinelZero - this is for elements that are known to be zero
+/// (not just zeroable) from their inputs.
+static bool setTargetShuffleZeroElements(SDValue N,
+                                         SmallVectorImpl<int> &Mask) {
+  bool IsUnary;
+  if (!isTargetShuffle(N.getOpcode()))
+    return false;
+  if (!getTargetShuffleMask(N.getNode(), N.getSimpleValueType(), true, Mask,
+                            IsUnary))
+    return false;
+
+  SDValue V1 = N.getOperand(0);
+  SDValue V2 = IsUnary ? V1 : N.getOperand(1);
+
+  while (V1.getOpcode() == ISD::BITCAST)
+    V1 = V1->getOperand(0);
+  while (V2.getOpcode() == ISD::BITCAST)
+    V2 = V2->getOperand(0);
+
+  for (int i = 0, Size = Mask.size(); i != Size; ++i) {
+    int M = Mask[i];
+
+    // Already decoded as SM_SentinelZero / SM_SentinelUndef.
+    if (M < 0)
+      continue;
+
+    SDValue V = M < Size ? V1 : V2;
+
+    // We are referencing an UNDEF input.
+    if (V.isUndef()) {
+      Mask[i] = SM_SentinelUndef;
+      continue;
+    }
+
+    // TODO - handle the Size != (int)V.getNumOperands() cases in future.
+    if (V.getOpcode() != ISD::BUILD_VECTOR || Size != (int)V.getNumOperands())
+      continue;
+    if (!X86::isZeroNode(V.getOperand(M % Size)))
+      continue;
+    Mask[i] = SM_SentinelZero;
+  }
+
+  return true;
+}
+
 /// \brief Try to combine x86 target specific shuffles.
 static SDValue PerformTargetShuffleCombine(SDValue N, SelectionDAG &DAG,
                                            TargetLowering::DAGCombinerInfo &DCI,
@@ -23805,6 +23871,96 @@ static SDValue PerformTargetShuffleCombine(SDValue N, SelectionDAG &DAG,
           SDValue NewMask = DAG.getConstant(1, DL, MVT::i8);
           return DAG.getNode(X86ISD::BLENDI, DL, VT, V1, V0, NewMask);
         }
+
+    // Attempt to merge blend(insertps(x,y),zero).
+    if (V0.getOpcode() == X86ISD::INSERTPS ||
+        V1.getOpcode() == X86ISD::INSERTPS) {
+      assert(VT == MVT::v4f32 && "INSERTPS ValueType must be MVT::v4f32");
+
+      // Determine which elements are known to be zero.
+      SmallVector<int, 8> TargetMask;
+      if (!setTargetShuffleZeroElements(N, TargetMask))
+        return SDValue();
+
+      // Helper function to take inner insertps node and attempt to
+      // merge the blend with zero into its zero mask.
+      auto MergeInsertPSAndBlend = [&](SDValue V, int Offset) {
+        if (V.getOpcode() != X86ISD::INSERTPS)
+          return SDValue();
+        SDValue Op0 = V.getOperand(0);
+        SDValue Op1 = V.getOperand(1);
+        SDValue Op2 = V.getOperand(2);
+        unsigned InsertPSMask = cast<ConstantSDNode>(Op2)->getZExtValue();
+
+        // Check each element of the blend node's target mask - must either
+        // be zeroable (and update the zero mask) or selects the element from
+        // the inner insertps node.
+        for (int i = 0; i != 4; ++i)
+          if (TargetMask[i] < 0)
+            InsertPSMask |= (1u << i);
+          else if (TargetMask[i] != (i + Offset))
+            return SDValue();
+        return DAG.getNode(X86ISD::INSERTPS, DL, MVT::v4f32, Op0, Op1,
+                           DAG.getConstant(InsertPSMask, DL, MVT::i8));
+      };
+
+      if (SDValue V = MergeInsertPSAndBlend(V0, 0))
+        return V;
+      if (SDValue V = MergeInsertPSAndBlend(V1, 4))
+        return V;
+    }
+    return SDValue();
+  }
+  case X86ISD::INSERTPS: {
+    assert(VT == MVT::v4f32 && "INSERTPS ValueType must be MVT::v4f32");
+    SDValue Op0 = N.getOperand(0);
+    SDValue Op1 = N.getOperand(1);
+    SDValue Op2 = N.getOperand(2);
+    unsigned InsertPSMask = cast<ConstantSDNode>(Op2)->getZExtValue();
+    unsigned DstIdx = (InsertPSMask >> 4) & 3;
+
+    // Attempt to merge insertps with an inner target shuffle node.
+    SmallVector<int, 8> TargetMask;
+    if (!setTargetShuffleZeroElements(Op0, TargetMask))
+      return SDValue();
+
+    bool Updated = false;
+    bool UseInput00 = false;
+    bool UseInput01 = false;
+    for (int i = 0; i != 4; ++i) {
+      int M = TargetMask[i];
+      if ((InsertPSMask & (1u << i)) || (i == (int)DstIdx)) {
+        // No change if element is already zero or the inserted element.
+        continue;
+      } else if (M < 0) {
+        // If the target mask is undef/zero then we must zero the element.
+        InsertPSMask |= (1u << i);
+        Updated = true;
+        continue;
+      }
+
+      // The input vector element must be inline.
+      if (M != i && M != (i + 4))
+        return SDValue();
+
+      // Determine which inputs of the target shuffle we're using.
+      UseInput00 |= (0 <= M && M < 4);
+      UseInput01 |= (4 <= M);
+    }
+
+    // If we're not using both inputs of the target shuffle then use the
+    // referenced input directly.
+    if (UseInput00 && !UseInput01) {
+      Updated = true;
+      Op0 = Op0.getOperand(0);
+    } else if (!UseInput00 && UseInput01) {
+      Updated = true;
+      Op0 = Op0.getOperand(1);
+    }
+
+    if (Updated)
+      return DAG.getNode(X86ISD::INSERTPS, DL, MVT::v4f32, Op0, Op1,
+                         DAG.getConstant(InsertPSMask, DL, MVT::i8));
 
     return SDValue();
   }
@@ -28163,6 +28319,7 @@ SDValue X86TargetLowering::PerformDAGCombine(SDNode *N,
   case X86ISD::BRCOND:      return PerformBrCondCombine(N, DAG, DCI, Subtarget);
   case X86ISD::VZEXT:       return performVZEXTCombine(N, DAG, DCI, Subtarget);
   case X86ISD::SHUFP:       // Handle all target specific shuffles
+  case X86ISD::INSERTPS:
   case X86ISD::PALIGNR:
   case X86ISD::BLENDI:
   case X86ISD::UNPCKH:
