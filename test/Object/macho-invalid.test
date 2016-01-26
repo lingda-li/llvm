@@ -1,5 +1,9 @@
-// No crash, might not be totally invalid
-RUN: llvm-objdump -private-headers %p/Inputs/macho-invalid-zero-ncmds
+// An odd Mach-O file, with just a mach header with all but the magic field
+// and filetype zeros. The cputype and cpusubtype fields being zero are invalid,
+// but that does not mater for the most part to display some of the contents.
+RUN: llvm-objdump -private-headers %p/Inputs/macho-invalid-zero-ncmds -macho \
+RUN:      | FileCheck -check-prefix ZERO-NCMDS %s
+ZERO-NCMDS: MH_MAGIC_64 0 0 0x00 OBJECT 0 0 0x00000000
 
 RUN: not llvm-objdump -private-headers %p/Inputs/macho64-invalid-incomplete-load-command 2>&1 \
 RUN:      | FileCheck -check-prefix INCOMPLETE-LOADC %s
@@ -25,7 +29,11 @@ TOO-MANY-SECTS: Mach-O segment load command contains too many sections
 
 RUN: not llvm-objdump -t %p/Inputs/macho-invalid-bad-symbol-index 2>&1 \
 RUN:      | FileCheck -check-prefix BAD-SYMBOL %s
-BAD-SYMBOL: Requested symbol index is out of range
+BAD-SYMBOL: Invalid data was encountered while parsing the file.
+RUN: llvm-objdump -t %p/Inputs/macho-valid-0-nsyms 2>&1 \
+RUN:      | FileCheck -check-prefix ZERO-NSYMS %s
+ZERO-NSYMS: SYMBOL TABLE
+ZERO-NSYMS-NOT: Requested symbol index is out of range
 
 RUN: not llvm-objdump -t %p/Inputs/macho-invalid-symbol-name-past-eof 2>&1 \
 RUN:      | FileCheck -check-prefix NAME-PAST-EOF %s

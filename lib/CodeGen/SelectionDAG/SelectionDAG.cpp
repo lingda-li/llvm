@@ -1103,8 +1103,7 @@ SDValue SelectionDAG::getConstant(uint64_t Val, SDLoc DL, EVT VT, bool isT,
 }
 
 SDValue SelectionDAG::getConstant(const APInt &Val, SDLoc DL, EVT VT, bool isT,
-                                  bool isO)
-{
+                                  bool isO) {
   return getConstant(*ConstantInt::get(*Context, Val), DL, VT, isT, isO);
 }
 
@@ -2844,18 +2843,20 @@ static SDValue FoldCONCAT_VECTORS(SDLoc DL, EVT VT, ArrayRef<SDValue> Ops,
                   [](SDValue Op) { return Op.isUndef(); }))
     return DAG.getUNDEF(VT);
 
-  // A CONCAT_VECTOR with all operands BUILD_VECTOR can be simplified
-  // to one big BUILD_VECTOR.
-  // FIXME: Add support for UNDEF and SCALAR_TO_VECTOR as well.
-  if (!std::all_of(Ops.begin(), Ops.end(), [](SDValue Op) {
-        return Op.getOpcode() == ISD::BUILD_VECTOR;
-      }))
-    return SDValue();
-
+  // A CONCAT_VECTOR with all UNDEF/BUILD_VECTOR operands can be
+  // simplified to one big BUILD_VECTOR.
+  // FIXME: Add support for SCALAR_TO_VECTOR as well.
   EVT SVT = VT.getScalarType();
   SmallVector<SDValue, 16> Elts;
-  for (SDValue Op : Ops)
-    Elts.append(Op->op_begin(), Op->op_end());
+  for (SDValue Op : Ops) {
+    EVT OpVT = Op.getValueType();
+    if (Op.isUndef())
+      Elts.append(OpVT.getVectorNumElements(), DAG.getUNDEF(SVT));
+    else if (Op.getOpcode() == ISD::BUILD_VECTOR)
+      Elts.append(Op->op_begin(), Op->op_end());
+    else
+      return SDValue();
+  }
 
   // BUILD_VECTOR requires all inputs to be of the same type, find the
   // maximum type and extend them all.
@@ -4660,7 +4661,7 @@ SDValue SelectionDAG::getMemcpy(SDValue Chain, SDLoc dl, SDValue Dst,
   CLI.setDebugLoc(dl)
       .setChain(Chain)
       .setCallee(TLI->getLibcallCallingConv(RTLIB::MEMCPY),
-                 Type::getVoidTy(*getContext()),
+                 Dst.getValueType().getTypeForEVT(*getContext()),
                  getExternalSymbol(TLI->getLibcallName(RTLIB::MEMCPY),
                                    TLI->getPointerTy(getDataLayout())),
                  std::move(Args), 0)
@@ -4721,7 +4722,7 @@ SDValue SelectionDAG::getMemmove(SDValue Chain, SDLoc dl, SDValue Dst,
   CLI.setDebugLoc(dl)
       .setChain(Chain)
       .setCallee(TLI->getLibcallCallingConv(RTLIB::MEMMOVE),
-                 Type::getVoidTy(*getContext()),
+                 Dst.getValueType().getTypeForEVT(*getContext()),
                  getExternalSymbol(TLI->getLibcallName(RTLIB::MEMMOVE),
                                    TLI->getPointerTy(getDataLayout())),
                  std::move(Args), 0)
@@ -4783,7 +4784,7 @@ SDValue SelectionDAG::getMemset(SDValue Chain, SDLoc dl, SDValue Dst,
   CLI.setDebugLoc(dl)
       .setChain(Chain)
       .setCallee(TLI->getLibcallCallingConv(RTLIB::MEMSET),
-                 Type::getVoidTy(*getContext()),
+                 Dst.getValueType().getTypeForEVT(*getContext()),
                  getExternalSymbol(TLI->getLibcallName(RTLIB::MEMSET),
                                    TLI->getPointerTy(getDataLayout())),
                  std::move(Args), 0)
