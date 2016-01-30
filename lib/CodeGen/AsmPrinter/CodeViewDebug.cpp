@@ -13,7 +13,10 @@
 
 #include "CodeViewDebug.h"
 #include "llvm/DebugInfo/CodeView/CodeView.h"
+#include "llvm/DebugInfo/CodeView/Line.h"
 #include "llvm/DebugInfo/CodeView/SymbolRecord.h"
+#include "llvm/DebugInfo/CodeView/TypeIndex.h"
+#include "llvm/DebugInfo/CodeView/TypeRecord.h"
 #include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCSymbol.h"
 #include "llvm/Support/COFF.h"
@@ -74,6 +77,29 @@ StringRef CodeViewDebug::getFullFilepath(const DIFile *File) {
   return Filepath;
 }
 
+unsigned CodeViewDebug::maybeRecordFile(const DIFile *F) {
+  unsigned NextId = FileIdMap.size() + 1;
+  auto Insertion = FileIdMap.insert(std::make_pair(F, NextId));
+  if (Insertion.second) {
+    // We have to compute the full filepath and emit a .cv_file directive.
+    StringRef FullPath = getFullFilepath(F);
+    NextId = Asm->OutStreamer->EmitCVFileDirective(NextId, FullPath);
+    assert(NextId == FileIdMap.size() && ".cv_file directive failed");
+  }
+  return Insertion.first->second;
+}
+
+CodeViewDebug::InlineSite &CodeViewDebug::getInlineSite(const DILocation *Loc) {
+  const DILocation *InlinedAt = Loc->getInlinedAt();
+  auto Insertion = CurFn->InlineSites.insert({InlinedAt, InlineSite()});
+  if (Insertion.second) {
+    InlineSite &Site = Insertion.first->second;
+    Site.SiteFuncId = NextFuncId++;
+    Site.Inlinee = Loc->getScope()->getSubprogram();
+  }
+  return Insertion.first->second;
+}
+
 void CodeViewDebug::maybeRecordLocation(DebugLoc DL,
                                         const MachineFunction *MF) {
   // Skip this instruction if it has the same location as the previous one.
@@ -85,15 +111,47 @@ void CodeViewDebug::maybeRecordLocation(DebugLoc DL,
     return;
 
   // Skip this line if it is longer than the maximum we can record.
-  if (DL.getLine() > COFF::CVL_MaxLineNumber)
+  LineInfo LI(DL.getLine(), DL.getLine(), /*IsStatement=*/true);
+  if (LI.getStartLine() != DL.getLine() || LI.isAlwaysStepInto() ||
+      LI.isNeverStepInto())
     return;
 
+  ColumnInfo CI(DL.getCol(), /*EndColumn=*/0);
+  if (CI.getStartColumn() != DL.getCol())
+    return;
+
+  if (!CurFn->HaveLineInfo)
+    CurFn->HaveLineInfo = true;
+  unsigned FileId = 0;
+  if (CurFn->LastLoc.get() && CurFn->LastLoc->getFile() == DL->getFile())
+    FileId = CurFn->LastFileId;
+  else
+    FileId = CurFn->LastFileId = maybeRecordFile(DL->getFile());
   CurFn->LastLoc = DL;
 
-  MCSymbol *MCL = Asm->MMI->getContext().createTempSymbol();
-  Asm->OutStreamer->EmitLabel(MCL);
-  CurFn->Instrs.push_back(MCL);
-  LabelsAndLocs[MCL] = DL;
+  unsigned FuncId = CurFn->FuncId;
+  if (const DILocation *Loc = DL->getInlinedAt()) {
+    // If this location was actually inlined from somewhere else, give it the ID
+    // of the inline call site.
+    FuncId = getInlineSite(DL.get()).SiteFuncId;
+    // Ensure we have links in the tree of inline call sites.
+    const DILocation *ChildLoc = nullptr;
+    while (Loc->getInlinedAt()) {
+      InlineSite &Site = getInlineSite(Loc);
+      if (ChildLoc) {
+        // Record the child inline site if not already present.
+        auto B = Site.ChildSites.begin(), E = Site.ChildSites.end();
+        if (std::find(B, E, Loc) != E)
+          break;
+        Site.ChildSites.push_back(Loc);
+      }
+      ChildLoc = Loc;
+    }
+  }
+
+  Asm->OutStreamer->EmitCVLocDirective(FuncId, FileId, DL.getLine(),
+                                       DL.getCol(), /*PrologueEnd=*/false,
+                                       /*IsStmt=*/false, DL->getFilename());
 }
 
 CodeViewDebug::CodeViewDebug(AsmPrinter *AP)
@@ -115,6 +173,8 @@ void CodeViewDebug::endModule() {
   if (FnDebugInfo.empty())
     return;
 
+  emitTypeInformation();
+
   // FIXME: For functions that are comdat, we should emit separate .debug$S
   // sections that are comdat associative with the main function instead of
   // having one big .debug$S section.
@@ -128,41 +188,73 @@ void CodeViewDebug::endModule() {
   // of the payload followed by the payload itself.  The subsections are 4-byte
   // aligned.
 
-  // Emit per-function debug information.  This code is extracted into a
-  // separate function for readability.
-  for (size_t I = 0, E = VisitedFunctions.size(); I != E; ++I)
-    emitDebugInfoForFunction(VisitedFunctions[I]);
+  // Emit per-function debug information.
+  for (auto &P : FnDebugInfo)
+    emitDebugInfoForFunction(P.first, P.second);
 
   // This subsection holds a file index to offset in string table table.
   Asm->OutStreamer->AddComment("File index to string table offset subsection");
-  Asm->EmitInt32(unsigned(ModuleSubstreamKind::FileChecksums));
-  size_t NumFilenames = FileNameRegistry.Infos.size();
-  Asm->EmitInt32(8 * NumFilenames);
-  for (size_t I = 0, E = FileNameRegistry.Filenames.size(); I != E; ++I) {
-    StringRef Filename = FileNameRegistry.Filenames[I];
-    // For each unique filename, just write its offset in the string table.
-    Asm->EmitInt32(FileNameRegistry.Infos[Filename].StartOffset);
-    // The function name offset is not followed by any additional data.
-    Asm->EmitInt32(0);
-  }
+  Asm->OutStreamer->EmitCVFileChecksumsDirective();
 
   // This subsection holds the string table.
   Asm->OutStreamer->AddComment("String table");
-  Asm->EmitInt32(unsigned(ModuleSubstreamKind::StringTable));
-  Asm->EmitInt32(FileNameRegistry.LastOffset);
-  // The payload starts with a null character.
-  Asm->EmitInt8(0);
-
-  for (size_t I = 0, E = FileNameRegistry.Filenames.size(); I != E; ++I) {
-    // Just emit unique filenames one by one, separated by a null character.
-    Asm->OutStreamer->EmitBytes(FileNameRegistry.Filenames[I]);
-    Asm->EmitInt8(0);
-  }
-
-  // No more subsections. Fill with zeros to align the end of the section by 4.
-  Asm->OutStreamer->EmitFill((-FileNameRegistry.LastOffset) % 4, 0);
+  Asm->OutStreamer->EmitCVStringTableDirective();
 
   clear();
+}
+
+template <typename T> static void emitRecord(MCStreamer &OS, const T &Rec) {
+  OS.EmitBytes(StringRef(reinterpret_cast<const char *>(&Rec), sizeof(Rec)));
+}
+
+void CodeViewDebug::emitTypeInformation() {
+  // Start the .debug$T section with 0x4.
+  Asm->OutStreamer->SwitchSection(
+      Asm->getObjFileLowering().getCOFFDebugTypesSection());
+  Asm->EmitInt32(COFF::DEBUG_SECTION_MAGIC);
+
+  NamedMDNode *CU_Nodes =
+      Asm->MMI->getModule()->getNamedMetadata("llvm.dbg.cu");
+  if (!CU_Nodes)
+    return;
+
+  // This type info currently only holds function ids for use with inline call
+  // frame info. All functions are assigned a simple 'void ()' type. Emit that
+  // type here.
+  TypeIndex ArgListIdx = getNextTypeIndex();
+  Asm->EmitInt16(2 + sizeof(ArgList));
+  Asm->EmitInt16(LF_ARGLIST);
+  Asm->EmitInt32(0);
+
+  TypeIndex VoidProcIdx = getNextTypeIndex();
+  Asm->EmitInt16(2 + sizeof(ProcedureType));
+  Asm->EmitInt16(LF_PROCEDURE);
+  ProcedureType Proc{}; // Zero initialize.
+  Proc.ReturnType = TypeIndex::Void();
+  Proc.CallConv = CallingConvention::NearC;
+  Proc.Options = FunctionOptions::None;
+  Proc.NumParameters = 0;
+  Proc.ArgListType = ArgListIdx;
+  emitRecord(*Asm->OutStreamer, Proc);
+
+  for (MDNode *N : CU_Nodes->operands()) {
+    auto *CUNode = cast<DICompileUnit>(N);
+    for (auto *SP : CUNode->getSubprograms()) {
+      StringRef DisplayName = SP->getDisplayName();
+      Asm->EmitInt16(2 + sizeof(FuncId) + DisplayName.size() + 1);
+      Asm->EmitInt16(LF_FUNC_ID);
+
+      FuncId Func{}; // Zero initialize.
+      Func.ParentScope = TypeIndex();
+      Func.FunctionType = VoidProcIdx;
+      emitRecord(*Asm->OutStreamer, Func);
+      Asm->OutStreamer->EmitBytes(DisplayName);
+      Asm->EmitInt8(0);
+
+      TypeIndex FuncIdIdx = getNextTypeIndex();
+      SubprogramToFuncId.insert(std::make_pair(SP, FuncIdIdx));
+    }
+  }
 }
 
 static void EmitLabelDiff(MCStreamer &Streamer,
@@ -177,20 +269,50 @@ static void EmitLabelDiff(MCStreamer &Streamer,
   Streamer.EmitValue(AddrDelta, Size);
 }
 
-static const DIFile *getFileFromLoc(DebugLoc DL) {
-  return DL.get()->getScope()->getFile();
+void CodeViewDebug::emitInlinedCallSite(const FunctionInfo &FI,
+                                        const DILocation *InlinedAt,
+                                        const InlineSite &Site) {
+  MCStreamer &OS = *Asm->OutStreamer;
+
+  MCSymbol *InlineBegin = Asm->MMI->getContext().createTempSymbol(),
+           *InlineEnd = Asm->MMI->getContext().createTempSymbol();
+
+  assert(SubprogramToFuncId.count(Site.Inlinee));
+  TypeIndex InlineeIdx = SubprogramToFuncId[Site.Inlinee];
+
+  // SymbolRecord
+  EmitLabelDiff(OS, InlineBegin, InlineEnd, 2);   // RecordLength
+  OS.EmitLabel(InlineBegin);
+  Asm->EmitInt16(SymbolRecordKind::S_INLINESITE); // RecordKind
+
+  InlineSiteSym SiteBytes{};
+  SiteBytes.Inlinee = InlineeIdx;
+  Asm->OutStreamer->EmitBytes(
+      StringRef(reinterpret_cast<const char *>(&SiteBytes), sizeof(SiteBytes)));
+
+  // FIXME: annotations
+
+  OS.EmitLabel(InlineEnd);
+
+  // Recurse on child inlined call sites before closing the scope.
+  for (const DILocation *ChildSite : Site.ChildSites) {
+    auto I = FI.InlineSites.find(ChildSite);
+    assert(I != FI.InlineSites.end() &&
+           "child site not in function inline site map");
+    emitInlinedCallSite(FI, ChildSite, I->second);
+  }
+
+  // Close the scope.
+  Asm->EmitInt16(2);                                  // RecordLength
+  Asm->EmitInt16(SymbolRecordKind::S_INLINESITE_END); // RecordKind
 }
 
-void CodeViewDebug::emitDebugInfoForFunction(const Function *GV) {
+void CodeViewDebug::emitDebugInfoForFunction(const Function *GV,
+                                             FunctionInfo &FI) {
   // For each function there is a separate subsection
   // which holds the PC to file:line table.
   const MCSymbol *Fn = Asm->getSymbol(GV);
   assert(Fn);
-
-  const FunctionInfo &FI = FnDebugInfo[GV];
-  if (FI.Instrs.empty())
-    return;
-  assert(FI.End && "Don't know where the function ends?");
 
   StringRef FuncName;
   if (auto *SP = getDISubprogram(GV))
@@ -230,6 +352,15 @@ void CodeViewDebug::emitDebugInfoForFunction(const Function *GV) {
     Asm->EmitInt8(0);
     Asm->OutStreamer->EmitLabel(ProcSegmentEnd);
 
+    // Emit inlined call site information. Only emit functions inlined directly
+    // into the parent function. We'll emit the other sites recursively as part
+    // of their parent inline site.
+    for (auto &KV : FI.InlineSites) {
+      const DILocation *InlinedAt = KV.first;
+      if (!InlinedAt->getInlinedAt())
+        emitInlinedCallSite(FI, InlinedAt, KV.second);
+    }
+
     // We're done with this function.
     Asm->EmitInt16(0x0002);
     Asm->EmitInt16(unsigned(SymbolRecordKind::S_PROC_ID_END));
@@ -238,102 +369,8 @@ void CodeViewDebug::emitDebugInfoForFunction(const Function *GV) {
   // Every subsection must be aligned to a 4-byte boundary.
   Asm->OutStreamer->EmitFill((-FuncName.size()) % 4, 0);
 
-  // PCs/Instructions are grouped into segments sharing the same filename.
-  // Pre-calculate the lengths (in instructions) of these segments and store
-  // them in a map for convenience.  Each index in the map is the sequential
-  // number of the respective instruction that starts a new segment.
-  DenseMap<size_t, size_t> FilenameSegmentLengths;
-  size_t LastSegmentEnd = 0;
-  const DIFile *PrevFile = getFileFromLoc(LabelsAndLocs[FI.Instrs[0]]);
-  for (size_t J = 1, F = FI.Instrs.size(); J != F; ++J) {
-    const DIFile *CurFile = getFileFromLoc(LabelsAndLocs[FI.Instrs[J]]);
-    if (PrevFile == CurFile)
-      continue;
-    FilenameSegmentLengths[LastSegmentEnd] = J - LastSegmentEnd;
-    LastSegmentEnd = J;
-    PrevFile = CurFile;
-  }
-  FilenameSegmentLengths[LastSegmentEnd] = FI.Instrs.size() - LastSegmentEnd;
-
-  // Emit a line table subsection, required to do PC-to-file:line lookup.
-  Asm->OutStreamer->AddComment("Line table subsection for " + Twine(FuncName));
-  Asm->EmitInt32(unsigned(ModuleSubstreamKind::Lines));
-  MCSymbol *LineTableBegin = Asm->MMI->getContext().createTempSymbol(),
-           *LineTableEnd = Asm->MMI->getContext().createTempSymbol();
-  EmitLabelDiff(*Asm->OutStreamer, LineTableBegin, LineTableEnd);
-  Asm->OutStreamer->EmitLabel(LineTableBegin);
-
-  // Identify the function this subsection is for.
-  Asm->OutStreamer->EmitCOFFSecRel32(Fn);
-  Asm->OutStreamer->EmitCOFFSectionIndex(Fn);
-  // Insert flags after a 16-bit section index.
-  Asm->EmitInt16(COFF::DEBUG_LINE_TABLES_HAVE_COLUMN_RECORDS);
-
-  // Length of the function's code, in bytes.
-  EmitLabelDiff(*Asm->OutStreamer, Fn, FI.End);
-
-  // PC-to-linenumber lookup table:
-  MCSymbol *FileSegmentEnd = nullptr;
-
-  // The start of the last segment:
-  size_t LastSegmentStart = 0;
-
-  auto FinishPreviousChunk = [&] {
-    if (!FileSegmentEnd)
-      return;
-    for (size_t ColSegI = LastSegmentStart,
-                ColSegEnd = ColSegI + FilenameSegmentLengths[LastSegmentStart];
-         ColSegI != ColSegEnd; ++ColSegI) {
-      unsigned ColumnNumber = LabelsAndLocs[FI.Instrs[ColSegI]].getCol();
-      // Truncate the column number if it is longer than the maximum we can
-      // record.
-      if (ColumnNumber > COFF::CVL_MaxColumnNumber)
-        ColumnNumber = 0;
-      Asm->EmitInt16(ColumnNumber); // Start column
-      Asm->EmitInt16(0);            // End column
-    }
-    Asm->OutStreamer->EmitLabel(FileSegmentEnd);
-  };
-
-  for (size_t J = 0, F = FI.Instrs.size(); J != F; ++J) {
-    MCSymbol *Instr = FI.Instrs[J];
-    assert(LabelsAndLocs.count(Instr));
-
-    if (FilenameSegmentLengths.count(J)) {
-      // We came to a beginning of a new filename segment.
-      FinishPreviousChunk();
-      const DIFile *File = getFileFromLoc(LabelsAndLocs[FI.Instrs[J]]);
-      StringRef CurFilename = getFullFilepath(File);
-      size_t IndexInFileTable = FileNameRegistry.add(CurFilename);
-      // Each segment starts with the offset of the filename
-      // in the string table.
-      Asm->OutStreamer->AddComment(
-          "Segment for file '" + Twine(CurFilename) + "' begins");
-      MCSymbol *FileSegmentBegin = Asm->MMI->getContext().createTempSymbol();
-      Asm->OutStreamer->EmitLabel(FileSegmentBegin);
-      Asm->EmitInt32(8 * IndexInFileTable);
-
-      // Number of PC records in the lookup table.
-      size_t SegmentLength = FilenameSegmentLengths[J];
-      Asm->EmitInt32(SegmentLength);
-
-      // Full size of the segment for this filename, including the prev two
-      // records.
-      FileSegmentEnd = Asm->MMI->getContext().createTempSymbol();
-      EmitLabelDiff(*Asm->OutStreamer, FileSegmentBegin, FileSegmentEnd);
-      LastSegmentStart = J;
-    }
-
-    // The first PC with the given linenumber and the linenumber itself.
-    EmitLabelDiff(*Asm->OutStreamer, Fn, Instr);
-    uint32_t LineNumber = LabelsAndLocs[Instr].getLine();
-    assert(LineNumber <= COFF::CVL_MaxLineNumber);
-    uint32_t LineData = LineNumber | COFF::CVL_IsStatement;
-    Asm->EmitInt32(LineData);
-  }
-
-  FinishPreviousChunk();
-  Asm->OutStreamer->EmitLabel(LineTableEnd);
+  // We have an assembler directive that takes care of the whole line table.
+  Asm->OutStreamer->EmitCVLinetableDirective(FI.FuncId, Fn, FI.End);
 }
 
 void CodeViewDebug::beginFunction(const MachineFunction *MF) {
@@ -344,8 +381,8 @@ void CodeViewDebug::beginFunction(const MachineFunction *MF) {
 
   const Function *GV = MF->getFunction();
   assert(FnDebugInfo.count(GV) == false);
-  VisitedFunctions.push_back(GV);
   CurFn = &FnDebugInfo[GV];
+  CurFn->FuncId = NextFuncId++;
 
   // Find the end of the function prolog.
   // FIXME: is there a simpler a way to do this? Can we just search
@@ -384,9 +421,9 @@ void CodeViewDebug::endFunction(const MachineFunction *MF) {
   assert(FnDebugInfo.count(GV));
   assert(CurFn == &FnDebugInfo[GV]);
 
-  if (CurFn->Instrs.empty()) {
+  // Don't emit anything if we don't have any line tables.
+  if (!CurFn->HaveLineInfo) {
     FnDebugInfo.erase(GV);
-    VisitedFunctions.pop_back();
   } else {
     CurFn->End = Asm->getFunctionEnd();
   }
