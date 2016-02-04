@@ -95,14 +95,12 @@ static BasicBlock::iterator findInsertPointAfter(Instruction *I,
   while (isa<PHINode>(IP))
     ++IP;
 
-  while (IP->isEHPad()) {
-    if (isa<FuncletPadInst>(IP) || isa<LandingPadInst>(IP)) {
-      ++IP;
-    } else if (isa<CatchSwitchInst>(IP)) {
-      IP = MustDominate->getFirstInsertionPt();
-    } else {
-      llvm_unreachable("unexpected eh pad!");
-    }
+  if (isa<FuncletPadInst>(IP) || isa<LandingPadInst>(IP)) {
+    ++IP;
+  } else if (isa<CatchSwitchInst>(IP)) {
+    IP = MustDominate->getFirstInsertionPt();
+  } else {
+    assert(!IP->isEHPad() && "unexpected eh pad!");
   }
 
   return IP;
@@ -1600,6 +1598,12 @@ Value *SCEVExpander::expandCodeFor(const SCEV *SH, Type *Ty) {
   return V;
 }
 
+// The expansion of SCEV will either reuse a previous Value in ExprValueMap,
+// or expand the SCEV literally. Specifically, if the expansion is in LSRMode,
+// and the SCEV contains any sub scAddRecExpr type SCEV, it will be expanded
+// literally, to prevent LSR's transformed SCEV from being reverted. Otherwise,
+// the expansion will try to reuse Value from ExprValueMap, and only when it
+// fails, expand the SCEV literally.
 Value *SCEVExpander::expand(const SCEV *S) {
   // Compute an insertion point for this SCEV object. Hoist the instructions
   // as far out in the loop nest as possible.
@@ -1639,7 +1643,27 @@ Value *SCEVExpander::expand(const SCEV *S) {
   Builder.SetInsertPoint(InsertPt);
 
   // Expand the expression into instructions.
-  Value *V = visit(S);
+  SetVector<Value *> *Set = SE.getSCEVValues(S);
+  Value *V = nullptr;
+  // If the expansion is in LSRMode, and the SCEV contains any sub scAddRecExpr
+  // type SCEV, it will be expanded literally, to prevent LSR's transformed SCEV
+  // from being reverted.
+  if (!(LSRMode && SE.containsAddRecurrence(S))) {
+    // If S is scConstant, it may be worse to reuse an existing Value.
+    if (S->getSCEVType() != scConstant && Set) {
+      // Choose a Value from the set which dominates the insertPt.
+      for (auto const &Ent : *Set) {
+        if (Ent && isa<Instruction>(Ent) && S->getType() == Ent->getType() &&
+            cast<Instruction>(Ent)->getFunction() == InsertPt->getFunction() &&
+            SE.DT.dominates(cast<Instruction>(Ent), InsertPt)) {
+          V = Ent;
+          break;
+        }
+      }
+    }
+  }
+  if (!V)
+    V = visit(S);
 
   // Remember the expanded value for this SCEV at this location.
   //
