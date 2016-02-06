@@ -123,6 +123,23 @@ struct LocalVariableAddrGap {
   ulittle16_t Range;
 };
 
+enum : uint16_t { MaxDefRange = 0xf000 };
+
+// S_DEFRANGE
+struct DefRangeSym {
+  ulittle32_t Program;
+  LocalVariableAddrRange Range;
+  // LocalVariableAddrGap Gaps[];
+};
+
+// S_DEFRANGE_SUBFIELD
+struct DefRangeSubfieldSym {
+  ulittle32_t Program;
+  ulittle16_t OffsetInParent;
+  LocalVariableAddrRange Range;
+  // LocalVariableAddrGap Gaps[];
+};
+
 // S_DEFRANGE_REGISTER
 struct DefRangeRegisterSym {
   ulittle16_t Register;
@@ -156,7 +173,7 @@ struct DefRangeFramePointerRelFullScopeSym {
 struct DefRangeRegisterRelSym {
   ulittle16_t BaseRegister;
   ulittle16_t Flags;
-  ulittle32_t BasePointerOffset;
+  little32_t BasePointerOffset;
   LocalVariableAddrRange Range;
   // LocalVariableAddrGap Gaps[];
 
