@@ -61,6 +61,13 @@ bool NVPTXAssignValidGlobalNames::runOnModule(Module &M) {
     }
   }
 
+  // Do the same for function symbols.
+  for (auto &FN : M.functions()) {
+    if (FN.hasLocalLinkage()) {
+      FN.setName(cleanUpName(FN.getName()));
+    }
+  }
+
   return true;
 }
 
