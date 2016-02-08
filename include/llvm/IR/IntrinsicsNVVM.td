@@ -733,6 +733,10 @@ def llvm_anyi64ptr_ty     : LLVMAnyPointerType<llvm_i64_ty>;     // (space)i64*
       Intrinsic<[], [], [IntrNoDuplicate]>;
   def int_nvvm_barrier0 : GCCBuiltin<"__nvvm_bar0">,
       Intrinsic<[], [], [IntrNoDuplicate]>;
+  def int_nvvm_barrier_n : GCCBuiltin<"__nvvm_bar_n">,
+      Intrinsic<[], [llvm_i32_ty], [IntrNoDuplicate]>;
+  def int_nvvm_barrier : GCCBuiltin<"__nvvm_bar">,
+      Intrinsic<[], [llvm_i32_ty, llvm_i32_ty], [IntrNoDuplicate]>;
   def int_nvvm_barrier0_popc : GCCBuiltin<"__nvvm_bar0_popc">,
       Intrinsic<[llvm_i32_ty], [llvm_i32_ty], [IntrNoDuplicate]>;
   def int_nvvm_barrier0_and : GCCBuiltin<"__nvvm_bar0_and">,
