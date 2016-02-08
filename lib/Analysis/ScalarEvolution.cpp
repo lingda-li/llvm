@@ -115,6 +115,10 @@ MaxBruteForceIterations("scalar-evolution-max-iterations", cl::ReallyHidden,
 static cl::opt<bool>
 VerifySCEV("verify-scev",
            cl::desc("Verify ScalarEvolution's backedge taken counts (slow)"));
+static cl::opt<bool>
+    VerifySCEVMap("verify-scev-maps",
+                  cl::desc("Verify no dangling value in ScalarEvolution's"
+                           "ExprValueMap (slow)"));
 
 //===----------------------------------------------------------------------===//
 //                           SCEV class definitions
@@ -162,11 +166,11 @@ void SCEV::print(raw_ostream &OS) const {
     for (unsigned i = 1, e = AR->getNumOperands(); i != e; ++i)
       OS << ",+," << *AR->getOperand(i);
     OS << "}<";
-    if (AR->getNoWrapFlags(FlagNUW))
+    if (AR->hasNoUnsignedWrap())
       OS << "nuw><";
-    if (AR->getNoWrapFlags(FlagNSW))
+    if (AR->hasNoSignedWrap())
       OS << "nsw><";
-    if (AR->getNoWrapFlags(FlagNW) &&
+    if (AR->hasNoSelfWrap() &&
         !AR->getNoWrapFlags((NoWrapFlags)(FlagNUW | FlagNSW)))
       OS << "nw><";
     AR->getLoop()->getHeader()->printAsOperand(OS, /*PrintType=*/false);
@@ -196,9 +200,9 @@ void SCEV::print(raw_ostream &OS) const {
     switch (NAry->getSCEVType()) {
     case scAddExpr:
     case scMulExpr:
-      if (NAry->getNoWrapFlags(FlagNUW))
+      if (NAry->hasNoUnsignedWrap())
         OS << "<nuw>";
-      if (NAry->getNoWrapFlags(FlagNSW))
+      if (NAry->hasNoSignedWrap())
         OS << "<nsw>";
     }
     return;
@@ -1452,7 +1456,7 @@ const SCEV *ScalarEvolution::getZeroExtendExpr(const SCEV *Op,
 
       // If we have special knowledge that this addrec won't overflow,
       // we don't need to do any further analysis.
-      if (AR->getNoWrapFlags(SCEV::FlagNUW))
+      if (AR->hasNoUnsignedWrap())
         return getAddRecExpr(
             getExtendAddRecStart<SCEVZeroExtendExpr>(AR, Ty, this),
             getZeroExtendExpr(Step, Ty), L, AR->getNoWrapFlags());
@@ -1559,7 +1563,7 @@ const SCEV *ScalarEvolution::getZeroExtendExpr(const SCEV *Op,
 
   if (auto *SA = dyn_cast<SCEVAddExpr>(Op)) {
     // zext((A + B + ...)<nuw>) --> (zext(A) + zext(B) + ...)<nuw>
-    if (SA->getNoWrapFlags(SCEV::FlagNUW)) {
+    if (SA->hasNoUnsignedWrap()) {
       // If the addition does not unsign overflow then we can, by definition,
       // commute the zero extension with the addition operation.
       SmallVector<const SCEV *, 4> Ops;
@@ -1643,7 +1647,7 @@ const SCEV *ScalarEvolution::getSignExtendExpr(const SCEV *Op,
     }
 
     // sext((A + B + ...)<nsw>) --> (sext(A) + sext(B) + ...)<nsw>
-    if (SA->getNoWrapFlags(SCEV::FlagNSW)) {
+    if (SA->hasNoSignedWrap()) {
       // If the addition does not sign overflow then we can, by definition,
       // commute the sign extension with the addition operation.
       SmallVector<const SCEV *, 4> Ops;
@@ -1665,7 +1669,7 @@ const SCEV *ScalarEvolution::getSignExtendExpr(const SCEV *Op,
 
       // If we have special knowledge that this addrec won't overflow,
       // we don't need to do any further analysis.
-      if (AR->getNoWrapFlags(SCEV::FlagNSW))
+      if (AR->hasNoSignedWrap())
         return getAddRecExpr(
             getExtendAddRecStart<SCEVSignExtendExpr>(AR, Ty, this),
             getSignExtendExpr(Step, Ty), L, SCEV::FlagNSW);
@@ -3310,6 +3314,73 @@ bool ScalarEvolution::checkValidity(const SCEV *S) const {
   return !F.FindOne;
 }
 
+namespace {
+// Helper class working with SCEVTraversal to figure out if a SCEV contains
+// a sub SCEV of scAddRecExpr type.  FindInvalidSCEVUnknown::FoundOne is set
+// iff if such sub scAddRecExpr type SCEV is found.
+struct FindAddRecurrence {
+  bool FoundOne;
+  FindAddRecurrence() : FoundOne(false) {}
+
+  bool follow(const SCEV *S) {
+    switch (static_cast<SCEVTypes>(S->getSCEVType())) {
+    case scAddRecExpr:
+      FoundOne = true;
+    case scConstant:
+    case scUnknown:
+    case scCouldNotCompute:
+      return false;
+    default:
+      return true;
+    }
+  }
+  bool isDone() const { return FoundOne; }
+};
+}
+
+bool ScalarEvolution::containsAddRecurrence(const SCEV *S) {
+  HasRecMapType::iterator I = HasRecMap.find_as(S);
+  if (I != HasRecMap.end())
+    return I->second;
+
+  FindAddRecurrence F;
+  SCEVTraversal<FindAddRecurrence> ST(F);
+  ST.visitAll(S);
+  HasRecMap.insert(std::make_pair(S, F.FoundOne));
+  return F.FoundOne;
+}
+
+/// getSCEVValues - Return the Value set from S.
+SetVector<Value *> *ScalarEvolution::getSCEVValues(const SCEV *S) {
+  ExprValueMapType::iterator SI = ExprValueMap.find_as(S);
+  if (SI == ExprValueMap.end())
+    return nullptr;
+#ifndef NDEBUG
+  if (VerifySCEVMap) {
+    // Check there is no dangling Value in the set returned.
+    for (const auto &VE : SI->second)
+      assert(ValueExprMap.count(VE));
+  }
+#endif
+  return &SI->second;
+}
+
+/// eraseValueFromMap - Erase Value from ValueExprMap and ExprValueMap.
+/// If ValueExprMap.erase(V) is not used together with forgetMemoizedResults(S),
+/// eraseValueFromMap should be used instead to ensure whenever V->S is removed
+/// from ValueExprMap, V is also removed from the set of ExprValueMap[S].
+void ScalarEvolution::eraseValueFromMap(Value *V) {
+  ValueExprMapType::iterator I = ValueExprMap.find_as(V);
+  if (I != ValueExprMap.end()) {
+    const SCEV *S = I->second;
+    SetVector<Value *> *SV = getSCEVValues(S);
+    // Remove V from the set of ExprValueMap[S]
+    if (SV)
+      SV->remove(V);
+    ValueExprMap.erase(V);
+  }
+}
+
 /// getSCEV - Return an existing SCEV if it exists, otherwise analyze the
 /// expression and create a new one.
 const SCEV *ScalarEvolution::getSCEV(Value *V) {
@@ -3318,7 +3389,13 @@ const SCEV *ScalarEvolution::getSCEV(Value *V) {
   const SCEV *S = getExistingSCEV(V);
   if (S == nullptr) {
     S = createSCEV(V);
-    ValueExprMap.insert(std::make_pair(SCEVCallbackVH(V, this), S));
+    // During PHI resolution, it is possible to create two SCEVs for the same
+    // V, so it is needed to double check whether V->S is inserted into
+    // ValueExprMap before insert S->V into ExprValueMap.
+    std::pair<ValueExprMapType::iterator, bool> Pair =
+        ValueExprMap.insert(std::make_pair(SCEVCallbackVH(V, this), S));
+    if (Pair.second)
+      ExprValueMap[S].insert(V);
   }
   return S;
 }
@@ -3331,6 +3408,7 @@ const SCEV *ScalarEvolution::getExistingSCEV(Value *V) {
     const SCEV *S = I->second;
     if (checkValidity(S))
       return S;
+    forgetMemoizedResults(S);
     ValueExprMap.erase(I);
   }
   return nullptr;
@@ -4282,7 +4360,7 @@ ScalarEvolution::getRange(const SCEV *S,
   if (const SCEVAddRecExpr *AddRec = dyn_cast<SCEVAddRecExpr>(S)) {
     // If there's no unsigned wrap, the value will never be less than its
     // initial value.
-    if (AddRec->getNoWrapFlags(SCEV::FlagNUW))
+    if (AddRec->hasNoUnsignedWrap())
       if (const SCEVConstant *C = dyn_cast<SCEVConstant>(AddRec->getStart()))
         if (!C->getValue()->isZero())
           ConservativeResult = ConservativeResult.intersectWith(
@@ -4290,7 +4368,7 @@ ScalarEvolution::getRange(const SCEV *S,
 
     // If there's no signed wrap, and all the operands have the same sign or
     // zero, the value won't ever change sign.
-    if (AddRec->getNoWrapFlags(SCEV::FlagNSW)) {
+    if (AddRec->hasNoSignedWrap()) {
       bool AllNonNeg = true;
       bool AllNonPos = true;
       for (unsigned i = 0, e = AddRec->getNumOperands(); i != e; ++i) {
@@ -6710,7 +6788,7 @@ ScalarEvolution::HowFarToZero(const SCEV *V, const Loop *L, bool ControlsExit) {
   // compute the backedge count.  In this case, the step may not divide the
   // distance, but we don't care because if the condition is "missed" the loop
   // will have undefined behavior due to wrapping.
-  if (ControlsExit && AddRec->getNoWrapFlags(SCEV::FlagNW)) {
+  if (ControlsExit && AddRec->hasNoSelfWrap()) {
     const SCEV *Exact =
         getUDivExpr(Distance, CountDown ? getNegativeSCEV(Step) : Step);
     return ExitLimit(Exact, Exact);
@@ -7131,7 +7209,7 @@ bool ScalarEvolution::isKnownPredicate(ICmpInst::Predicate Pred,
     return true;
 
   // Otherwise see what can be done with known constant ranges.
-  return isKnownPredicateWithRanges(Pred, LHS, RHS);
+  return isKnownPredicateViaConstantRanges(Pred, LHS, RHS);
 }
 
 bool ScalarEvolution::isMonotonicPredicate(const SCEVAddRecExpr *LHS,
@@ -7177,7 +7255,7 @@ bool ScalarEvolution::isMonotonicPredicateImpl(const SCEVAddRecExpr *LHS,
   case ICmpInst::ICMP_UGE:
   case ICmpInst::ICMP_ULT:
   case ICmpInst::ICMP_ULE:
-    if (!LHS->getNoWrapFlags(SCEV::FlagNUW))
+    if (!LHS->hasNoUnsignedWrap())
       return false;
 
     Increasing = Pred == ICmpInst::ICMP_UGT || Pred == ICmpInst::ICMP_UGE;
@@ -7187,7 +7265,7 @@ bool ScalarEvolution::isMonotonicPredicateImpl(const SCEVAddRecExpr *LHS,
   case ICmpInst::ICMP_SGE:
   case ICmpInst::ICMP_SLT:
   case ICmpInst::ICMP_SLE: {
-    if (!LHS->getNoWrapFlags(SCEV::FlagNSW))
+    if (!LHS->hasNoSignedWrap())
       return false;
 
     const SCEV *Step = LHS->getStepRecurrence(*this);
@@ -7261,78 +7339,34 @@ bool ScalarEvolution::isLoopInvariantPredicate(
   return true;
 }
 
-bool
-ScalarEvolution::isKnownPredicateWithRanges(ICmpInst::Predicate Pred,
-                                            const SCEV *LHS, const SCEV *RHS) {
+bool ScalarEvolution::isKnownPredicateViaConstantRanges(
+    ICmpInst::Predicate Pred, const SCEV *LHS, const SCEV *RHS) {
   if (HasSameValue(LHS, RHS))
     return ICmpInst::isTrueWhenEqual(Pred);
 
   // This code is split out from isKnownPredicate because it is called from
   // within isLoopEntryGuardedByCond.
-  switch (Pred) {
-  default:
-    llvm_unreachable("Unexpected ICmpInst::Predicate value!");
-  case ICmpInst::ICMP_SGT:
-    std::swap(LHS, RHS);
-  case ICmpInst::ICMP_SLT: {
-    ConstantRange LHSRange = getSignedRange(LHS);
-    ConstantRange RHSRange = getSignedRange(RHS);
-    if (LHSRange.getSignedMax().slt(RHSRange.getSignedMin()))
-      return true;
-    if (LHSRange.getSignedMin().sge(RHSRange.getSignedMax()))
-      return false;
-    break;
-  }
-  case ICmpInst::ICMP_SGE:
-    std::swap(LHS, RHS);
-  case ICmpInst::ICMP_SLE: {
-    ConstantRange LHSRange = getSignedRange(LHS);
-    ConstantRange RHSRange = getSignedRange(RHS);
-    if (LHSRange.getSignedMax().sle(RHSRange.getSignedMin()))
-      return true;
-    if (LHSRange.getSignedMin().sgt(RHSRange.getSignedMax()))
-      return false;
-    break;
-  }
-  case ICmpInst::ICMP_UGT:
-    std::swap(LHS, RHS);
-  case ICmpInst::ICMP_ULT: {
-    ConstantRange LHSRange = getUnsignedRange(LHS);
-    ConstantRange RHSRange = getUnsignedRange(RHS);
-    if (LHSRange.getUnsignedMax().ult(RHSRange.getUnsignedMin()))
-      return true;
-    if (LHSRange.getUnsignedMin().uge(RHSRange.getUnsignedMax()))
-      return false;
-    break;
-  }
-  case ICmpInst::ICMP_UGE:
-    std::swap(LHS, RHS);
-  case ICmpInst::ICMP_ULE: {
-    ConstantRange LHSRange = getUnsignedRange(LHS);
-    ConstantRange RHSRange = getUnsignedRange(RHS);
-    if (LHSRange.getUnsignedMax().ule(RHSRange.getUnsignedMin()))
-      return true;
-    if (LHSRange.getUnsignedMin().ugt(RHSRange.getUnsignedMax()))
-      return false;
-    break;
-  }
-  case ICmpInst::ICMP_NE: {
-    if (getUnsignedRange(LHS).intersectWith(getUnsignedRange(RHS)).isEmptySet())
-      return true;
-    if (getSignedRange(LHS).intersectWith(getSignedRange(RHS)).isEmptySet())
-      return true;
 
-    const SCEV *Diff = getMinusSCEV(LHS, RHS);
-    if (isKnownNonZero(Diff))
-      return true;
-    break;
-  }
-  case ICmpInst::ICMP_EQ:
-    // The check at the top of the function catches the case where
-    // the values are known to be equal.
-    break;
-  }
-  return false;
+  auto CheckRanges =
+      [&](const ConstantRange &RangeLHS, const ConstantRange &RangeRHS) {
+    return ConstantRange::makeSatisfyingICmpRegion(Pred, RangeRHS)
+        .contains(RangeLHS);
+  };
+
+  // The check at the top of the function catches the case where the values are
+  // known to be equal.
+  if (Pred == CmpInst::ICMP_EQ)
+    return false;
+
+  if (Pred == CmpInst::ICMP_NE)
+    return CheckRanges(getSignedRange(LHS), getSignedRange(RHS)) ||
+           CheckRanges(getUnsignedRange(LHS), getUnsignedRange(RHS)) ||
+           isKnownNonZero(getMinusSCEV(LHS, RHS));
+
+  if (CmpInst::isSigned(Pred))
+    return CheckRanges(getSignedRange(LHS), getSignedRange(RHS));
+
+  return CheckRanges(getUnsignedRange(LHS), getUnsignedRange(RHS));
 }
 
 bool ScalarEvolution::isKnownPredicateViaNoOverflow(ICmpInst::Predicate Pred,
@@ -7424,7 +7458,8 @@ ScalarEvolution::isLoopBackedgeGuardedByCond(const Loop *L,
   // (interprocedural conditions notwithstanding).
   if (!L) return true;
 
-  if (isKnownPredicateWithRanges(Pred, LHS, RHS)) return true;
+  if (isKnownPredicateViaConstantRanges(Pred, LHS, RHS))
+    return true;
 
   BasicBlock *Latch = L->getLoopLatch();
   if (!Latch)
@@ -7526,7 +7561,8 @@ ScalarEvolution::isLoopEntryGuardedByCond(const Loop *L,
   // (interprocedural conditions notwithstanding).
   if (!L) return false;
 
-  if (isKnownPredicateWithRanges(Pred, LHS, RHS)) return true;
+  if (isKnownPredicateViaConstantRanges(Pred, LHS, RHS))
+    return true;
 
   // Starting at the loop predecessor, climb up the predecessor chain, as long
   // as there are predecessors that can be found that have unique successors
@@ -8044,7 +8080,7 @@ ScalarEvolution::isImpliedCondOperandsHelper(ICmpInst::Predicate Pred,
                                              const SCEV *FoundRHS) {
   auto IsKnownPredicateFull =
       [this](ICmpInst::Predicate Pred, const SCEV *LHS, const SCEV *RHS) {
-    return isKnownPredicateWithRanges(Pred, LHS, RHS) ||
+    return isKnownPredicateViaConstantRanges(Pred, LHS, RHS) ||
            IsKnownPredicateViaMinOrMax(*this, Pred, LHS, RHS) ||
            IsKnownPredicateViaAddRecStart(*this, Pred, LHS, RHS) ||
            isKnownPredicateViaNoOverflow(Pred, LHS, RHS);
@@ -9009,7 +9045,7 @@ void ScalarEvolution::SCEVCallbackVH::deleted() {
   assert(SE && "SCEVCallbackVH called with a null ScalarEvolution!");
   if (PHINode *PN = dyn_cast<PHINode>(getValPtr()))
     SE->ConstantEvolutionLoopExitValue.erase(PN);
-  SE->ValueExprMap.erase(getValPtr());
+  SE->eraseValueFromMap(getValPtr());
   // this now dangles!
 }
 
@@ -9032,13 +9068,13 @@ void ScalarEvolution::SCEVCallbackVH::allUsesReplacedWith(Value *V) {
       continue;
     if (PHINode *PN = dyn_cast<PHINode>(U))
       SE->ConstantEvolutionLoopExitValue.erase(PN);
-    SE->ValueExprMap.erase(U);
+    SE->eraseValueFromMap(U);
     Worklist.insert(Worklist.end(), U->user_begin(), U->user_end());
   }
   // Delete the Old value.
   if (PHINode *PN = dyn_cast<PHINode>(Old))
     SE->ConstantEvolutionLoopExitValue.erase(PN);
-  SE->ValueExprMap.erase(Old);
+  SE->eraseValueFromMap(Old);
   // this now dangles!
 }
 
@@ -9088,7 +9124,9 @@ ScalarEvolution::~ScalarEvolution() {
   }
   FirstUnknown = nullptr;
 
+  ExprValueMap.clear();
   ValueExprMap.clear();
+  HasRecMap.clear();
 
   // Free any extra memory created for ExitNotTakenInfo in the unlikely event
   // that a loop had multiple computable exits.
@@ -9417,6 +9455,8 @@ void ScalarEvolution::forgetMemoizedResults(const SCEV *S) {
   BlockDispositions.erase(S);
   UnsignedRanges.erase(S);
   SignedRanges.erase(S);
+  ExprValueMap.erase(S);
+  HasRecMap.erase(S);
 
   for (DenseMap<const Loop*, BackedgeTakenInfo>::iterator I =
          BackedgeTakenCounts.begin(), E = BackedgeTakenCounts.end(); I != E; ) {

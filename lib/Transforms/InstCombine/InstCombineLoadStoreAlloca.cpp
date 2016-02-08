@@ -205,11 +205,11 @@ static Instruction *simplifyAllocaArraySize(InstCombiner &IC, AllocaInst &AI) {
 
     // Now make everything use the getelementptr instead of the original
     // allocation.
-    return IC.ReplaceInstUsesWith(AI, GEP);
+    return IC.replaceInstUsesWith(AI, GEP);
   }
 
   if (isa<UndefValue>(AI.getArraySize()))
-    return IC.ReplaceInstUsesWith(AI, Constant::getNullValue(AI.getType()));
+    return IC.replaceInstUsesWith(AI, Constant::getNullValue(AI.getType()));
 
   // Ensure that the alloca array size argument has type intptr_t, so that
   // any casting is exposed early.
@@ -271,7 +271,7 @@ Instruction *InstCombiner::visitAllocaInst(AllocaInst &AI) {
         EntryAI->setAlignment(MaxAlign);
         if (AI.getType() != EntryAI->getType())
           return new BitCastInst(EntryAI, AI.getType());
-        return ReplaceInstUsesWith(AI, EntryAI);
+        return replaceInstUsesWith(AI, EntryAI);
       }
     }
   }
@@ -291,12 +291,12 @@ Instruction *InstCombiner::visitAllocaInst(AllocaInst &AI) {
         DEBUG(dbgs() << "Found alloca equal to global: " << AI << '\n');
         DEBUG(dbgs() << "  memcpy = " << *Copy << '\n');
         for (unsigned i = 0, e = ToDelete.size(); i != e; ++i)
-          EraseInstFromFunction(*ToDelete[i]);
+          eraseInstFromFunction(*ToDelete[i]);
         Constant *TheSrc = cast<Constant>(Copy->getSource());
         Constant *Cast
           = ConstantExpr::getPointerBitCastOrAddrSpaceCast(TheSrc, AI.getType());
-        Instruction *NewI = ReplaceInstUsesWith(AI, Cast);
-        EraseInstFromFunction(*Copy);
+        Instruction *NewI = replaceInstUsesWith(AI, Cast);
+        eraseInstFromFunction(*Copy);
         ++NumGlobalCopies;
         return NewI;
       }
@@ -486,7 +486,7 @@ static Instruction *combineLoadToOperationType(InstCombiner &IC, LoadInst &LI) {
         auto *SI = cast<StoreInst>(*UI++);
         IC.Builder->SetInsertPoint(SI);
         combineStoreToNewValue(IC, *SI, NewLoad);
-        IC.EraseInstFromFunction(*SI);
+        IC.eraseInstFromFunction(*SI);
       }
       assert(LI.use_empty() && "Failed to remove all users of the load!");
       // Return the old load so the combiner can delete it safely.
@@ -495,17 +495,12 @@ static Instruction *combineLoadToOperationType(InstCombiner &IC, LoadInst &LI) {
   }
 
   // Fold away bit casts of the loaded value by loading the desired type.
-  // We can do this for BitCastInsts as well as casts from and to pointer types,
-  // as long as those are noops (i.e., the source or dest type have the same
-  // bitwidth as the target's pointers).
   if (LI.hasOneUse())
-    if (auto* CI = dyn_cast<CastInst>(LI.user_back())) {
-      if (CI->isNoopCast(DL)) {
-        LoadInst *NewLoad = combineLoadToNewType(IC, LI, CI->getDestTy());
-        CI->replaceAllUsesWith(NewLoad);
-        IC.EraseInstFromFunction(*CI);
-        return &LI;
-      }
+    if (auto *BC = dyn_cast<BitCastInst>(LI.user_back())) {
+      LoadInst *NewLoad = combineLoadToNewType(IC, LI, BC->getDestTy());
+      BC->replaceAllUsesWith(NewLoad);
+      IC.eraseInstFromFunction(*BC);
+      return &LI;
     }
 
   // FIXME: We should also canonicalize loads of vectors when their elements are
@@ -531,7 +526,7 @@ static Instruction *unpackLoadToAggregate(InstCombiner &IC, LoadInst &LI) {
     if (Count == 1) {
       LoadInst *NewLoad = combineLoadToNewType(IC, LI, ST->getTypeAtIndex(0U),
                                                ".unpack");
-      return IC.ReplaceInstUsesWith(LI, IC.Builder->CreateInsertValue(
+      return IC.replaceInstUsesWith(LI, IC.Builder->CreateInsertValue(
         UndefValue::get(T), NewLoad, 0, LI.getName()));
     }
 
@@ -562,7 +557,7 @@ static Instruction *unpackLoadToAggregate(InstCombiner &IC, LoadInst &LI) {
     }
 
     V->setName(Name);
-    return IC.ReplaceInstUsesWith(LI, V);
+    return IC.replaceInstUsesWith(LI, V);
   }
 
   if (auto *AT = dyn_cast<ArrayType>(T)) {
@@ -570,7 +565,7 @@ static Instruction *unpackLoadToAggregate(InstCombiner &IC, LoadInst &LI) {
     if (AT->getNumElements() == 1) {
       LoadInst *NewLoad = combineLoadToNewType(IC, LI, AT->getElementType(),
                                                ".unpack");
-      return IC.ReplaceInstUsesWith(LI, IC.Builder->CreateInsertValue(
+      return IC.replaceInstUsesWith(LI, IC.Builder->CreateInsertValue(
         UndefValue::get(T), NewLoad, 0, LI.getName()));
     }
   }
@@ -804,7 +799,7 @@ Instruction *InstCombiner::visitLoadInst(LoadInst &LI) {
       combineMetadata(NLI, &LI, KnownIDs);
     };
 
-    return ReplaceInstUsesWith(
+    return replaceInstUsesWith(
         LI, Builder->CreateBitOrPointerCast(AvailableVal, LI.getType(),
                                             LI.getName() + ".cast"));
   }
@@ -820,7 +815,7 @@ Instruction *InstCombiner::visitLoadInst(LoadInst &LI) {
       // CFG.
       new StoreInst(UndefValue::get(LI.getType()),
                     Constant::getNullValue(Op->getType()), &LI);
-      return ReplaceInstUsesWith(LI, UndefValue::get(LI.getType()));
+      return replaceInstUsesWith(LI, UndefValue::get(LI.getType()));
     }
   }
 
@@ -833,7 +828,7 @@ Instruction *InstCombiner::visitLoadInst(LoadInst &LI) {
     // unreachable instruction directly because we cannot modify the CFG.
     new StoreInst(UndefValue::get(LI.getType()),
                   Constant::getNullValue(Op->getType()), &LI);
-    return ReplaceInstUsesWith(LI, UndefValue::get(LI.getType()));
+    return replaceInstUsesWith(LI, UndefValue::get(LI.getType()));
   }
 
   if (Op->hasOneUse()) {
@@ -1014,7 +1009,7 @@ Instruction *InstCombiner::visitStoreInst(StoreInst &SI) {
 
   // Try to canonicalize the stored type.
   if (combineStoreToValueType(*this, SI))
-    return EraseInstFromFunction(SI);
+    return eraseInstFromFunction(SI);
 
   // Attempt to improve the alignment.
   unsigned KnownAlign = getOrEnforceKnownAlignment(
@@ -1030,7 +1025,7 @@ Instruction *InstCombiner::visitStoreInst(StoreInst &SI) {
 
   // Try to canonicalize the stored type.
   if (unpackStoreToAggregate(*this, SI))
-    return EraseInstFromFunction(SI);
+    return eraseInstFromFunction(SI);
 
   // Replace GEP indices if possible.
   if (Instruction *NewGEPI = replaceGEPIdxWithZero(*this, Ptr, SI)) {
@@ -1046,11 +1041,11 @@ Instruction *InstCombiner::visitStoreInst(StoreInst &SI) {
   // alloca dead.
   if (Ptr->hasOneUse()) {
     if (isa<AllocaInst>(Ptr))
-      return EraseInstFromFunction(SI);
+      return eraseInstFromFunction(SI);
     if (GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(Ptr)) {
       if (isa<AllocaInst>(GEP->getOperand(0))) {
         if (GEP->getOperand(0)->hasOneUse())
-          return EraseInstFromFunction(SI);
+          return eraseInstFromFunction(SI);
       }
     }
   }
@@ -1076,7 +1071,7 @@ Instruction *InstCombiner::visitStoreInst(StoreInst &SI) {
                                                         SI.getOperand(1))) {
         ++NumDeadStore;
         ++BBI;
-        EraseInstFromFunction(*PrevSI);
+        eraseInstFromFunction(*PrevSI);
         continue;
       }
       break;
@@ -1088,7 +1083,7 @@ Instruction *InstCombiner::visitStoreInst(StoreInst &SI) {
     if (LoadInst *LI = dyn_cast<LoadInst>(BBI)) {
       if (LI == Val && equivalentAddressValues(LI->getOperand(0), Ptr)) {
         assert(SI.isUnordered() && "can't eliminate ordering operation");
-        return EraseInstFromFunction(SI);
+        return eraseInstFromFunction(SI);
       }
 
       // Otherwise, this is a load from some other location.  Stores before it
@@ -1113,7 +1108,7 @@ Instruction *InstCombiner::visitStoreInst(StoreInst &SI) {
 
   // store undef, Ptr -> noop
   if (isa<UndefValue>(Val))
-    return EraseInstFromFunction(SI);
+    return eraseInstFromFunction(SI);
 
   // The code below needs to be audited and adjusted for unordered atomics
   if (!SI.isSimple())
@@ -1265,7 +1260,7 @@ bool InstCombiner::SimplifyStoreAtEndOfBlock(StoreInst &SI) {
   }
 
   // Nuke the old stores.
-  EraseInstFromFunction(SI);
-  EraseInstFromFunction(*OtherStore);
+  eraseInstFromFunction(SI);
+  eraseInstFromFunction(*OtherStore);
   return true;
 }

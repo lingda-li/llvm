@@ -260,15 +260,11 @@ static void darwinPrintSymbol(SymbolicFile &Obj, SymbolListT::iterator I,
       // use 1, 2 and 3 for section numbers.  See below where they are used to
       // print out fake section names.
       NType |= MachO::N_SECT;
-      if(SymFlags & SymbolRef::SF_Const)
+      if (SymFlags & SymbolRef::SF_Const)
         NSect = 3;
       else {
         IRObjectFile *IRobj = dyn_cast<IRObjectFile>(&Obj);
-        char c = getSymbolNMTypeChar(*IRobj, I->Sym);
-        if (c == 't')
-          NSect = 1;
-        else
-          NSect = 2;
+        NSect = (getSymbolNMTypeChar(*IRobj, I->Sym) == 't') ? 1 : 2;
       }
     }
     if (SymFlags & SymbolRef::SF_Weak)
@@ -821,9 +817,7 @@ static char getNMTypeChar(SymbolicFile &Obj, basic_symbol_iterator I) {
   uint32_t Symflags = I->getFlags();
   if ((Symflags & object::SymbolRef::SF_Weak) && !isa<MachOObjectFile>(Obj)) {
     char Ret = isObject(Obj, I) ? 'v' : 'w';
-    if (!(Symflags & object::SymbolRef::SF_Undefined))
-      Ret = toupper(Ret);
-    return Ret;
+    return (!(Symflags & object::SymbolRef::SF_Undefined)) ? toupper(Ret) : Ret;
   }
 
   if (Symflags & object::SymbolRef::SF_Undefined)
@@ -838,10 +832,8 @@ static char getNMTypeChar(SymbolicFile &Obj, basic_symbol_iterator I) {
   else if (IRObjectFile *IR = dyn_cast<IRObjectFile>(&Obj)) {
     Ret = getSymbolNMTypeChar(*IR, I);
     Triple Host(sys::getDefaultTargetTriple());
-    if (Ret == 'd' && Host.isOSDarwin()) {
-      if(Symflags & SymbolRef::SF_Const)
-        Ret = 's';
-    }
+    if (Ret == 'd' && Host.isOSDarwin() && Symflags & SymbolRef::SF_Const)
+      Ret = 's';
   }
   else if (COFFObjectFile *COFF = dyn_cast<COFFObjectFile>(&Obj))
     Ret = getSymbolNMTypeChar(*COFF, I);
@@ -1275,15 +1267,10 @@ int main(int argc, char **argv) {
     PrintAddress = false;
   if (OutputFormat == sysv || SizeSort)
     PrintSize = true;
-
-  switch (InputFilenames.size()) {
-  case 0:
+  if (InputFilenames.empty())
     InputFilenames.push_back("a.out");
-  case 1:
-    break;
-  default:
+  if (InputFilenames.size() > 1)
     MultipleFiles = true;
-  }
 
   for (unsigned i = 0; i < ArchFlags.size(); ++i) {
     if (ArchFlags[i] == "all") {

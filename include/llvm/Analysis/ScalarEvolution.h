@@ -23,6 +23,7 @@
 
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/FoldingSet.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/IR/ConstantRange.h"
 #include "llvm/IR/Function.h"
@@ -382,6 +383,22 @@ namespace llvm {
     /// This SCEV is used to represent unknown trip counts and things.
     std::unique_ptr<SCEVCouldNotCompute> CouldNotCompute;
 
+    /// HasRecMapType - The typedef for HasRecMap.
+    ///
+    typedef DenseMap<const SCEV *, bool> HasRecMapType;
+
+    /// HasRecMap -- This is a cache to record whether a SCEV contains
+    /// any scAddRecExpr.
+    HasRecMapType HasRecMap;
+
+    /// ExprValueMapType - The typedef for ExprValueMap.
+    ///
+    typedef DenseMap<const SCEV *, SetVector<Value *>> ExprValueMapType;
+
+    /// ExprValueMap -- This map records the original values from which
+    /// the SCEV expr is generated from.
+    ExprValueMapType ExprValueMap;
+
     /// The typedef for ValueExprMap.
     ///
     typedef DenseMap<SCEVCallbackVH, const SCEV *, DenseMapInfo<Value *> >
@@ -733,8 +750,8 @@ namespace llvm {
     /// Test if the given expression is known to satisfy the condition described
     /// by Pred and the known constant ranges of LHS and RHS.
     ///
-    bool isKnownPredicateWithRanges(ICmpInst::Predicate Pred,
-                                    const SCEV *LHS, const SCEV *RHS);
+    bool isKnownPredicateViaConstantRanges(ICmpInst::Predicate Pred,
+                                           const SCEV *LHS, const SCEV *RHS);
 
     /// Try to prove the condition described by "LHS Pred RHS" by ruling out
     /// integer overflow.
@@ -820,6 +837,18 @@ namespace llvm {
     /// represents how SCEV will treat the given type, for which isSCEVable must
     /// return true. For pointer types, this is the pointer-sized integer type.
     Type *getEffectiveSCEVType(Type *Ty) const;
+
+    /// containsAddRecurrence - Return true if the SCEV is a scAddRecExpr or
+    /// it contains scAddRecExpr. The result will be cached in HasRecMap.
+    ///
+    bool containsAddRecurrence(const SCEV *S);
+
+    /// getSCEVValues - Return the Value set from which the SCEV expr is
+    /// generated.
+    SetVector<Value *> *getSCEVValues(const SCEV *S);
+
+    /// eraseValueFromMap - Erase Value from ValueExprMap and ExprValueMap.
+    void eraseValueFromMap(Value *V);
 
     /// Return a SCEV expression for the full generality of the specified
     /// expression.
