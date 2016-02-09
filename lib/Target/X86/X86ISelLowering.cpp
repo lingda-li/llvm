@@ -2374,15 +2374,14 @@ bool X86TargetLowering::isUsedByReturnOnly(SDNode *N, SDValue &Chain) const {
   return true;
 }
 
-EVT
-X86TargetLowering::getTypeForExtArgOrReturn(LLVMContext &Context, EVT VT,
-                                            ISD::NodeType ExtendKind) const {
-  MVT ReturnMVT;
-  // TODO: Is this also valid on 32-bit?
-  if (Subtarget.is64Bit() && VT == MVT::i1 && ExtendKind == ISD::ZERO_EXTEND)
+EVT X86TargetLowering::getTypeForExtReturn(LLVMContext &Context, EVT VT,
+                                           ISD::NodeType ExtendKind) const {
+  MVT ReturnMVT = MVT::i32;
+
+  if (VT == MVT::i1 || VT == MVT::i8 || VT == MVT::i16) {
+    // The ABI does not require i1, i8 or i16 to be extended.
     ReturnMVT = MVT::i8;
-  else
-    ReturnMVT = MVT::i32;
+  }
 
   EVT MinVT = getRegisterType(Context, ReturnMVT);
   return VT.bitsLT(MinVT) ? MinVT : VT;
@@ -9022,6 +9021,12 @@ static SDValue lowerV4F32VectorShuffle(SDValue Op, SDValue V1, SDValue V2,
               DL, MVT::v4f32, V1, V2, Mask, DAG))
         return BlendPerm;
   }
+
+  // Use low/high mov instructions.
+  if (isShuffleEquivalent(V1, V2, Mask, {0, 1, 4, 5}))
+    return DAG.getNode(X86ISD::MOVLHPS, DL, MVT::v4f32, V1, V2);
+  if (isShuffleEquivalent(V1, V2, Mask, {2, 3, 6, 7}))
+    return DAG.getNode(X86ISD::MOVHLPS, DL, MVT::v4f32, V2, V1);
 
   // Use dedicated unpack instructions for masks that match their pattern.
   if (SDValue V =
@@ -26785,13 +26790,86 @@ static SDValue PerformMLOADCombine(SDNode *N, SelectionDAG &DAG,
   return DCI.CombineTo(N, NewVec, WideLd.getValue(1), true);
 }
 
-/// PerformMSTORECombine - Resolve truncating stores
+
+/// If exactly one element of the mask is set for a non-truncating masked store,
+/// it is a vector extract and scalar store.
+/// Note: It is expected that the degenerate cases of an all-zeros or all-ones
+/// mask have already been optimized in IR, so we don't bother with those here.
+static SDValue reduceMaskedStoreToScalarStore(MaskedStoreSDNode *MS,
+                                              SelectionDAG &DAG) {
+  // TODO: This is not x86-specific, so it could be lifted to DAGCombiner.
+  // However, some target hooks may need to be added to know when the transform
+  // is profitable. Endianness would also have to be considered.
+
+  // If V is a build vector of boolean constants and exactly one of those
+  // constants is true, return the operand index of that true element.
+  // Otherwise, return -1.
+  auto getOneTrueElt = [](SDValue V) {
+    // This needs to be a build vector of booleans.
+    // TODO: Checking for the i1 type matches the IR definition for the mask,
+    // but the mask check could be loosened to i8 or other types. That might
+    // also require checking more than 'allOnesValue'; eg, the x86 HW
+    // instructions only require that the MSB is set for each mask element.
+    // The ISD::MSTORE comments/definition do not specify how the mask operand
+    // is formatted.
+    auto *BV = dyn_cast<BuildVectorSDNode>(V);
+    if (!BV || BV->getValueType(0).getVectorElementType() != MVT::i1)
+      return -1;
+
+    int TrueIndex = -1;
+    unsigned NumElts = BV->getValueType(0).getVectorNumElements();
+    for (unsigned i = 0; i < NumElts; ++i) {
+      const SDValue &Op = BV->getOperand(i);
+      if (Op.getOpcode() == ISD::UNDEF)
+        continue;
+      auto *ConstNode = dyn_cast<ConstantSDNode>(Op);
+      if (!ConstNode)
+        return -1;
+      if (ConstNode->getAPIntValue().isAllOnesValue()) {
+        // If we already found a one, this is too many.
+        if (TrueIndex >= 0)
+          return -1;
+        TrueIndex = i;
+      }
+    }
+    return TrueIndex;
+  };
+
+  int TrueMaskElt = getOneTrueElt(MS->getMask());
+  if (TrueMaskElt < 0)
+    return SDValue();
+
+  SDLoc DL(MS);
+  EVT VT = MS->getValue().getValueType();
+  EVT EltVT = VT.getVectorElementType();
+
+  // Extract the one scalar element that is actually being stored.
+  SDValue ExtractIndex = DAG.getIntPtrConstant(TrueMaskElt, DL);
+  SDValue Extract = DAG.getNode(ISD::EXTRACT_VECTOR_ELT, DL, EltVT,
+                                MS->getValue(), ExtractIndex);
+
+  // Store that element at the appropriate offset from the base pointer.
+  SDValue StoreAddr = MS->getBasePtr();
+  unsigned EltSize = EltVT.getStoreSize();
+  if (TrueMaskElt != 0) {
+    unsigned StoreOffset = TrueMaskElt * EltSize;
+    SDValue StoreOffsetVal = DAG.getIntPtrConstant(StoreOffset, DL);
+    StoreAddr = DAG.getNode(ISD::ADD, DL, StoreAddr.getValueType(), StoreAddr,
+                            StoreOffsetVal);
+  }
+  unsigned Alignment = MinAlign(MS->getAlignment(), EltSize);
+  return DAG.getStore(MS->getChain(), DL, Extract, StoreAddr,
+                      MS->getPointerInfo(), MS->isVolatile(),
+                      MS->isNonTemporal(), Alignment);
+}
+
 static SDValue PerformMSTORECombine(SDNode *N, SelectionDAG &DAG,
                                     const X86Subtarget &Subtarget) {
   MaskedStoreSDNode *Mst = cast<MaskedStoreSDNode>(N);
   if (!Mst->isTruncatingStore())
-    return SDValue();
+    return reduceMaskedStoreToScalarStore(Mst, DAG);
 
+  // Resolve truncating stores.
   EVT VT = Mst->getValue().getValueType();
   unsigned NumElems = VT.getVectorNumElements();
   EVT StVT = Mst->getMemoryVT();
