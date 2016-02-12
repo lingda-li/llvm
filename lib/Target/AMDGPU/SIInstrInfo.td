@@ -1588,13 +1588,13 @@ multiclass VOP3SI_2_m <vop op, dag outs, dag ins, string asm,
 // instead of an implicit VCC as in the VOP2b format.
 multiclass VOP3b_2_3_m <vop op, dag outs, dag ins, string asm,
                         list<dag> pattern, string opName, string revOp,
-                        bit HasMods = 1, bit useSrc2Input = 0> {
-  def "" : VOP3_Pseudo <outs, ins, pattern, opName>;
+                        bit HasMods = 1, bit useSrc2Input = 0, bit VOP3Only = 0> {
+  def "" : VOP3_Pseudo <outs, ins, pattern, opName, HasMods, VOP3Only>;
 
-  def _si : VOP3b_Real_si <op.SI3, outs, ins, asm, opName>,
+  def _si : VOP3b_Real_si <op.SI3, outs, ins, asm, opName, HasMods, VOP3Only>,
             VOP3DisableFields<1, useSrc2Input, HasMods>;
 
-  def _vi : VOP3b_Real_vi <op.VI3, outs, ins, asm, opName>,
+  def _vi : VOP3b_Real_vi <op.VI3, outs, ins, asm, opName, HasMods, VOP3Only>,
             VOP3DisableFields<1, useSrc2Input, HasMods>;
 }
 
@@ -1977,11 +1977,11 @@ multiclass VOP3_VCC_Inst <vop3 op, string opName,
   3, 1
 >;
 
-multiclass VOP3bInst <vop op, string opName, VOPProfile P, list<dag> pattern = []> :
+multiclass VOP3bInst <vop op, string opName, VOPProfile P, list<dag> pattern = [], bit VOP3Only = 0> :
   VOP3b_2_3_m <
   op, P.Outs64, P.Ins64,
   opName#" "#P.Asm64, pattern,
-  opName, "", 1, 1
+  opName, "", 1, 1, VOP3Only
 >;
 
 class Vop3ModPat<Instruction Inst, VOPProfile P, SDPatternOperator node> : Pat<
@@ -2652,9 +2652,9 @@ multiclass FLAT_Load_Helper <flat op, string asm_name,
 multiclass FLAT_Store_Helper <flat op, string asm_name,
     RegisterClass vdataClass,
     dag outs = (outs),
-    dag ins = (ins vdataClass:$data, VReg_64:$addr, glc_flat:$glc,
+    dag ins = (ins VReg_64:$addr, vdataClass:$data, glc_flat:$glc,
                    slc_flat:$slc, tfe_flat:$tfe),
-    string asm = asm_name#" $data, $addr"#"$glc"#"$slc"#"$tfe"> {
+    string asm = asm_name#" $addr, $data"#"$glc"#"$slc"#"$tfe"> {
 
   let mayLoad = 0, mayStore = 1, vdst = 0 in {
 
