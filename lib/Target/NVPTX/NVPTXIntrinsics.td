@@ -1934,6 +1934,22 @@ def : Pat<(int_nvvm_rotate_right_b64 Int64Regs:$src, Int32Regs:$amt),
       Requires<[noHWROT32]>;
 
 
+// Shuffle Intrinsics
+def SHFL_IDX_B32_REG
+  : NVPTXInst<(outs Int32Regs:$dst),
+              (ins  Int32Regs:$src1, Int32Regs:$src2, Int32Regs:$src3),
+              "shfl.idx.b32 \t$dst, $src1, $src2, $src3;",
+      [(set Int32Regs:$dst,
+       (int_nvvm_shuffle_idx_b32 Int32Regs:$src1, Int32Regs:$src2,
+        Int32Regs:$src3))]>;
+
+def : Pat<(int_nvvm_shuffle_idx_b64 Int64Regs:$src1, Int32Regs:$src2, Int32Regs:$src3),
+          (PACK_TWO_INT32
+            (SHFL_IDX_B32_REG (GET_LO_INT64 Int64Regs:$src1),
+                              Int32Regs:$src2, Int32Regs:$src3),
+            (SHFL_IDX_B32_REG (GET_HI_INT64 Int64Regs:$src1),
+                              Int32Regs:$src2, Int32Regs:$src3))>;
+
 //-----------------------------------
 // Texture Intrinsics
 //-----------------------------------

@@ -3666,6 +3666,17 @@ def int_nvvm_swap_lo_hi_b64
               GCCBuiltin<"__nvvm_swap_lo_hi_b64">;
 
 
+def int_nvvm_shuffle_idx_b32
+  : Intrinsic<[llvm_i32_ty], [llvm_i32_ty, llvm_i32_ty, llvm_i32_ty],
+              [IntrNoMem], "llvm.nvvm.shuffle.idx.b32">,
+              GCCBuiltin<"__nvvm_shuffle_idx_b32">;
+
+def int_nvvm_shuffle_idx_b64
+  : Intrinsic<[llvm_i64_ty], [llvm_i64_ty, llvm_i32_ty, llvm_i32_ty],
+              [IntrNoMem], "llvm.nvvm.shuffle.idx.b64">,
+              GCCBuiltin<"__nvvm_shuffle_idx_b64">;
+
+
 // Old PTX back-end intrinsics retained here for backwards-compatibility
 
 multiclass PTXReadSpecialRegisterIntrinsic_v4i32<string prefix> {
