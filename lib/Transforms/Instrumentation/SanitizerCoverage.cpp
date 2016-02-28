@@ -289,18 +289,20 @@ bool SanitizerCoverageModule::runOnModule(Module &M) {
       new GlobalVariable(M, ModNameStrConst->getType(), true,
                          GlobalValue::PrivateLinkage, ModNameStrConst);
 
-  Function *CtorFunc;
-  std::tie(CtorFunc, std::ignore) = createSanitizerCtorAndInitFunctions(
-      M, kSanCovModuleCtorName, kSanCovModuleInitName,
-      {Int32PtrTy, IntptrTy, Int8PtrTy, Int8PtrTy},
-      {IRB.CreatePointerCast(RealGuardArray, Int32PtrTy),
-       ConstantInt::get(IntptrTy, N),
-       Options.Use8bitCounters
-           ? IRB.CreatePointerCast(RealEightBitCounterArray, Int8PtrTy)
-           : Constant::getNullValue(Int8PtrTy),
-       IRB.CreatePointerCast(ModuleName, Int8PtrTy)});
+  if (!Options.TracePC) {
+    Function *CtorFunc;
+    std::tie(CtorFunc, std::ignore) = createSanitizerCtorAndInitFunctions(
+        M, kSanCovModuleCtorName, kSanCovModuleInitName,
+        {Int32PtrTy, IntptrTy, Int8PtrTy, Int8PtrTy},
+        {IRB.CreatePointerCast(RealGuardArray, Int32PtrTy),
+          ConstantInt::get(IntptrTy, N),
+          Options.Use8bitCounters
+              ? IRB.CreatePointerCast(RealEightBitCounterArray, Int8PtrTy)
+              : Constant::getNullValue(Int8PtrTy),
+          IRB.CreatePointerCast(ModuleName, Int8PtrTy)});
 
-  appendToGlobalCtors(M, CtorFunc, kSanCtorAndDtorPriority);
+    appendToGlobalCtors(M, CtorFunc, kSanCtorAndDtorPriority);
+  }
 
   return true;
 }
@@ -544,7 +546,12 @@ void SanitizerCoverageModule::InjectCoverageAtBlock(Function &F, BasicBlock &BB,
 }
 
 char SanitizerCoverageModule::ID = 0;
-INITIALIZE_PASS(SanitizerCoverageModule, "sancov",
+INITIALIZE_PASS_BEGIN(SanitizerCoverageModule, "sancov",
+    "SanitizerCoverage: TODO."
+    "ModulePass", false, false)
+INITIALIZE_PASS_DEPENDENCY(DominatorTreeWrapperPass)
+INITIALIZE_PASS_DEPENDENCY(PostDominatorTreeWrapperPass)
+INITIALIZE_PASS_END(SanitizerCoverageModule, "sancov",
     "SanitizerCoverage: TODO."
     "ModulePass", false, false)
 ModulePass *llvm::createSanitizerCoverageModulePass(
