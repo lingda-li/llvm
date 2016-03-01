@@ -59,7 +59,7 @@ bool NVPTXAssignValidGlobalNames::runOnModule(Module &M) {
     }
   }
 
-  // Do the same for function symbols.
+  // Clean function symbols.
   for (auto &FN : M.functions()) {
     if (FN.hasLocalLinkage()) {
       generateCleanName(FN);
@@ -77,7 +77,7 @@ void NVPTXAssignValidGlobalNames::generateCleanName(Value &V) {
     // PTX).
     V.setName(ValidName);
     // If there are no collisions return, otherwise clean up the new name.
-    if (V.getName().str() == ValidName)
+    if (V.getName().equals(ValidName))
       return;
   }
 }
