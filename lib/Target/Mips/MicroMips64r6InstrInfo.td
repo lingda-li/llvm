@@ -71,7 +71,7 @@ class EXTBITS_DESC_BASE<string instr_asm, RegisterOperand RO, Operand PosOpnd,
 // TODO: Add 'pos + size' constraint check to dext* instructions
 //       DEXT: 0 < pos + size <= 63
 //       DEXTM, DEXTU: 32 < pos + size <= 64
-class DEXT_MMR6_DESC : EXTBITS_DESC_BASE<"dext", GPR64Opnd, uimm5,
+class DEXT_MMR6_DESC : EXTBITS_DESC_BASE<"dext", GPR64Opnd, uimm5_report_uimm6,
                                          uimm5_plus1, MipsExt>;
 class DEXTM_MMR6_DESC : EXTBITS_DESC_BASE<"dextm", GPR64Opnd, uimm5,
                                           uimm5_plus33, MipsExt>;
@@ -98,6 +98,12 @@ class DINSU_MM64R6_DESC : InsBase<"dinsu", GPR64Opnd, uimm5_plus32,
 class DINSM_MM64R6_DESC : InsBase<"dinsm", GPR64Opnd, uimm5, uimm_range_2_64>;
 class DINS_MM64R6_DESC : InsBase<"dins", GPR64Opnd, uimm5, uimm5_inssize_plus1,
                                  MipsIns>;
+
+class SEL_S_MM64R6_DESC : COP1_SEL_DESC_BASE<"sel.s", FGRCC64Opnd, FGR32Opnd> {
+  // We must copy FGRCC64Opnd's subreg into FGR32.
+  bit usesCustomInserter = 1;
+}
+class SEL_D_MM64R6_DESC : COP1_SEL_DESC_BASE<"sel.d", FGRCC64Opnd, FGR64Opnd>;
 
 //===----------------------------------------------------------------------===//
 //
@@ -131,4 +137,11 @@ let DecoderNamespace = "MicroMipsR6" in {
                     ISA_MICROMIPS64R6;
   def DINS_MM64R6: R6MMR6Rel, DINS_MM64R6_DESC, DINS_MM64R6_ENC,
                    ISA_MICROMIPS64R6;
+}
+
+let DecoderNamespace = "MicroMipsR6_GP64" in {
+def SEL_S_MM64R6 : StdMMR6Rel, SEL_S_MMR6_ENC, SEL_S_MM64R6_DESC,
+                   ISA_MICROMIPS64R6, HARDFLOAT;
+def SEL_D_MM64R6 : StdMMR6Rel, SEL_D_MMR6_ENC, SEL_D_MM64R6_DESC,
+                   ISA_MICROMIPS64R6, HARDFLOAT;
 }

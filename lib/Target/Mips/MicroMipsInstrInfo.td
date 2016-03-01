@@ -671,10 +671,10 @@ let DecoderNamespace = "MicroMips", Predicates = [InMicroMips] in {
                  ADDI_FM_MM<0xc>;
   def ADDi_MM  : MMRel, ArithLogicI<"addi", simm16, GPR32Opnd>,
                  ADDI_FM_MM<0x4>;
-  def SLTi_MM  : MMRel, SetCC_I<"slti", setlt, simm16, immSExt16, GPR32Opnd>,
-                 SLTI_FM_MM<0x24>;
-  def SLTiu_MM : MMRel, SetCC_I<"sltiu", setult, simm16, immSExt16, GPR32Opnd>,
-                 SLTI_FM_MM<0x2c>;
+  def SLTi_MM  : MMRel, SetCC_I<"slti", setlt, simm16, immSExt16, GPR32Opnd,
+                                GPR32Opnd>, SLTI_FM_MM<0x24>;
+  def SLTiu_MM : MMRel, SetCC_I<"sltiu", setult, simm16, immSExt16, GPR32Opnd,
+                                GPR32Opnd>, SLTI_FM_MM<0x2c>;
   def ANDi_MM  : MMRel, ArithLogicI<"andi", uimm16, GPR32Opnd>,
                  ADDI_FM_MM<0x34>;
   def ORi_MM   : MMRel, ArithLogicI<"ori", uimm16, GPR32Opnd>,
@@ -694,8 +694,9 @@ let DecoderNamespace = "MicroMips", Predicates = [InMicroMips] in {
   def MUL_MM   : MMRel, ArithLogicR<"mul", GPR32Opnd>, ADD_FM_MM<0, 0x210>;
   def ADD_MM   : MMRel, ArithLogicR<"add", GPR32Opnd>, ADD_FM_MM<0, 0x110>;
   def SUB_MM   : MMRel, ArithLogicR<"sub", GPR32Opnd>, ADD_FM_MM<0, 0x190>;
-  def SLT_MM   : MMRel, SetCC_R<"slt", setlt, GPR32Opnd>, ADD_FM_MM<0, 0x350>;
-  def SLTu_MM  : MMRel, SetCC_R<"sltu", setult, GPR32Opnd>,
+  def SLT_MM   : MMRel, SetCC_R<"slt", setlt, GPR32Opnd, GPR32Opnd>,
+                 ADD_FM_MM<0, 0x350>;
+  def SLTu_MM  : MMRel, SetCC_R<"sltu", setult, GPR32Opnd, GPR32Opnd>,
                  ADD_FM_MM<0, 0x390>;
   def AND_MM   : MMRel, ArithLogicR<"and", GPR32Opnd, 1, II_AND, and>,
                  ADD_FM_MM<0, 0x250>;
@@ -845,10 +846,10 @@ let DecoderNamespace = "MicroMips", Predicates = [InMicroMips] in {
   def WSBH_MM : MMRel, SubwordSwap<"wsbh", GPR32Opnd, II_WSBH>,
                 SEB_FM_MM<0x1ec>, ISA_MIPS32R2;
   // TODO: Add '0 < pos+size <= 32' constraint check to ext instruction
-  def EXT_MM : MMRel, ExtBase<"ext", GPR32Opnd, uimm5, uimm5_plus1,
-                              MipsExt>, EXT_FM_MM<0x2c>;
+  def EXT_MM : MMRel, ExtBase<"ext", GPR32Opnd, uimm5, uimm5_plus1, immZExt5,
+                              immZExt5Plus1, MipsExt>, EXT_FM_MM<0x2c>;
   def INS_MM : MMRel, InsBase<"ins", GPR32Opnd, uimm5, uimm5_inssize_plus1,
-               MipsIns>, EXT_FM_MM<0x0c>;
+                              MipsIns>, EXT_FM_MM<0x0c>;
 
   /// Jump Instructions
   let DecoderMethod = "DecodeJumpTargetMM" in {
@@ -891,7 +892,7 @@ let DecoderNamespace = "MicroMips", Predicates = [InMicroMips] in {
   /// Control Instructions
   def SYNC_MM    : MMRel, SYNC_FT<"sync">, SYNC_FM_MM;
   def BREAK_MM   : MMRel, BRK_FT<"break">, BRK_FM_MM;
-  def SYSCALL_MM : MMRel, SYS_FT<"syscall">, SYS_FM_MM;
+  def SYSCALL_MM : MMRel, SYS_FT<"syscall", uimm10>, SYS_FM_MM;
   def WAIT_MM    : WaitMM<"wait">, WAIT_FM_MM;
   def ERET_MM    : MMRel, ER_FT<"eret">, ER_FM_MM<0x3cd>;
   def DERET_MM   : MMRel, ER_FT<"deret">, ER_FM_MM<0x38d>;
@@ -944,7 +945,7 @@ let DecoderNamespace = "MicroMips", Predicates = [InMicroMips] in {
   def TLBWI_MM : MMRel, TLB<"tlbwi">, COP0_TLB_FM_MM<0x8d>;
   def TLBWR_MM : MMRel, TLB<"tlbwr">, COP0_TLB_FM_MM<0xcd>;
 
-  def SDBBP_MM : MMRel, SYS_FT<"sdbbp">, SDBBP_FM_MM;
+  def SDBBP_MM : MMRel, SYS_FT<"sdbbp", uimm10>, SDBBP_FM_MM;
 
   def PREFX_MM : PrefetchIndexed<"prefx">, POOL32F_PREFX_FM_MM<0x15, 0x1A0>;
 }

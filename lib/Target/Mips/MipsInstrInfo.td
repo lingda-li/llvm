@@ -422,8 +422,10 @@ class UImmAsmOperandClass<int Bits, list<AsmOperandClass> Supers = []>
   let DiagnosticType = "UImm" # Bits;
 }
 
+def ConstantUImm20AsmOperandClass
+    : ConstantUImmAsmOperandClass<20, []>;
 def UImm16RelaxedAsmOperandClass
-    : UImmAsmOperandClass<16, []> {
+    : UImmAsmOperandClass<16, [ConstantUImm20AsmOperandClass]> {
   let Name = "UImm16_Relaxed";
   let PredicateMethod = "isAnyImm<16>";
   let DiagnosticType = "UImm16_Relaxed";
@@ -541,70 +543,67 @@ def simm18_lsl3 : Operand<i32> {
 def simm20      : Operand<i32>;
 def simm32      : Operand<i32>;
 
-def uimm20      : Operand<i32> {
-}
-
 def simm16_64   : Operand<i64> {
   let DecoderMethod = "DecodeSimm16";
 }
 
 // Zero
 def uimmz       : Operand<i32> {
-  let PrintMethod = "printUnsignedImm";
+  let PrintMethod = "printUImm<0>";
   let ParserMatchClass = ConstantImmzAsmOperandClass;
 }
 
 // size operand of ins instruction
 def uimm_range_2_64 : Operand<i32> {
-  let PrintMethod = "printUnsignedImm";
+  let PrintMethod = "printUImm<6, 2>";
   let EncoderMethod = "getSizeInsEncoding";
   let DecoderMethod = "DecodeInsSize";
   let ParserMatchClass = ConstantUImm5_Range2_64AsmOperandClass;
 }
 
 // Unsigned Operands
-foreach I = {1, 2, 3, 4, 5, 6, 7, 8, 10} in
+foreach I = {1, 2, 3, 4, 5, 6, 7, 8, 10, 20} in
   def uimm # I : Operand<i32> {
-    let PrintMethod = "printUnsignedImm";
+    let PrintMethod = "printUImm<" # I # ">";
     let ParserMatchClass =
         !cast<AsmOperandClass>("ConstantUImm" # I # "AsmOperandClass");
   }
 
 def uimm2_plus1 : Operand<i32> {
-  let PrintMethod = "printUnsignedImm";
+  let PrintMethod = "printUImm<2, 1>";
   let EncoderMethod = "getUImmWithOffsetEncoding<2, 1>";
   let DecoderMethod = "DecodeUImmWithOffset<2, 1>";
   let ParserMatchClass = ConstantUImm2Plus1AsmOperandClass;
 }
 
 def uimm5_plus1 : Operand<i32> {
-  let PrintMethod = "printUnsignedImm";
+  let PrintMethod = "printUImm<5, 1>";
   let EncoderMethod = "getUImmWithOffsetEncoding<5, 1>";
   let DecoderMethod = "DecodeUImmWithOffset<5, 1>";
   let ParserMatchClass = ConstantUImm5Plus1AsmOperandClass;
 }
 
 def uimm5_plus32 : Operand<i32> {
-  let PrintMethod = "printUnsignedImm";
+  let PrintMethod = "printUImm<5, 32>";
   let ParserMatchClass = ConstantUImm5Plus32AsmOperandClass;
 }
 
 def uimm5_plus33 : Operand<i32> {
-  let PrintMethod = "printUnsignedImm";
+  let PrintMethod = "printUImm<5, 33>";
   let EncoderMethod = "getUImmWithOffsetEncoding<5, 1>";
   let DecoderMethod = "DecodeUImmWithOffset<5, 1>";
   let ParserMatchClass = ConstantUImm5Plus33AsmOperandClass;
 }
 
 def uimm5_inssize_plus1 : Operand<i32> {
-  let PrintMethod = "printUnsignedImm";
+  let PrintMethod = "printUImm<6>";
   let ParserMatchClass = ConstantUImm5Plus1AsmOperandClass;
   let EncoderMethod = "getSizeInsEncoding";
   let DecoderMethod = "DecodeInsSize";
 }
 
 def uimm5_plus32_normalize : Operand<i32> {
-  let PrintMethod = "printUnsignedImm";
+  let PrintMethod = "printUImm<5>";
   let ParserMatchClass = ConstantUImm5Plus32NormalizeAsmOperandClass;
 }
 
@@ -615,48 +614,55 @@ def uimm5_lsl2 : Operand<OtherVT> {
 }
 
 def uimm5_plus32_normalize_64 : Operand<i64> {
-  let PrintMethod = "printUnsignedImm";
+  let PrintMethod = "printUImm<5>";
   let ParserMatchClass = ConstantUImm5Plus32NormalizeAsmOperandClass;
 }
 
 foreach I = {16} in
   def uimm # I : Operand<i32> {
-    let PrintMethod = "printUnsignedImm";
+    let PrintMethod = "printUImm<16>";
     let ParserMatchClass =
         !cast<AsmOperandClass>("UImm" # I # "AsmOperandClass");
   }
 
 // Like uimm16_64 but coerces simm16 to uimm16.
 def uimm16_relaxed : Operand<i32> {
-  let PrintMethod = "printUnsignedImm";
+  let PrintMethod = "printUImm<16>";
   let ParserMatchClass =
       !cast<AsmOperandClass>("UImm16RelaxedAsmOperandClass");
 }
 
 foreach I = {5} in
   def uimm # I # _64 : Operand<i64> {
-    let PrintMethod = "printUnsignedImm";
+    let PrintMethod = "printUImm<5>";
     let ParserMatchClass =
         !cast<AsmOperandClass>("ConstantUImm" # I # "AsmOperandClass");
   }
 
 def uimm16_64 : Operand<i64> {
-  let PrintMethod = "printUnsignedImm";
+  let PrintMethod = "printUImm<16>";
   let ParserMatchClass =
       !cast<AsmOperandClass>("UImm16AsmOperandClass");
 }
 
 // Like uimm16_64 but coerces simm16 to uimm16.
 def uimm16_64_relaxed : Operand<i64> {
-  let PrintMethod = "printUnsignedImm";
+  let PrintMethod = "printUImm<16>";
   let ParserMatchClass =
       !cast<AsmOperandClass>("UImm16RelaxedAsmOperandClass");
+}
+
+// Like uimm5 but reports a less confusing error for 32-63 when
+// an instruction alias permits that.
+def uimm5_report_uimm6 : Operand<i32> {
+  let PrintMethod = "printUImm<5>";
+  let ParserMatchClass = ConstantUImm5ReportUImm6AsmOperandClass;
 }
 
 // Like uimm5_64 but reports a less confusing error for 32-63 when
 // an instruction alias permits that.
 def uimm5_64_report_uimm6 : Operand<i64> {
-  let PrintMethod = "printUnsignedImm";
+  let PrintMethod = "printUImm<5>";
   let ParserMatchClass = ConstantUImm5ReportUImm6AsmOperandClass;
 }
 
@@ -824,6 +830,16 @@ def immLow16Zero : PatLeaf<(imm), [{
 
 // shamt field must fit in 5 bits.
 def immZExt5 : ImmLeaf<i32, [{return Imm == (Imm & 0x1f);}]>;
+
+def immZExt5Plus1 : PatLeaf<(imm), [{
+  return isUInt<5>(N->getZExtValue() - 1);
+}]>;
+def immZExt5Plus32 : PatLeaf<(imm), [{
+  return isUInt<5>(N->getZExtValue() - 32);
+}]>;
+def immZExt5Plus33 : PatLeaf<(imm), [{
+  return isUInt<5>(N->getZExtValue() - 33);
+}]>;
 
 // True if (N + 1) fits in 16-bit field.
 def immSExt16Plus1 : PatLeaf<(imm), [{
@@ -1019,17 +1035,18 @@ class CBranchZero<string opstr, DAGOperand opnd, PatFrag cond_op,
 }
 
 // SetCC
-class SetCC_R<string opstr, PatFrag cond_op, RegisterOperand RO> :
-  InstSE<(outs GPR32Opnd:$rd), (ins RO:$rs, RO:$rt),
+class SetCC_R<string opstr, PatFrag cond_op, RegisterOperand RD,
+              RegisterOperand RO> :
+  InstSE<(outs RD:$rd), (ins RO:$rs, RO:$rt),
          !strconcat(opstr, "\t$rd, $rs, $rt"),
-         [(set GPR32Opnd:$rd, (cond_op RO:$rs, RO:$rt))],
+         [(set RD:$rd, (cond_op RO:$rs, RO:$rt))],
          II_SLT_SLTU, FrmR, opstr>;
 
 class SetCC_I<string opstr, PatFrag cond_op, Operand Od, PatLeaf imm_type,
-              RegisterOperand RO>:
-  InstSE<(outs GPR32Opnd:$rt), (ins RO:$rs, Od:$imm16),
+              RegisterOperand RD, RegisterOperand RO>:
+  InstSE<(outs RD:$rt), (ins RO:$rs, Od:$imm16),
          !strconcat(opstr, "\t$rt, $rs, $imm16"),
-         [(set GPR32Opnd:$rt, (cond_op RO:$rs, imm_type:$imm16))],
+         [(set RD:$rt, (cond_op RO:$rs, imm_type:$imm16))],
          II_SLTI_SLTIU, FrmI, opstr>;
 
 // Jump
@@ -1118,8 +1135,8 @@ class BAL_BR_Pseudo<Instruction RealInst> :
 }
 
 // Syscall
-class SYS_FT<string opstr> :
-  InstSE<(outs), (ins uimm20:$code_),
+class SYS_FT<string opstr, Operand ImmOp> :
+  InstSE<(outs), (ins ImmOp:$code_),
          !strconcat(opstr, "\t$code_"), [], NoItinerary, FrmI, opstr>;
 // Break
 class BRK_FT<string opstr> :
@@ -1273,10 +1290,11 @@ class ReadHardware<RegisterOperand CPURegOperand, RegisterOperand RO> :
 
 // Ext and Ins
 class ExtBase<string opstr, RegisterOperand RO, Operand PosOpnd,
-              Operand SizeOpnd, SDPatternOperator Op = null_frag> :
+              Operand SizeOpnd, PatFrag PosImm, PatFrag SizeImm,
+              SDPatternOperator Op = null_frag> :
   InstSE<(outs RO:$rt), (ins RO:$rs, PosOpnd:$pos, SizeOpnd:$size),
          !strconcat(opstr, " $rt, $rs, $pos, $size"),
-         [(set RO:$rt, (Op RO:$rs, imm:$pos, imm:$size))], II_EXT,
+         [(set RO:$rt, (Op RO:$rs, PosImm:$pos, SizeImm:$size))], II_EXT,
          FrmR, opstr>, ISA_MIPS32R2;
 
 class InsBase<string opstr, RegisterOperand RO, Operand PosOpnd,
@@ -1314,11 +1332,11 @@ class SCBase<string opstr, RegisterOperand RO> :
 }
 
 class MFC3OP<string asmstr, RegisterOperand RO, RegisterOperand RD> :
-  InstSE<(outs RO:$rt), (ins RD:$rd, uimm16:$sel),
+  InstSE<(outs RO:$rt), (ins RD:$rd, uimm3:$sel),
          !strconcat(asmstr, "\t$rt, $rd, $sel"), [], NoItinerary, FrmFR>;
 
 class MTC3OP<string asmstr, RegisterOperand RO, RegisterOperand RD> :
-  InstSE<(outs RO:$rd), (ins RD:$rt, uimm16:$sel),
+  InstSE<(outs RO:$rd), (ins RD:$rt, uimm3:$sel),
          !strconcat(asmstr, "\t$rt, $rd, $sel"), [], NoItinerary, FrmFR>;
 
 class TrapBase<Instruction RealInst>
@@ -1409,10 +1427,10 @@ def ADDiu : MMRel, StdMMR6Rel, ArithLogicI<"addiu", simm16, GPR32Opnd,
 }
 def ADDi  : MMRel, ArithLogicI<"addi", simm16, GPR32Opnd>, ADDI_FM<0x8>,
             ISA_MIPS1_NOT_32R6_64R6;
-def SLTi  : MMRel, SetCC_I<"slti", setlt, simm16, immSExt16, GPR32Opnd>,
-            SLTI_FM<0xa>;
-def SLTiu : MMRel, SetCC_I<"sltiu", setult, simm16, immSExt16, GPR32Opnd>,
-            SLTI_FM<0xb>;
+def SLTi  : MMRel, SetCC_I<"slti", setlt, simm16, immSExt16, GPR32Opnd,
+            GPR32Opnd>, SLTI_FM<0xa>;
+def SLTiu : MMRel, SetCC_I<"sltiu", setult, simm16, immSExt16, GPR32Opnd,
+            GPR32Opnd>, SLTI_FM<0xb>;
 let AdditionalPredicates = [NotInMicroMips] in {
 def ANDi  : MMRel, StdMMR6Rel,
             ArithLogicI<"andi", uimm16, GPR32Opnd, II_ANDI, immZExt16, and>,
@@ -1437,8 +1455,8 @@ def MUL   : MMRel, ArithLogicR<"mul", GPR32Opnd, 1, II_MUL, mul>,
             ADD_FM<0x1c, 2>, ISA_MIPS32_NOT_32R6_64R6;
 def ADD   : MMRel, StdMMR6Rel, ArithLogicR<"add", GPR32Opnd>, ADD_FM<0, 0x20>;
 def SUB   : MMRel, ArithLogicR<"sub", GPR32Opnd>, ADD_FM<0, 0x22>;
-def SLT   : MMRel, SetCC_R<"slt", setlt, GPR32Opnd>, ADD_FM<0, 0x2a>;
-def SLTu  : MMRel, SetCC_R<"sltu", setult, GPR32Opnd>, ADD_FM<0, 0x2b>;
+def SLT   : MMRel, SetCC_R<"slt", setlt, GPR32Opnd, GPR32Opnd>, ADD_FM<0, 0x2a>;
+def SLTu  : MMRel, SetCC_R<"sltu", setult, GPR32Opnd, GPR32Opnd>, ADD_FM<0, 0x2b>;
 let AdditionalPredicates = [NotInMicroMips] in {
 def AND   : MMRel, StdMMR6Rel, ArithLogicR<"and", GPR32Opnd, 1, II_AND, and>,
             ADD_FM<0, 0x24>;
@@ -1553,10 +1571,12 @@ def TNEI : MMRel, TEQI_FT<"tnei", GPR32Opnd>, TEQI_FM<0xe>,
 
 let AdditionalPredicates = [NotInMicroMips] in {
 def BREAK : MMRel, StdMMR6Rel, BRK_FT<"break">, BRK_FM<0xd>;
+def SYSCALL : MMRel, SYS_FT<"syscall", uimm20>, SYS_FM<0xc>;
 }
-def SYSCALL : MMRel, SYS_FT<"syscall">, SYS_FM<0xc>;
 def TRAP : TrapBase<BREAK>;
-def SDBBP : MMRel, SYS_FT<"sdbbp">, SDBBP_FM, ISA_MIPS32_NOT_32R6_64R6;
+let AdditionalPredicates = [NotInMicroMips] in {
+def SDBBP : MMRel, SYS_FT<"sdbbp", uimm20>, SDBBP_FM, ISA_MIPS32_NOT_32R6_64R6;
+}
 
 let AdditionalPredicates = [NotInMicroMips] in {
   def ERET : MMRel, ER_FT<"eret">, ER_FM<0x18, 0x0>, INSN_MIPS3_32;
@@ -1763,8 +1783,8 @@ let AdditionalPredicates = [NotInMicroMips] in {
 def RDHWR : MMRel, ReadHardware<GPR32Opnd, HWRegsOpnd>, RDHWR_FM;
 }
 // TODO: Add '0 < pos+size <= 32' constraint check to ext instruction
-def EXT : MMRel, ExtBase<"ext", GPR32Opnd, uimm5, uimm5_plus1, MipsExt>,
-          EXT_FM<0>;
+def EXT : MMRel, ExtBase<"ext", GPR32Opnd, uimm5, uimm5_plus1, immZExt5,
+                         immZExt5Plus1, MipsExt>, EXT_FM<0>;
 def INS : MMRel, InsBase<"ins", GPR32Opnd, uimm5, uimm5_inssize_plus1, MipsIns>,
           EXT_FM<4>;
 
@@ -2222,37 +2242,40 @@ def : MipsPat<(i32 (extloadi16 addr:$src)), (LHu addr:$src)>;
 def : MipsPat<(store (i32 0), addr:$dst), (SW ZERO, addr:$dst)>;
 
 // brcond patterns
-multiclass BrcondPats<RegisterClass RC, Instruction BEQOp, Instruction BNEOp,
-                      Instruction SLTOp, Instruction SLTuOp, Instruction SLTiOp,
-                      Instruction SLTiuOp, Register ZEROReg> {
-def : MipsPat<(brcond (i32 (setne RC:$lhs, 0)), bb:$dst),
+multiclass BrcondPats1<RegisterClass RC, Instruction BEQOp, Instruction BNEOp,
+                       Register ZEROReg, ValueType VT> {
+def : MipsPat<(brcond (VT (setne RC:$lhs, 0)), bb:$dst),
               (BNEOp RC:$lhs, ZEROReg, bb:$dst)>;
-def : MipsPat<(brcond (i32 (seteq RC:$lhs, 0)), bb:$dst),
+def : MipsPat<(brcond (VT (seteq RC:$lhs, 0)), bb:$dst),
               (BEQOp RC:$lhs, ZEROReg, bb:$dst)>;
-
-def : MipsPat<(brcond (i32 (setge RC:$lhs, RC:$rhs)), bb:$dst),
-              (BEQ (SLTOp RC:$lhs, RC:$rhs), ZERO, bb:$dst)>;
-def : MipsPat<(brcond (i32 (setuge RC:$lhs, RC:$rhs)), bb:$dst),
-              (BEQ (SLTuOp RC:$lhs, RC:$rhs), ZERO, bb:$dst)>;
-def : MipsPat<(brcond (i32 (setge RC:$lhs, immSExt16:$rhs)), bb:$dst),
-              (BEQ (SLTiOp RC:$lhs, immSExt16:$rhs), ZERO, bb:$dst)>;
-def : MipsPat<(brcond (i32 (setuge RC:$lhs, immSExt16:$rhs)), bb:$dst),
-              (BEQ (SLTiuOp RC:$lhs, immSExt16:$rhs), ZERO, bb:$dst)>;
-def : MipsPat<(brcond (i32 (setgt RC:$lhs, immSExt16Plus1:$rhs)), bb:$dst),
-              (BEQ (SLTiOp RC:$lhs, (Plus1 imm:$rhs)), ZERO, bb:$dst)>;
-def : MipsPat<(brcond (i32 (setugt RC:$lhs, immSExt16Plus1:$rhs)), bb:$dst),
-              (BEQ (SLTiuOp RC:$lhs, (Plus1 imm:$rhs)), ZERO, bb:$dst)>;
-
-def : MipsPat<(brcond (i32 (setle RC:$lhs, RC:$rhs)), bb:$dst),
-              (BEQ (SLTOp RC:$rhs, RC:$lhs), ZERO, bb:$dst)>;
-def : MipsPat<(brcond (i32 (setule RC:$lhs, RC:$rhs)), bb:$dst),
-              (BEQ (SLTuOp RC:$rhs, RC:$lhs), ZERO, bb:$dst)>;
-
 def : MipsPat<(brcond RC:$cond, bb:$dst),
               (BNEOp RC:$cond, ZEROReg, bb:$dst)>;
 }
 
-defm : BrcondPats<GPR32, BEQ, BNE, SLT, SLTu, SLTi, SLTiu, ZERO>;
+multiclass BrcondPats2<RegisterClass RC, Instruction BEQOp, Register ZEROReg,
+                       Instruction SLTOp, Instruction SLTuOp,
+                       Instruction SLTiOp, Instruction SLTiuOp,
+                       ValueType VT> {
+def : MipsPat<(brcond (VT (setge RC:$lhs, RC:$rhs)), bb:$dst),
+              (BEQOp (SLTOp RC:$lhs, RC:$rhs), ZEROReg, bb:$dst)>;
+def : MipsPat<(brcond (VT (setuge RC:$lhs, RC:$rhs)), bb:$dst),
+              (BEQOp (SLTuOp RC:$lhs, RC:$rhs), ZEROReg, bb:$dst)>;
+def : MipsPat<(brcond (VT (setge RC:$lhs, immSExt16:$rhs)), bb:$dst),
+              (BEQOp (SLTiOp RC:$lhs, immSExt16:$rhs), ZEROReg, bb:$dst)>;
+def : MipsPat<(brcond (VT (setuge RC:$lhs, immSExt16:$rhs)), bb:$dst),
+              (BEQOp (SLTiuOp RC:$lhs, immSExt16:$rhs), ZEROReg, bb:$dst)>;
+def : MipsPat<(brcond (VT (setgt RC:$lhs, immSExt16Plus1:$rhs)), bb:$dst),
+              (BEQOp (SLTiOp RC:$lhs, (Plus1 imm:$rhs)), ZEROReg, bb:$dst)>;
+def : MipsPat<(brcond (VT (setugt RC:$lhs, immSExt16Plus1:$rhs)), bb:$dst),
+              (BEQOp (SLTiuOp RC:$lhs, (Plus1 imm:$rhs)), ZEROReg, bb:$dst)>;
+def : MipsPat<(brcond (VT (setle RC:$lhs, RC:$rhs)), bb:$dst),
+              (BEQOp (SLTOp RC:$rhs, RC:$lhs), ZEROReg, bb:$dst)>;
+def : MipsPat<(brcond (VT (setule RC:$lhs, RC:$rhs)), bb:$dst),
+              (BEQOp (SLTuOp RC:$rhs, RC:$lhs), ZEROReg, bb:$dst)>;
+}
+
+defm : BrcondPats1<GPR32, BEQ, BNE, ZERO, i32>;
+defm : BrcondPats2<GPR32, BEQ, ZERO, SLT, SLTu, SLTi, SLTiu, i32>;
 
 def : MipsPat<(brcond (i32 (setlt i32:$lhs, 1)), bb:$dst),
               (BLEZ i32:$lhs, bb:$dst)>;
@@ -2272,11 +2295,12 @@ multiclass SeteqPats<RegisterClass RC, Instruction SLTiuOp, Instruction XOROp,
                 (SLTuOp ZEROReg, (XOROp RC:$lhs, RC:$rhs))>;
 }
 
-multiclass SetlePats<RegisterClass RC, Instruction SLTOp, Instruction SLTuOp> {
+multiclass SetlePats<RegisterClass RC, Instruction SLTOp, Instruction SLTuOp,
+                     Instruction XORiOp> {
   def : MipsPat<(setle RC:$lhs, RC:$rhs),
-                (XORi (SLTOp RC:$rhs, RC:$lhs), 1)>;
+                (XORiOp (SLTOp RC:$rhs, RC:$lhs), 1)>;
   def : MipsPat<(setule RC:$lhs, RC:$rhs),
-                (XORi (SLTuOp RC:$rhs, RC:$lhs), 1)>;
+                (XORiOp (SLTuOp RC:$rhs, RC:$lhs), 1)>;
 }
 
 multiclass SetgtPats<RegisterClass RC, Instruction SLTOp, Instruction SLTuOp> {
@@ -2286,26 +2310,27 @@ multiclass SetgtPats<RegisterClass RC, Instruction SLTOp, Instruction SLTuOp> {
                 (SLTuOp RC:$rhs, RC:$lhs)>;
 }
 
-multiclass SetgePats<RegisterClass RC, Instruction SLTOp, Instruction SLTuOp> {
+multiclass SetgePats<RegisterClass RC, Instruction SLTOp, Instruction SLTuOp,
+                     Instruction XORiOp> {
   def : MipsPat<(setge RC:$lhs, RC:$rhs),
-                (XORi (SLTOp RC:$lhs, RC:$rhs), 1)>;
+                (XORiOp (SLTOp RC:$lhs, RC:$rhs), 1)>;
   def : MipsPat<(setuge RC:$lhs, RC:$rhs),
-                (XORi (SLTuOp RC:$lhs, RC:$rhs), 1)>;
+                (XORiOp (SLTuOp RC:$lhs, RC:$rhs), 1)>;
 }
 
 multiclass SetgeImmPats<RegisterClass RC, Instruction SLTiOp,
-                        Instruction SLTiuOp> {
+                        Instruction SLTiuOp, Instruction XORiOp> {
   def : MipsPat<(setge RC:$lhs, immSExt16:$rhs),
-                (XORi (SLTiOp RC:$lhs, immSExt16:$rhs), 1)>;
+                (XORiOp (SLTiOp RC:$lhs, immSExt16:$rhs), 1)>;
   def : MipsPat<(setuge RC:$lhs, immSExt16:$rhs),
-                (XORi (SLTiuOp RC:$lhs, immSExt16:$rhs), 1)>;
+                (XORiOp (SLTiuOp RC:$lhs, immSExt16:$rhs), 1)>;
 }
 
 defm : SeteqPats<GPR32, SLTiu, XOR, SLTu, ZERO>;
-defm : SetlePats<GPR32, SLT, SLTu>;
+defm : SetlePats<GPR32, SLT, SLTu, XORi>;
 defm : SetgtPats<GPR32, SLT, SLTu>;
-defm : SetgePats<GPR32, SLT, SLTu>;
-defm : SetgeImmPats<GPR32, SLTi, SLTiu>;
+defm : SetgePats<GPR32, SLT, SLTu, XORi>;
+defm : SetgeImmPats<GPR32, SLTi, SLTiu, XORi>;
 
 // bswap pattern
 def : MipsPat<(bswap GPR32:$rt), (ROTR (WSBH GPR32:$rt), 16)>;
