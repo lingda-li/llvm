@@ -5425,7 +5425,7 @@ static SDValue LowerBuildVectorv4x32(SDValue Op, SelectionDAG &DAG,
     // Let the shuffle legalizer deal with blend operations.
     SDValue VZero = getZeroVector(VT, Subtarget, DAG, SDLoc(Op));
     if (V1.getSimpleValueType() != VT)
-      V1 = DAG.getNode(ISD::BITCAST, SDLoc(V1), VT, V1);
+      V1 = DAG.getBitcast(VT, V1);
     return DAG.getVectorShuffle(VT, SDLoc(V1), V1, VZero, &Mask[0]);
   }
 
@@ -5455,9 +5455,9 @@ static SDValue LowerBuildVectorv4x32(SDValue Op, SelectionDAG &DAG,
 
   assert(V1.getNode() && "Expected at least two non-zero elements!");
   if (V1.getSimpleValueType() != MVT::v4f32)
-    V1 = DAG.getNode(ISD::BITCAST, SDLoc(V1), MVT::v4f32, V1);
+    V1 = DAG.getBitcast(MVT::v4f32, V1);
   if (V2.getSimpleValueType() != MVT::v4f32)
-    V2 = DAG.getNode(ISD::BITCAST, SDLoc(V2), MVT::v4f32, V2);
+    V2 = DAG.getBitcast(MVT::v4f32, V2);
 
   // Ok, we can emit an INSERTPS instruction.
   unsigned ZMask = Zeroable.to_ulong();
@@ -7963,22 +7963,22 @@ static SDValue lowerVectorShuffleAsSpecificZeroOrAnyExtend(
     assert(VT.is128BitVector() && "Unexpected vector width!");
 
     int LoIdx = Offset * EltBits;
-    SDValue Lo = DAG.getNode(ISD::BITCAST, DL, MVT::v2i64,
-                             DAG.getNode(X86ISD::EXTRQI, DL, VT, InputV,
-                                         DAG.getConstant(EltBits, DL, MVT::i8),
-                                         DAG.getConstant(LoIdx, DL, MVT::i8)));
+    SDValue Lo = DAG.getBitcast(
+        MVT::v2i64, DAG.getNode(X86ISD::EXTRQI, DL, VT, InputV,
+                                DAG.getConstant(EltBits, DL, MVT::i8),
+                                DAG.getConstant(LoIdx, DL, MVT::i8)));
 
     if (isUndefInRange(Mask, NumElements / 2, NumElements / 2) ||
         !SafeOffset(Offset + 1))
-      return DAG.getNode(ISD::BITCAST, DL, VT, Lo);
+      return DAG.getBitcast(VT, Lo);
 
     int HiIdx = (Offset + 1) * EltBits;
-    SDValue Hi = DAG.getNode(ISD::BITCAST, DL, MVT::v2i64,
-                             DAG.getNode(X86ISD::EXTRQI, DL, VT, InputV,
-                                         DAG.getConstant(EltBits, DL, MVT::i8),
-                                         DAG.getConstant(HiIdx, DL, MVT::i8)));
-    return DAG.getNode(ISD::BITCAST, DL, VT,
-                       DAG.getNode(X86ISD::UNPCKL, DL, MVT::v2i64, Lo, Hi));
+    SDValue Hi = DAG.getBitcast(
+        MVT::v2i64, DAG.getNode(X86ISD::EXTRQI, DL, VT, InputV,
+                                DAG.getConstant(EltBits, DL, MVT::i8),
+                                DAG.getConstant(HiIdx, DL, MVT::i8)));
+    return DAG.getBitcast(VT,
+                          DAG.getNode(X86ISD::UNPCKL, DL, MVT::v2i64, Lo, Hi));
   }
 
   // If this would require more than 2 unpack instructions to expand, use
@@ -8180,7 +8180,7 @@ static SDValue getScalarValueForVectorElement(SDValue V, int Idx,
     // FIXME: Add support for scalar truncation where possible.
     SDValue S = V.getOperand(Idx);
     if (EltVT.getSizeInBits() == S.getSimpleValueType().getSizeInBits())
-      return DAG.getNode(ISD::BITCAST, SDLoc(V), EltVT, S);
+      return DAG.getBitcast(EltVT, S);
   }
 
   return SDValue();
@@ -8359,29 +8359,40 @@ static SDValue lowerVectorShuffleAsTruncBroadcast(SDLoc DL, MVT VT, SDValue V0,
 /// filtering. While a little annoying to re-dispatch on type here, there isn't
 /// a convenient way to factor it out.
 /// FIXME: This is very similar to LowerVectorBroadcast - can we merge them?
-static SDValue lowerVectorShuffleAsBroadcast(SDLoc DL, MVT VT, SDValue V,
-                                             ArrayRef<int> Mask,
+static SDValue lowerVectorShuffleAsBroadcast(SDLoc DL, MVT VT, SDValue V1,
+                                             SDValue V2, ArrayRef<int> Mask,
                                              const X86Subtarget &Subtarget,
                                              SelectionDAG &DAG) {
-  if (!Subtarget.hasAVX())
+  if (!((Subtarget.hasSSE3() && VT == MVT::v2f64) ||
+        (Subtarget.hasAVX() && VT.isFloatingPoint()) ||
+        (Subtarget.hasAVX2() && VT.isInteger())))
     return SDValue();
-  if (VT.isInteger() && !Subtarget.hasAVX2())
-    return SDValue();
+
+  // With MOVDDUP (v2f64) we can broadcast from a register or a load, otherwise
+  // we can only broadcast from a register with AVX2.
+  unsigned NumElts = Mask.size();
+  unsigned Opcode = VT == MVT::v2f64 ? X86ISD::MOVDDUP : X86ISD::VBROADCAST;
+  bool BroadcastFromReg = (Opcode == X86ISD::MOVDDUP) || Subtarget.hasAVX2();
 
   // Check that the mask is a broadcast.
   int BroadcastIdx = -1;
-  for (int M : Mask)
-    if (M >= 0 && BroadcastIdx == -1)
-      BroadcastIdx = M;
-    else if (M >= 0 && M != BroadcastIdx)
-      return SDValue();
+  for (int i = 0; i != (int)NumElts; ++i) {
+    SmallVector<int, 8> BroadcastMask(NumElts, i);
+    if (isShuffleEquivalent(V1, V2, Mask, BroadcastMask)) {
+      BroadcastIdx = i;
+      break;
+    }
+  }
 
+  if (BroadcastIdx < 0)
+    return SDValue();
   assert(BroadcastIdx < (int)Mask.size() && "We only expect to be called with "
                                             "a sorted mask where the broadcast "
                                             "comes from V1.");
 
   // Go up the chain of (vector) values to find a scalar load that we can
   // combine with the broadcast.
+  SDValue V = V1;
   for (;;) {
     switch (V.getOpcode()) {
     case ISD::CONCAT_VECTORS: {
@@ -8434,9 +8445,8 @@ static SDValue lowerVectorShuffleAsBroadcast(SDLoc DL, MVT VT, SDValue V,
       (V.getOpcode() == ISD::SCALAR_TO_VECTOR && BroadcastIdx == 0)) {
     V = V.getOperand(BroadcastIdx);
 
-    // If the scalar isn't a load, we can't broadcast from it in AVX1.
-    // Only AVX2 has register broadcasts.
-    if (!Subtarget.hasAVX2() && !isShuffleFoldableLoad(V))
+    // If we can't broadcast from a register, check that the input is a load.
+    if (!BroadcastFromReg && !isShuffleFoldableLoad(V))
       return SDValue();
   } else if (MayFoldLoad(BC) && !cast<LoadSDNode>(BC)->isVolatile()) {
     // 32-bit targets need to load i64 as a f64 and then bitcast the result.
@@ -8453,8 +8463,8 @@ static SDValue lowerVectorShuffleAsBroadcast(SDLoc DL, MVT VT, SDValue V,
     V = DAG.getLoad(SVT, DL, Ld->getChain(), NewAddr,
                     DAG.getMachineFunction().getMachineMemOperand(
                         Ld->getMemOperand(), Offset, SVT.getStoreSize()));
-  } else if (!Subtarget.hasAVX2()) {
-    // We can't broadcast from a vector register without AVX2.
+  } else if (!BroadcastFromReg) {
+    // We can't broadcast from a vector register.
     return SDValue();
   } else if (BroadcastIdx != 0) {
     // We can only broadcast from the zero-element of a vector register,
@@ -8477,8 +8487,10 @@ static SDValue lowerVectorShuffleAsBroadcast(SDLoc DL, MVT VT, SDValue V,
                     DAG.getIntPtrConstant(BroadcastIdx, DL));
   }
 
-  V = DAG.getNode(X86ISD::VBROADCAST, DL, BroadcastVT, V);
-  return DAG.getBitcast(VT, V);
+  if (Opcode == X86ISD::MOVDDUP && !V.getValueType().isVector())
+    V = DAG.getNode(ISD::SCALAR_TO_VECTOR, DL, MVT::v2f64, V);
+
+  return DAG.getBitcast(VT, DAG.getNode(Opcode, DL, BroadcastVT, V));
 }
 
 // Check for whether we can use INSERTPS to perform the shuffle. We only use
@@ -8694,10 +8706,10 @@ static SDValue lowerV2F64VectorShuffle(SDValue Op, SDValue V1, SDValue V2,
   assert(Mask.size() == 2 && "Unexpected mask size for v2 shuffle!");
 
   if (isSingleInputShuffleMask(Mask)) {
-    // Use low duplicate instructions for masks that match their pattern.
-    if (Subtarget.hasSSE3())
-      if (isShuffleEquivalent(V1, V2, Mask, {0, 0}))
-        return DAG.getNode(X86ISD::MOVDDUP, DL, MVT::v2f64, V1);
+    // Check for being able to broadcast a single element.
+    if (SDValue Broadcast = lowerVectorShuffleAsBroadcast(
+            DL, MVT::v2f64, V1, V2, Mask, Subtarget, DAG))
+      return Broadcast;
 
     // Straight shuffle of a single input vector. Simulate this by using the
     // single input as both of the "inputs" to this instruction..
@@ -8776,8 +8788,8 @@ static SDValue lowerV2I64VectorShuffle(SDValue Op, SDValue V1, SDValue V2,
 
   if (isSingleInputShuffleMask(Mask)) {
     // Check for being able to broadcast a single element.
-    if (SDValue Broadcast = lowerVectorShuffleAsBroadcast(DL, MVT::v2i64, V1,
-                                                          Mask, Subtarget, DAG))
+    if (SDValue Broadcast = lowerVectorShuffleAsBroadcast(
+            DL, MVT::v2i64, V1, V2, Mask, Subtarget, DAG))
       return Broadcast;
 
     // Straight shuffle of a single input vector. For everything from SSE2
@@ -8998,8 +9010,8 @@ static SDValue lowerV4F32VectorShuffle(SDValue Op, SDValue V1, SDValue V2,
 
   if (NumV2Elements == 0) {
     // Check for being able to broadcast a single element.
-    if (SDValue Broadcast = lowerVectorShuffleAsBroadcast(DL, MVT::v4f32, V1,
-                                                          Mask, Subtarget, DAG))
+    if (SDValue Broadcast = lowerVectorShuffleAsBroadcast(
+            DL, MVT::v4f32, V1, V2, Mask, Subtarget, DAG))
       return Broadcast;
 
     // Use even/odd duplicate instructions for masks that match their pattern.
@@ -9090,8 +9102,8 @@ static SDValue lowerV4I32VectorShuffle(SDValue Op, SDValue V1, SDValue V2,
 
   if (NumV2Elements == 0) {
     // Check for being able to broadcast a single element.
-    if (SDValue Broadcast = lowerVectorShuffleAsBroadcast(DL, MVT::v4i32, V1,
-                                                          Mask, Subtarget, DAG))
+    if (SDValue Broadcast = lowerVectorShuffleAsBroadcast(
+            DL, MVT::v4i32, V1, V2, Mask, Subtarget, DAG))
       return Broadcast;
 
     // Straight shuffle of a single input vector. For everything from SSE2
@@ -9730,8 +9742,8 @@ static SDValue lowerV8I16VectorShuffle(SDValue Op, SDValue V1, SDValue V2,
 
   if (NumV2Inputs == 0) {
     // Check for being able to broadcast a single element.
-    if (SDValue Broadcast = lowerVectorShuffleAsBroadcast(DL, MVT::v8i16, V1,
-                                                          Mask, Subtarget, DAG))
+    if (SDValue Broadcast = lowerVectorShuffleAsBroadcast(
+            DL, MVT::v8i16, V1, V2, Mask, Subtarget, DAG))
       return Broadcast;
 
     // Try to use shift instructions.
@@ -9929,8 +9941,8 @@ static SDValue lowerV16I8VectorShuffle(SDValue Op, SDValue V1, SDValue V2,
   // For single-input shuffles, there are some nicer lowering tricks we can use.
   if (NumV2Elements == 0) {
     // Check for being able to broadcast a single element.
-    if (SDValue Broadcast = lowerVectorShuffleAsBroadcast(DL, MVT::v16i8, V1,
-                                                          Mask, Subtarget, DAG))
+    if (SDValue Broadcast = lowerVectorShuffleAsBroadcast(
+            DL, MVT::v16i8, V1, V2, Mask, Subtarget, DAG))
       return Broadcast;
 
     // Check whether we can widen this to an i16 shuffle by duplicating bytes.
@@ -10982,8 +10994,8 @@ static SDValue lowerV4F64VectorShuffle(SDValue Op, SDValue V1, SDValue V2,
 
   if (isSingleInputShuffleMask(Mask)) {
     // Check for being able to broadcast a single element.
-    if (SDValue Broadcast = lowerVectorShuffleAsBroadcast(DL, MVT::v4f64, V1,
-                                                          Mask, Subtarget, DAG))
+    if (SDValue Broadcast = lowerVectorShuffleAsBroadcast(
+            DL, MVT::v4f64, V1, V2, Mask, Subtarget, DAG))
       return Broadcast;
 
     // Use low duplicate instructions for masks that match their pattern.
@@ -11080,7 +11092,7 @@ static SDValue lowerV4I64VectorShuffle(SDValue Op, SDValue V1, SDValue V2,
     return Blend;
 
   // Check for being able to broadcast a single element.
-  if (SDValue Broadcast = lowerVectorShuffleAsBroadcast(DL, MVT::v4i64, V1,
+  if (SDValue Broadcast = lowerVectorShuffleAsBroadcast(DL, MVT::v4i64, V1, V2,
                                                         Mask, Subtarget, DAG))
     return Broadcast;
 
@@ -11153,7 +11165,7 @@ static SDValue lowerV8F32VectorShuffle(SDValue Op, SDValue V1, SDValue V2,
     return Blend;
 
   // Check for being able to broadcast a single element.
-  if (SDValue Broadcast = lowerVectorShuffleAsBroadcast(DL, MVT::v8f32, V1,
+  if (SDValue Broadcast = lowerVectorShuffleAsBroadcast(DL, MVT::v8f32, V1, V2,
                                                         Mask, Subtarget, DAG))
     return Broadcast;
 
@@ -11259,7 +11271,7 @@ static SDValue lowerV8I32VectorShuffle(SDValue Op, SDValue V1, SDValue V2,
     return Blend;
 
   // Check for being able to broadcast a single element.
-  if (SDValue Broadcast = lowerVectorShuffleAsBroadcast(DL, MVT::v8i32, V1,
+  if (SDValue Broadcast = lowerVectorShuffleAsBroadcast(DL, MVT::v8i32, V1, V2,
                                                         Mask, Subtarget, DAG))
     return Broadcast;
 
@@ -11341,7 +11353,7 @@ static SDValue lowerV16I16VectorShuffle(SDValue Op, SDValue V1, SDValue V2,
     return ZExt;
 
   // Check for being able to broadcast a single element.
-  if (SDValue Broadcast = lowerVectorShuffleAsBroadcast(DL, MVT::v16i16, V1,
+  if (SDValue Broadcast = lowerVectorShuffleAsBroadcast(DL, MVT::v16i16, V1, V2,
                                                         Mask, Subtarget, DAG))
     return Broadcast;
 
@@ -11438,7 +11450,7 @@ static SDValue lowerV32I8VectorShuffle(SDValue Op, SDValue V1, SDValue V2,
     return ZExt;
 
   // Check for being able to broadcast a single element.
-  if (SDValue Broadcast = lowerVectorShuffleAsBroadcast(DL, MVT::v32i8, V1,
+  if (SDValue Broadcast = lowerVectorShuffleAsBroadcast(DL, MVT::v32i8, V1, V2,
                                                         Mask, Subtarget, DAG))
     return Broadcast;
 
@@ -11748,7 +11760,7 @@ static SDValue lower512BitVectorShuffle(SDValue Op, SDValue V1, SDValue V2,
 
   // Check for being able to broadcast a single element.
   if (SDValue Broadcast =
-          lowerVectorShuffleAsBroadcast(DL, VT, V1, Mask, Subtarget, DAG))
+          lowerVectorShuffleAsBroadcast(DL, VT, V1, V2, Mask, Subtarget, DAG))
     return Broadcast;
 
   // Dispatch to each element type for lowering. If we don't have supprot for
@@ -16366,9 +16378,8 @@ SDValue
 X86TargetLowering::LowerDYNAMIC_STACKALLOC(SDValue Op,
                                            SelectionDAG &DAG) const {
   MachineFunction &MF = DAG.getMachineFunction();
+  const Function *F = MF.getFunction();
   bool SplitStack = MF.shouldSplitStack();
-  bool Lower = (Subtarget.isOSWindows() && !Subtarget.isTargetMachO()) ||
-               SplitStack;
   SDLoc dl(Op);
 
   // Get the inputs.
@@ -16382,21 +16393,45 @@ X86TargetLowering::LowerDYNAMIC_STACKALLOC(SDValue Op,
   // pointer when other instructions are using the stack.
   Chain = DAG.getCALLSEQ_START(Chain, DAG.getIntPtrConstant(0, dl, true), dl);
 
+  const X86RegisterInfo *RegInfo = Subtarget.getRegisterInfo();
   bool Is64Bit = Subtarget.is64Bit();
   MVT SPTy = getPointerTy(DAG.getDataLayout());
 
+  bool CheckStack = SplitStack;
+  if (!CheckStack && Subtarget.isOSWindows() && !Subtarget.isTargetMachO()) {
+    // The Windows ABI requires us to probe the stack for allocations beyond
+    // the probe size.
+    if (auto *SizeC = dyn_cast<ConstantSDNode>(Size)) {
+      // Try to elide the probe if we can prove that this dynamic allocation is
+      // smaller than the probe size.
+      unsigned StackProbeSize = 4096;
+      if (F->hasFnAttribute("stack-probe-size"))
+        F->getFnAttribute("stack-probe-size")
+            .getValueAsString()
+            .getAsInteger(0, StackProbeSize);
+      unsigned AlignedAlloc = SizeC->getZExtValue();
+      // Round the dynamic alloca's size up to it's alignment.
+      if (Align)
+        AlignedAlloc = alignTo(AlignedAlloc, Align);
+
+      // If the aligned allocation is smaller than the probe size, then we don't
+      // need to probe the stack.
+      CheckStack = AlignedAlloc >= StackProbeSize;
+    } else {
+      // We cannot tell how big this dynamic alloca will be, probe the stack.
+      CheckStack = true;
+    }
+  }
+
   SDValue Result;
-  if (!Lower) {
+  if (!CheckStack) {
     const TargetLowering &TLI = DAG.getTargetLoweringInfo();
     unsigned SPReg = TLI.getStackPointerRegisterToSaveRestore();
     assert(SPReg && "Target cannot require DYNAMIC_STACKALLOC expansion and"
                     " not tell us which reg is the stack pointer!");
-    EVT VT = Node->getValueType(0);
-    SDValue Tmp3 = Node->getOperand(2);
 
     SDValue SP = DAG.getCopyFromReg(Chain, dl, SPReg, VT);
     Chain = SP.getValue(1);
-    unsigned Align = cast<ConstantSDNode>(Tmp3)->getZExtValue();
     const TargetFrameLowering &TFI = *Subtarget.getFrameLowering();
     unsigned StackAlign = TFI.getStackAlignment();
     Result = DAG.getNode(ISD::SUB, dl, VT, SP, Size); // Value
@@ -16410,8 +16445,6 @@ X86TargetLowering::LowerDYNAMIC_STACKALLOC(SDValue Op,
     if (Is64Bit) {
       // The 64 bit implementation of segmented stacks needs to clobber both r10
       // r11. This makes it impossible to use it along with nested parameters.
-      const Function *F = MF.getFunction();
-
       for (Function::const_arg_iterator I = F->arg_begin(), E = F->arg_end();
            I != E; ++I)
         if (I->hasNestAttr())
@@ -16434,7 +16467,6 @@ X86TargetLowering::LowerDYNAMIC_STACKALLOC(SDValue Op,
 
     Chain = DAG.getNode(X86ISD::WIN_ALLOCA, dl, NodeTys, Chain, Flag);
 
-    const X86RegisterInfo *RegInfo = Subtarget.getRegisterInfo();
     unsigned SPReg = RegInfo->getStackRegister();
     SDValue SP = DAG.getCopyFromReg(Chain, dl, SPReg, SPTy);
     Chain = SP.getValue(1);
@@ -23235,7 +23267,12 @@ X86TargetLowering::EmitInstrWithCustomInserter(MachineInstr *MI,
         MI->getOpcode() == X86::RDFLAGS32 ? X86::PUSHF32 : X86::PUSHF64;
     unsigned Pop =
         MI->getOpcode() == X86::RDFLAGS32 ? X86::POP32r : X86::POP64r;
-    BuildMI(*BB, MI, DL, TII->get(PushF));
+    MachineInstr *Push = BuildMI(*BB, MI, DL, TII->get(PushF));
+    // Permit reads of the FLAGS register without it being defined.
+    // This intrinsic exists to read external processor state in flags, such as
+    // the trap flag, interrupt flag, and direction flag, none of which are
+    // modeled by the backend.
+    Push->getOperand(2).setIsUndef();
     BuildMI(*BB, MI, DL, TII->get(Pop), MI->getOperand(0).getReg());
 
     MI->eraseFromParent(); // The pseudo is gone now.
@@ -23541,9 +23578,9 @@ bool X86TargetLowering::isGAPlusOffset(SDNode *N,
 
 /// Performs shuffle combines for 256-bit vectors.
 /// FIXME: This could be expanded to support 512 bit vectors as well.
-static SDValue PerformShuffleCombine256(SDNode *N, SelectionDAG &DAG,
-                                        TargetLowering::DAGCombinerInfo &DCI,
-                                        const X86Subtarget &Subtarget) {
+static SDValue combineShuffle256(SDNode *N, SelectionDAG &DAG,
+                                 TargetLowering::DAGCombinerInfo &DCI,
+                                 const X86Subtarget &Subtarget) {
   SDLoc dl(N);
   ShuffleVectorSDNode *SVOp = cast<ShuffleVectorSDNode>(N);
   SDValue V1 = SVOp->getOperand(0);
@@ -24240,9 +24277,9 @@ static bool combineRedundantHalfShuffle(SDValue N, MutableArrayRef<int> Mask,
 }
 
 /// \brief Try to combine x86 target specific shuffles.
-static SDValue PerformTargetShuffleCombine(SDValue N, SelectionDAG &DAG,
-                                           TargetLowering::DAGCombinerInfo &DCI,
-                                           const X86Subtarget &Subtarget) {
+static SDValue combineTargetShuffle(SDValue N, SelectionDAG &DAG,
+                                    TargetLowering::DAGCombinerInfo &DCI,
+                                    const X86Subtarget &Subtarget) {
   SDLoc DL(N);
   MVT VT = N.getSimpleValueType();
   SmallVector<int, 4> Mask;
@@ -24578,9 +24615,9 @@ static SDValue combineShuffleToAddSub(SDNode *N, const X86Subtarget &Subtarget,
   return DAG.getNode(X86ISD::ADDSUB, DL, VT, LHS, RHS);
 }
 
-static SDValue PerformShuffleCombine(SDNode *N, SelectionDAG &DAG,
-                                     TargetLowering::DAGCombinerInfo &DCI,
-                                     const X86Subtarget &Subtarget) {
+static SDValue combineShuffle(SDNode *N, SelectionDAG &DAG,
+                              TargetLowering::DAGCombinerInfo &DCI,
+                              const X86Subtarget &Subtarget) {
   SDLoc dl(N);
   EVT VT = N->getValueType(0);
 
@@ -24598,7 +24635,7 @@ static SDValue PerformShuffleCombine(SDNode *N, SelectionDAG &DAG,
   // Combine 256-bit vector shuffles. This is only profitable when in AVX mode
   if (TLI.isTypeLegal(VT) && Subtarget.hasFp256() && VT.is256BitVector() &&
       N->getOpcode() == ISD::VECTOR_SHUFFLE)
-    return PerformShuffleCombine256(N, DAG, DCI, Subtarget);
+    return combineShuffle256(N, DAG, DCI, Subtarget);
 
   // During Type Legalization, when promoting illegal vector types,
   // the backend might introduce new shuffle dag nodes and bitcasts.
@@ -24668,7 +24705,7 @@ static SDValue PerformShuffleCombine(SDNode *N, SelectionDAG &DAG,
 
   if (isTargetShuffle(N->getOpcode())) {
     if (SDValue Shuffle =
-            PerformTargetShuffleCombine(SDValue(N, 0), DAG, DCI, Subtarget))
+            combineTargetShuffle(SDValue(N, 0), DAG, DCI, Subtarget))
       return Shuffle;
 
     // Try recursively combining arbitrary sequences of x86 shuffle
@@ -24792,8 +24829,8 @@ static SDValue XFormVExtractWithShuffleIntoLoad(SDNode *N, SelectionDAG &DAG,
                      EltNo);
 }
 
-static SDValue PerformBITCASTCombine(SDNode *N, SelectionDAG &DAG,
-                                     const X86Subtarget &Subtarget) {
+static SDValue combineBitcast(SDNode *N, SelectionDAG &DAG,
+                              const X86Subtarget &Subtarget) {
   SDValue N0 = N->getOperand(0);
   EVT VT = N->getValueType(0);
 
@@ -24839,8 +24876,8 @@ static SDValue PerformBITCASTCombine(SDNode *N, SelectionDAG &DAG,
 /// bunch of shuffles and extracts into a somewhat faster sequence.
 /// For i686, the best sequence is apparently storing the value and loading
 /// scalars back, while for x64 we should use 64-bit extracts and shifts.
-static SDValue PerformEXTRACT_VECTOR_ELTCombine(SDNode *N, SelectionDAG &DAG,
-                                         TargetLowering::DAGCombinerInfo &DCI) {
+static SDValue combineExtractVectorElt(SDNode *N, SelectionDAG &DAG,
+                                       TargetLowering::DAGCombinerInfo &DCI) {
   if (SDValue NewOp = XFormVExtractWithShuffleIntoLoad(N, DAG, DCI))
     return NewOp;
 
@@ -25024,9 +25061,9 @@ transformVSELECTtoBlendVECTOR_SHUFFLE(SDNode *N, SelectionDAG &DAG,
 }
 
 /// Do target-specific dag combines on SELECT and VSELECT nodes.
-static SDValue PerformSELECTCombine(SDNode *N, SelectionDAG &DAG,
-                                    TargetLowering::DAGCombinerInfo &DCI,
-                                    const X86Subtarget &Subtarget) {
+static SDValue combineSelect(SDNode *N, SelectionDAG &DAG,
+                             TargetLowering::DAGCombinerInfo &DCI,
+                             const X86Subtarget &Subtarget) {
   SDLoc DL(N);
   SDValue Cond = N->getOperand(0);
   // Get the LHS/RHS of the select.
@@ -25715,9 +25752,9 @@ static bool checkBoolTestAndOrSetCCCombine(SDValue Cond, X86::CondCode &CC0,
 }
 
 /// Optimize X86ISD::CMOV [LHS, RHS, CONDCODE (e.g. X86::COND_NE), CONDVAL]
-static SDValue PerformCMOVCombine(SDNode *N, SelectionDAG &DAG,
-                                  TargetLowering::DAGCombinerInfo &DCI,
-                                  const X86Subtarget &Subtarget) {
+static SDValue combineCMov(SDNode *N, SelectionDAG &DAG,
+                           TargetLowering::DAGCombinerInfo &DCI,
+                           const X86Subtarget &Subtarget) {
   SDLoc DL(N);
 
   // If the flag operand isn't dead, don't touch this CMOV.
@@ -25926,8 +25963,8 @@ static SDValue PerformCMOVCombine(SDNode *N, SelectionDAG &DAG,
 
 /// Optimize a single multiply with constant into two operations in order to
 /// implement it with two cheaper instructions, e.g. LEA + SHL, LEA + LEA.
-static SDValue PerformMulCombine(SDNode *N, SelectionDAG &DAG,
-                                 TargetLowering::DAGCombinerInfo &DCI) {
+static SDValue combineMul(SDNode *N, SelectionDAG &DAG,
+                          TargetLowering::DAGCombinerInfo &DCI) {
   // An imul is usually smaller than the alternative sequence.
   if (DAG.getMachineFunction().getFunction()->optForMinSize())
     return SDValue();
@@ -26012,7 +26049,7 @@ static SDValue PerformMulCombine(SDNode *N, SelectionDAG &DAG,
   return SDValue();
 }
 
-static SDValue PerformSHLCombine(SDNode *N, SelectionDAG &DAG) {
+static SDValue combineShiftLeft(SDNode *N, SelectionDAG &DAG) {
   SDValue N0 = N->getOperand(0);
   SDValue N1 = N->getOperand(1);
   ConstantSDNode *N1C = dyn_cast<ConstantSDNode>(N1);
@@ -26072,7 +26109,7 @@ static SDValue PerformSHLCombine(SDNode *N, SelectionDAG &DAG) {
   return SDValue();
 }
 
-static SDValue PerformSRACombine(SDNode *N, SelectionDAG &DAG) {
+static SDValue combineShiftRightAlgebraic(SDNode *N, SelectionDAG &DAG) {
   SDValue N0 = N->getOperand(0);
   SDValue N1 = N->getOperand(1);
   EVT VT = N0.getValueType();
@@ -26156,15 +26193,15 @@ static SDValue performShiftToAllZeros(SDNode *N, SelectionDAG &DAG,
   return SDValue();
 }
 
-static SDValue PerformShiftCombine(SDNode* N, SelectionDAG &DAG,
-                                   TargetLowering::DAGCombinerInfo &DCI,
-                                   const X86Subtarget &Subtarget) {
+static SDValue combineShift(SDNode* N, SelectionDAG &DAG,
+                            TargetLowering::DAGCombinerInfo &DCI,
+                            const X86Subtarget &Subtarget) {
   if (N->getOpcode() == ISD::SHL)
-    if (SDValue V = PerformSHLCombine(N, DAG))
+    if (SDValue V = combineShiftLeft(N, DAG))
       return V;
 
   if (N->getOpcode() == ISD::SRA)
-    if (SDValue V = PerformSRACombine(N, DAG))
+    if (SDValue V = combineShiftRightAlgebraic(N, DAG))
       return V;
 
   // Try to fold this logical shift into a zero vector.
@@ -26178,9 +26215,9 @@ static SDValue PerformShiftCombine(SDNode* N, SelectionDAG &DAG,
 /// Recognize the distinctive (AND (setcc ...) (setcc ..)) where both setccs
 /// reference the same FP CMP, and rewrite for CMPEQSS and friends. Likewise for
 /// OR -> CMPNEQSS.
-static SDValue CMPEQCombine(SDNode *N, SelectionDAG &DAG,
-                            TargetLowering::DAGCombinerInfo &DCI,
-                            const X86Subtarget &Subtarget) {
+static SDValue combineCompareEqual(SDNode *N, SelectionDAG &DAG,
+                                   TargetLowering::DAGCombinerInfo &DCI,
+                                   const X86Subtarget &Subtarget) {
   unsigned opcode;
 
   // SSE1 supports CMP{eq|ne}SS, and SSE2 added CMP{eq|ne}SD, but
@@ -26404,7 +26441,7 @@ static SDValue WidenMaskArithmetic(SDNode *N, SelectionDAG &DAG,
   }
 }
 
-static SDValue VectorZextCombine(SDNode *N, SelectionDAG &DAG,
+static SDValue combineVectorZext(SDNode *N, SelectionDAG &DAG,
                                  TargetLowering::DAGCombinerInfo &DCI,
                                  const X86Subtarget &Subtarget) {
   SDValue N0 = N->getOperand(0);
@@ -26529,16 +26566,16 @@ static SDValue convertIntLogicToFPLogic(SDNode *N, SelectionDAG &DAG,
   return SDValue();
 }
 
-static SDValue PerformAndCombine(SDNode *N, SelectionDAG &DAG,
-                                 TargetLowering::DAGCombinerInfo &DCI,
-                                 const X86Subtarget &Subtarget) {
+static SDValue combineAnd(SDNode *N, SelectionDAG &DAG,
+                          TargetLowering::DAGCombinerInfo &DCI,
+                          const X86Subtarget &Subtarget) {
   if (DCI.isBeforeLegalizeOps())
     return SDValue();
 
-  if (SDValue Zext = VectorZextCombine(N, DAG, DCI, Subtarget))
+  if (SDValue Zext = combineVectorZext(N, DAG, DCI, Subtarget))
     return Zext;
 
-  if (SDValue R = CMPEQCombine(N, DAG, DCI, Subtarget))
+  if (SDValue R = combineCompareEqual(N, DAG, DCI, Subtarget))
     return R;
 
   if (SDValue FPLogic = convertIntLogicToFPLogic(N, DAG, Subtarget))
@@ -26693,13 +26730,13 @@ static SDValue combineLogicBlendIntoPBLENDV(SDNode *N, SelectionDAG &DAG,
   return DAG.getBitcast(VT, Mask);
 }
 
-static SDValue PerformOrCombine(SDNode *N, SelectionDAG &DAG,
-                                TargetLowering::DAGCombinerInfo &DCI,
-                                const X86Subtarget &Subtarget) {
+static SDValue combineOr(SDNode *N, SelectionDAG &DAG,
+                         TargetLowering::DAGCombinerInfo &DCI,
+                         const X86Subtarget &Subtarget) {
   if (DCI.isBeforeLegalizeOps())
     return SDValue();
 
-  if (SDValue R = CMPEQCombine(N, DAG, DCI, Subtarget))
+  if (SDValue R = combineCompareEqual(N, DAG, DCI, Subtarget))
     return R;
 
   if (SDValue FPLogic = convertIntLogicToFPLogic(N, DAG, Subtarget))
@@ -26781,7 +26818,7 @@ static SDValue PerformOrCombine(SDNode *N, SelectionDAG &DAG,
 }
 
 // Generate NEG and CMOV for integer abs.
-static SDValue performIntegerAbsCombine(SDNode *N, SelectionDAG &DAG) {
+static SDValue combineIntegerAbs(SDNode *N, SelectionDAG &DAG) {
   EVT VT = N->getValueType(0);
 
   // Since X86 does not have CMOV for 8-bit integer, we don't convert
@@ -26908,7 +26945,7 @@ static SDValue foldVectorXorShiftIntoCmp(SDNode *N, SelectionDAG &DAG,
   return DAG.getNode(X86ISD::PCMPGT, SDLoc(N), VT, Shift.getOperand(0), Ones);
 }
 
-static SDValue PerformXorCombine(SDNode *N, SelectionDAG &DAG,
+static SDValue combineXor(SDNode *N, SelectionDAG &DAG,
                                  TargetLowering::DAGCombinerInfo &DCI,
                                  const X86Subtarget &Subtarget) {
   if (SDValue Cmp = foldVectorXorShiftIntoCmp(N, DAG, Subtarget))
@@ -26921,7 +26958,7 @@ static SDValue PerformXorCombine(SDNode *N, SelectionDAG &DAG,
     return RV;
 
   if (Subtarget.hasCMov())
-    if (SDValue RV = performIntegerAbsCombine(N, DAG))
+    if (SDValue RV = combineIntegerAbs(N, DAG))
       return RV;
 
   if (SDValue FPLogic = convertIntLogicToFPLogic(N, DAG, Subtarget))
@@ -27048,9 +27085,9 @@ static SDValue detectAVGPattern(SDValue In, EVT VT, SelectionDAG &DAG,
   return SDValue();
 }
 
-static SDValue PerformLOADCombine(SDNode *N, SelectionDAG &DAG,
-                                  TargetLowering::DAGCombinerInfo &DCI,
-                                  const X86Subtarget &Subtarget) {
+static SDValue combineLoad(SDNode *N, SelectionDAG &DAG,
+                           TargetLowering::DAGCombinerInfo &DCI,
+                           const X86Subtarget &Subtarget) {
   LoadSDNode *Ld = cast<LoadSDNode>(N);
   EVT RegVT = Ld->getValueType(0);
   EVT MemVT = Ld->getMemoryVT();
@@ -27188,9 +27225,9 @@ reduceMaskedLoadToScalarLoad(MaskedLoadSDNode *ML, SelectionDAG &DAG,
   return DCI.CombineTo(ML, Insert, Load.getValue(1), true);
 }
 
-static SDValue PerformMLOADCombine(SDNode *N, SelectionDAG &DAG,
-                                   TargetLowering::DAGCombinerInfo &DCI,
-                                   const X86Subtarget &Subtarget) {
+static SDValue combineMaskedLoad(SDNode *N, SelectionDAG &DAG,
+                                 TargetLowering::DAGCombinerInfo &DCI,
+                                 const X86Subtarget &Subtarget) {
   MaskedLoadSDNode *Mld = cast<MaskedLoadSDNode>(N);
   if (Mld->getExtensionType() == ISD::NON_EXTLOAD)
     return reduceMaskedLoadToScalarLoad(Mld, DAG, DCI);
@@ -27298,8 +27335,8 @@ static SDValue reduceMaskedStoreToScalarStore(MaskedStoreSDNode *MS,
                       MS->isVolatile(), MS->isNonTemporal(), Alignment);
 }
 
-static SDValue PerformMSTORECombine(SDNode *N, SelectionDAG &DAG,
-                                    const X86Subtarget &Subtarget) {
+static SDValue combineMaskedStore(SDNode *N, SelectionDAG &DAG,
+                                  const X86Subtarget &Subtarget) {
   MaskedStoreSDNode *Mst = cast<MaskedStoreSDNode>(N);
   if (!Mst->isTruncatingStore())
     return reduceMaskedStoreToScalarStore(Mst, DAG);
@@ -27387,8 +27424,8 @@ static SDValue PerformMSTORECombine(SDNode *N, SelectionDAG &DAG,
                             Mst->getMemOperand(), false);
 }
 
-static SDValue PerformSTORECombine(SDNode *N, SelectionDAG &DAG,
-                                   const X86Subtarget &Subtarget) {
+static SDValue combineStore(SDNode *N, SelectionDAG &DAG,
+                            const X86Subtarget &Subtarget) {
   StoreSDNode *St = cast<StoreSDNode>(N);
   EVT VT = St->getValue().getValueType();
   EVT StVT = St->getMemoryVT();
@@ -27773,8 +27810,8 @@ static bool isHorizontalBinOp(SDValue &LHS, SDValue &RHS, bool IsCommutative) {
 }
 
 /// Do target-specific dag combines on floating-point adds/subs.
-static SDValue performFaddFsubCombine(SDNode *N, SelectionDAG &DAG,
-                                      const X86Subtarget &Subtarget) {
+static SDValue combineFaddFsub(SDNode *N, SelectionDAG &DAG,
+                               const X86Subtarget &Subtarget) {
   EVT VT = N->getValueType(0);
   SDValue LHS = N->getOperand(0);
   SDValue RHS = N->getOperand(1);
@@ -27826,7 +27863,7 @@ combineVectorTruncationWithPACKUS(SDNode *N, SelectionDAG &DAG,
   for (unsigned j = 1, e = InSVT.getSizeInBits() / OutSVT.getSizeInBits();
        j < e; j *= 2, RegNum /= 2) {
     for (unsigned i = 0; i < RegNum; i++)
-      Regs[i] = DAG.getNode(ISD::BITCAST, DL, UnpackedVT, Regs[i]);
+      Regs[i] = DAG.getBitcast(UnpackedVT, Regs[i]);
     for (unsigned i = 0; i < RegNum / 2; i++)
       Regs[i] = DAG.getNode(X86ISD::PACKUS, DL, PackedVT, Regs[i * 2],
                             Regs[i * 2 + 1]);
@@ -27932,8 +27969,8 @@ static SDValue combineVectorTruncation(SDNode *N, SelectionDAG &DAG,
     return SDValue();
 }
 
-static SDValue PerformTRUNCATECombine(SDNode *N, SelectionDAG &DAG,
-                                      const X86Subtarget &Subtarget) {
+static SDValue combineTruncate(SDNode *N, SelectionDAG &DAG,
+                               const X86Subtarget &Subtarget) {
 
   SDValue Src = N->getOperand(0);
 
@@ -27954,8 +27991,8 @@ static SDValue PerformTRUNCATECombine(SDNode *N, SelectionDAG &DAG,
 }
 
 /// Do target-specific dag combines on floating point negations.
-static SDValue PerformFNEGCombine(SDNode *N, SelectionDAG &DAG,
-                                  const X86Subtarget &Subtarget) {
+static SDValue combineFneg(SDNode *N, SelectionDAG &DAG,
+                           const X86Subtarget &Subtarget) {
   EVT VT = N->getValueType(0);
   EVT SVT = VT.getScalarType();
   SDValue Arg = N->getOperand(0);
@@ -28006,8 +28043,8 @@ static SDValue lowerX86FPLogicOp(SDNode *N, SelectionDAG &DAG,
     MVT IntScalar = MVT::getIntegerVT(VT.getScalarSizeInBits());
     MVT IntVT = MVT::getVectorVT(IntScalar, VT.getVectorNumElements());
 
-    SDValue Op0 = DAG.getNode(ISD::BITCAST, dl, IntVT, N->getOperand(0));
-    SDValue Op1 = DAG.getNode(ISD::BITCAST, dl, IntVT, N->getOperand(1));
+    SDValue Op0 = DAG.getBitcast(IntVT, N->getOperand(0));
+    SDValue Op1 = DAG.getBitcast(IntVT, N->getOperand(1));
     unsigned IntOpcode = 0;
     switch (N->getOpcode()) {
       default: llvm_unreachable("Unexpected FP logic op");
@@ -28017,13 +28054,13 @@ static SDValue lowerX86FPLogicOp(SDNode *N, SelectionDAG &DAG,
       case X86ISD::FANDN: IntOpcode = X86ISD::ANDNP; break;
     }
     SDValue IntOp = DAG.getNode(IntOpcode, dl, IntVT, Op0, Op1);
-    return  DAG.getNode(ISD::BITCAST, dl, VT, IntOp);
+    return DAG.getBitcast(VT, IntOp);
   }
   return SDValue();
 }
 /// Do target-specific dag combines on X86ISD::FOR and X86ISD::FXOR nodes.
-static SDValue PerformFORCombine(SDNode *N, SelectionDAG &DAG,
-                                 const X86Subtarget &Subtarget) {
+static SDValue combineFOr(SDNode *N, SelectionDAG &DAG,
+                          const X86Subtarget &Subtarget) {
   assert(N->getOpcode() == X86ISD::FOR || N->getOpcode() == X86ISD::FXOR);
 
   // F[X]OR(0.0, x) -> x
@@ -28040,7 +28077,7 @@ static SDValue PerformFORCombine(SDNode *N, SelectionDAG &DAG,
 }
 
 /// Do target-specific dag combines on X86ISD::FMIN and X86ISD::FMAX nodes.
-static SDValue PerformFMinFMaxCombine(SDNode *N, SelectionDAG &DAG) {
+static SDValue combineFMinFMax(SDNode *N, SelectionDAG &DAG) {
   assert(N->getOpcode() == X86ISD::FMIN || N->getOpcode() == X86ISD::FMAX);
 
   // Only perform optimizations if UnsafeMath is used.
@@ -28060,8 +28097,8 @@ static SDValue PerformFMinFMaxCombine(SDNode *N, SelectionDAG &DAG) {
                      N->getOperand(0), N->getOperand(1));
 }
 
-static SDValue performFMinNumFMaxNumCombine(SDNode *N, SelectionDAG &DAG,
-                                            const X86Subtarget &Subtarget) {
+static SDValue combineFMinNumFMaxNum(SDNode *N, SelectionDAG &DAG,
+                                     const X86Subtarget &Subtarget) {
   if (Subtarget.useSoftFloat())
     return SDValue();
 
@@ -28117,8 +28154,8 @@ static SDValue performFMinNumFMaxNumCombine(SDNode *N, SelectionDAG &DAG,
 }
 
 /// Do target-specific dag combines on X86ISD::FAND nodes.
-static SDValue PerformFANDCombine(SDNode *N, SelectionDAG &DAG,
-                                  const X86Subtarget &Subtarget) {
+static SDValue combineFAnd(SDNode *N, SelectionDAG &DAG,
+                           const X86Subtarget &Subtarget) {
   // FAND(0.0, x) -> 0.0
   if (ConstantFPSDNode *C = dyn_cast<ConstantFPSDNode>(N->getOperand(0)))
     if (C->getValueAPF().isPosZero())
@@ -28133,8 +28170,8 @@ static SDValue PerformFANDCombine(SDNode *N, SelectionDAG &DAG,
 }
 
 /// Do target-specific dag combines on X86ISD::FANDN nodes
-static SDValue PerformFANDNCombine(SDNode *N, SelectionDAG &DAG,
-                                   const X86Subtarget &Subtarget) {
+static SDValue combineFAndn(SDNode *N, SelectionDAG &DAG,
+                            const X86Subtarget &Subtarget) {
   // FANDN(0.0, x) -> x
   if (ConstantFPSDNode *C = dyn_cast<ConstantFPSDNode>(N->getOperand(0)))
     if (C->getValueAPF().isPosZero())
@@ -28148,9 +28185,8 @@ static SDValue PerformFANDNCombine(SDNode *N, SelectionDAG &DAG,
   return lowerX86FPLogicOp(N, DAG, Subtarget);
 }
 
-static SDValue PerformBTCombine(SDNode *N,
-                                SelectionDAG &DAG,
-                                TargetLowering::DAGCombinerInfo &DCI) {
+static SDValue combineBT(SDNode *N, SelectionDAG &DAG,
+                         TargetLowering::DAGCombinerInfo &DCI) {
   // BT ignores high bits in the bit index operand.
   SDValue Op1 = N->getOperand(1);
   if (Op1.hasOneUse()) {
@@ -28167,7 +28203,7 @@ static SDValue PerformBTCombine(SDNode *N,
   return SDValue();
 }
 
-static SDValue PerformVZEXT_MOVLCombine(SDNode *N, SelectionDAG &DAG) {
+static SDValue combineVZextMovl(SDNode *N, SelectionDAG &DAG) {
   SDValue Op = N->getOperand(0);
   if (Op.getOpcode() == ISD::BITCAST)
     Op = Op.getOperand(0);
@@ -28175,13 +28211,13 @@ static SDValue PerformVZEXT_MOVLCombine(SDNode *N, SelectionDAG &DAG) {
   if (Op.getOpcode() == X86ISD::VZEXT_LOAD &&
       VT.getVectorElementType().getSizeInBits() ==
       OpVT.getVectorElementType().getSizeInBits()) {
-    return DAG.getNode(ISD::BITCAST, SDLoc(N), VT, Op);
+    return DAG.getBitcast(VT, Op);
   }
   return SDValue();
 }
 
-static SDValue PerformSIGN_EXTEND_INREGCombine(SDNode *N, SelectionDAG &DAG,
-                                               const X86Subtarget &Subtarget) {
+static SDValue combineSignExtendInReg(SDNode *N, SelectionDAG &DAG,
+                                      const X86Subtarget &Subtarget) {
   EVT VT = N->getValueType(0);
   if (!VT.isVector())
     return SDValue();
@@ -28372,9 +28408,9 @@ static SDValue combineToExtendVectorInReg(SDNode *N, SelectionDAG &DAG,
   return SDValue();
 }
 
-static SDValue PerformSExtCombine(SDNode *N, SelectionDAG &DAG,
-                                  TargetLowering::DAGCombinerInfo &DCI,
-                                  const X86Subtarget &Subtarget) {
+static SDValue combineSext(SDNode *N, SelectionDAG &DAG,
+                           TargetLowering::DAGCombinerInfo &DCI,
+                           const X86Subtarget &Subtarget) {
   SDValue N0 = N->getOperand(0);
   EVT VT = N->getValueType(0);
   EVT InVT = N0.getValueType();
@@ -28406,8 +28442,8 @@ static SDValue PerformSExtCombine(SDNode *N, SelectionDAG &DAG,
   return SDValue();
 }
 
-static SDValue PerformFMACombine(SDNode *N, SelectionDAG &DAG,
-                                 const X86Subtarget &Subtarget) {
+static SDValue combineFMA(SDNode *N, SelectionDAG &DAG,
+                          const X86Subtarget &Subtarget) {
   SDLoc dl(N);
   EVT VT = N->getValueType(0);
 
@@ -28445,9 +28481,9 @@ static SDValue PerformFMACombine(SDNode *N, SelectionDAG &DAG,
   return DAG.getNode(Opcode, dl, VT, A, B, C);
 }
 
-static SDValue PerformZExtCombine(SDNode *N, SelectionDAG &DAG,
-                                  TargetLowering::DAGCombinerInfo &DCI,
-                                  const X86Subtarget &Subtarget) {
+static SDValue combineZext(SDNode *N, SelectionDAG &DAG,
+                           TargetLowering::DAGCombinerInfo &DCI,
+                           const X86Subtarget &Subtarget) {
   // (i32 zext (and (i8  x86isd::setcc_carry), 1)) ->
   //           (and (i32 x86isd::setcc_carry), 1)
   // This eliminates the zext. This transformation is necessary because
@@ -28494,8 +28530,8 @@ static SDValue PerformZExtCombine(SDNode *N, SelectionDAG &DAG,
 
 /// Optimize x == -y --> x+y == 0
 ///          x != -y --> x+y != 0
-static SDValue PerformISDSETCCCombine(SDNode *N, SelectionDAG &DAG,
-                                      const X86Subtarget &Subtarget) {
+static SDValue combineSetCC(SDNode *N, SelectionDAG &DAG,
+                            const X86Subtarget &Subtarget) {
   ISD::CondCode CC = cast<CondCodeSDNode>(N->getOperand(2))->get();
   SDValue LHS = N->getOperand(0);
   SDValue RHS = N->getOperand(1);
@@ -28553,7 +28589,7 @@ static SDValue PerformISDSETCCCombine(SDNode *N, SelectionDAG &DAG,
   return SDValue();
 }
 
-static SDValue PerformGatherScatterCombine(SDNode *N, SelectionDAG &DAG) {
+static SDValue combineGatherScatter(SDNode *N, SelectionDAG &DAG) {
   SDLoc DL(N);
   // Gather and Scatter instructions use k-registers for masks. The type of
   // the masks is v*i1. So the mask will be truncated anyway.
@@ -28567,7 +28603,7 @@ static SDValue PerformGatherScatterCombine(SDNode *N, SelectionDAG &DAG) {
   return SDValue();
 }
 
-// Helper function of PerformSETCCCombine. It is to materialize "setb reg"
+// Helper function of performSETCCCombine. It is to materialize "setb reg"
 // as "sbb reg,reg", since it can be extended without zext and produces
 // an all-ones bit which is more useful than 0/1 in some cases.
 static SDValue MaterializeSETB(SDLoc DL, SDValue EFLAGS, SelectionDAG &DAG,
@@ -28586,9 +28622,9 @@ static SDValue MaterializeSETB(SDLoc DL, SDValue EFLAGS, SelectionDAG &DAG,
 }
 
 // Optimize  RES = X86ISD::SETCC CONDCODE, EFLAG_INPUT
-static SDValue PerformSETCCCombine(SDNode *N, SelectionDAG &DAG,
-                                   TargetLowering::DAGCombinerInfo &DCI,
-                                   const X86Subtarget &Subtarget) {
+static SDValue combineX86SetCC(SDNode *N, SelectionDAG &DAG,
+                               TargetLowering::DAGCombinerInfo &DCI,
+                               const X86Subtarget &Subtarget) {
   SDLoc DL(N);
   X86::CondCode CC = X86::CondCode(N->getConstantOperandVal(0));
   SDValue EFLAGS = N->getOperand(1);
@@ -28625,11 +28661,10 @@ static SDValue PerformSETCCCombine(SDNode *N, SelectionDAG &DAG,
   return SDValue();
 }
 
-// Optimize branch condition evaluation.
-//
-static SDValue PerformBrCondCombine(SDNode *N, SelectionDAG &DAG,
-                                    TargetLowering::DAGCombinerInfo &DCI,
-                                    const X86Subtarget &Subtarget) {
+/// Optimize branch condition evaluation.
+static SDValue combineBrCond(SDNode *N, SelectionDAG &DAG,
+                             TargetLowering::DAGCombinerInfo &DCI,
+                             const X86Subtarget &Subtarget) {
   SDLoc DL(N);
   SDValue Chain = N->getOperand(0);
   SDValue Dest = N->getOperand(1);
@@ -28645,8 +28680,8 @@ static SDValue PerformBrCondCombine(SDNode *N, SelectionDAG &DAG,
   return SDValue();
 }
 
-static SDValue performVectorCompareAndMaskUnaryOpCombine(SDNode *N,
-                                                         SelectionDAG &DAG) {
+static SDValue combineVectorCompareAndMaskUnaryOp(SDNode *N,
+                                                  SelectionDAG &DAG) {
   // Take advantage of vector comparisons producing 0 or -1 in each lane to
   // optimize away operation when it's from a constant.
   //
@@ -28691,8 +28726,8 @@ static SDValue performVectorCompareAndMaskUnaryOpCombine(SDNode *N,
   return SDValue();
 }
 
-static SDValue PerformUINT_TO_FPCombine(SDNode *N, SelectionDAG &DAG,
-                                        const X86Subtarget &Subtarget) {
+static SDValue combineUIntToFP(SDNode *N, SelectionDAG &DAG,
+                               const X86Subtarget &Subtarget) {
   SDValue Op0 = N->getOperand(0);
   EVT VT = N->getValueType(0);
   EVT InVT = Op0.getValueType();
@@ -28716,11 +28751,11 @@ static SDValue PerformUINT_TO_FPCombine(SDNode *N, SelectionDAG &DAG,
   return SDValue();
 }
 
-static SDValue PerformSINT_TO_FPCombine(SDNode *N, SelectionDAG &DAG,
-                                        const X86Subtarget &Subtarget) {
+static SDValue combineSIntToFP(SDNode *N, SelectionDAG &DAG,
+                               const X86Subtarget &Subtarget) {
   // First try to optimize away the conversion entirely when it's
   // conditionally from a constant. Vectors only.
-  if (SDValue Res = performVectorCompareAndMaskUnaryOpCombine(N, DAG))
+  if (SDValue Res = combineVectorCompareAndMaskUnaryOp(N, DAG))
     return Res;
 
   // Now move on to more general possibilities.
@@ -28762,8 +28797,8 @@ static SDValue PerformSINT_TO_FPCombine(SDNode *N, SelectionDAG &DAG,
 }
 
 // Optimize RES, EFLAGS = X86ISD::ADC LHS, RHS, EFLAGS
-static SDValue PerformADCCombine(SDNode *N, SelectionDAG &DAG,
-                                 X86TargetLowering::DAGCombinerInfo &DCI) {
+static SDValue combineADC(SDNode *N, SelectionDAG &DAG,
+                          X86TargetLowering::DAGCombinerInfo &DCI) {
   // If the LHS and RHS of the ADC node are zero, then it can't overflow and
   // the result is either zero or one (depending on the input carry bit).
   // Strength reduce this down to a "set on carry" aka SETCC_CARRY&1.
@@ -28828,8 +28863,8 @@ static SDValue OptimizeConditionalInDecrement(SDNode *N, SelectionDAG &DAG) {
                      DAG.getConstant(0, DL, OtherVal.getValueType()), NewCmp);
 }
 
-static SDValue PerformAddCombine(SDNode *N, SelectionDAG &DAG,
-                                 const X86Subtarget &Subtarget) {
+static SDValue combineAdd(SDNode *N, SelectionDAG &DAG,
+                          const X86Subtarget &Subtarget) {
   EVT VT = N->getValueType(0);
   SDValue Op0 = N->getOperand(0);
   SDValue Op1 = N->getOperand(1);
@@ -28843,8 +28878,8 @@ static SDValue PerformAddCombine(SDNode *N, SelectionDAG &DAG,
   return OptimizeConditionalInDecrement(N, DAG);
 }
 
-static SDValue PerformSubCombine(SDNode *N, SelectionDAG &DAG,
-                                 const X86Subtarget &Subtarget) {
+static SDValue combineSub(SDNode *N, SelectionDAG &DAG,
+                          const X86Subtarget &Subtarget) {
   SDValue Op0 = N->getOperand(0);
   SDValue Op1 = N->getOperand(1);
 
@@ -28876,9 +28911,9 @@ static SDValue PerformSubCombine(SDNode *N, SelectionDAG &DAG,
   return OptimizeConditionalInDecrement(N, DAG);
 }
 
-static SDValue performVZEXTCombine(SDNode *N, SelectionDAG &DAG,
-                                   TargetLowering::DAGCombinerInfo &DCI,
-                                   const X86Subtarget &Subtarget) {
+static SDValue combineVZext(SDNode *N, SelectionDAG &DAG,
+                            TargetLowering::DAGCombinerInfo &DCI,
+                            const X86Subtarget &Subtarget) {
   SDLoc DL(N);
   MVT VT = N->getSimpleValueType(0);
   SDValue Op = N->getOperand(0);
@@ -28940,7 +28975,7 @@ static SDValue performVZEXTCombine(SDNode *N, SelectionDAG &DAG,
 }
 
 /// Canonicalize (LSUB p, 1) -> (LADD p, -1).
-static SDValue performLSUBCombine(SDNode *N, SelectionDAG &DAG,
+static SDValue combineLockSub(SDNode *N, SelectionDAG &DAG,
                                   const X86Subtarget &Subtarget) {
   SDValue Chain = N->getOperand(0);
   SDValue LHS = N->getOperand(1);
@@ -28964,54 +28999,50 @@ SDValue X86TargetLowering::PerformDAGCombine(SDNode *N,
   SelectionDAG &DAG = DCI.DAG;
   switch (N->getOpcode()) {
   default: break;
-  case ISD::EXTRACT_VECTOR_ELT:
-    return PerformEXTRACT_VECTOR_ELTCombine(N, DAG, DCI);
+  case ISD::EXTRACT_VECTOR_ELT: return combineExtractVectorElt(N, DAG, DCI);
   case ISD::VSELECT:
   case ISD::SELECT:
-  case X86ISD::SHRUNKBLEND:
-    return PerformSELECTCombine(N, DAG, DCI, Subtarget);
-  case ISD::BITCAST:        return PerformBITCASTCombine(N, DAG, Subtarget);
-  case X86ISD::CMOV:        return PerformCMOVCombine(N, DAG, DCI, Subtarget);
-  case ISD::ADD:            return PerformAddCombine(N, DAG, Subtarget);
-  case ISD::SUB:            return PerformSubCombine(N, DAG, Subtarget);
-  case X86ISD::ADC:         return PerformADCCombine(N, DAG, DCI);
-  case ISD::MUL:            return PerformMulCombine(N, DAG, DCI);
+  case X86ISD::SHRUNKBLEND: return combineSelect(N, DAG, DCI, Subtarget);
+  case ISD::BITCAST:        return combineBitcast(N, DAG, Subtarget);
+  case X86ISD::CMOV:        return combineCMov(N, DAG, DCI, Subtarget);
+  case ISD::ADD:            return combineAdd(N, DAG, Subtarget);
+  case ISD::SUB:            return combineSub(N, DAG, Subtarget);
+  case X86ISD::ADC:         return combineADC(N, DAG, DCI);
+  case ISD::MUL:            return combineMul(N, DAG, DCI);
   case ISD::SHL:
   case ISD::SRA:
-  case ISD::SRL:            return PerformShiftCombine(N, DAG, DCI, Subtarget);
-  case ISD::AND:            return PerformAndCombine(N, DAG, DCI, Subtarget);
-  case ISD::OR:             return PerformOrCombine(N, DAG, DCI, Subtarget);
-  case ISD::XOR:            return PerformXorCombine(N, DAG, DCI, Subtarget);
-  case ISD::LOAD:           return PerformLOADCombine(N, DAG, DCI, Subtarget);
-  case ISD::MLOAD:          return PerformMLOADCombine(N, DAG, DCI, Subtarget);
-  case ISD::STORE:          return PerformSTORECombine(N, DAG, Subtarget);
-  case ISD::MSTORE:         return PerformMSTORECombine(N, DAG, Subtarget);
-  case ISD::SINT_TO_FP:     return PerformSINT_TO_FPCombine(N, DAG, Subtarget);
-  case ISD::UINT_TO_FP:     return PerformUINT_TO_FPCombine(N, DAG, Subtarget);
+  case ISD::SRL:            return combineShift(N, DAG, DCI, Subtarget);
+  case ISD::AND:            return combineAnd(N, DAG, DCI, Subtarget);
+  case ISD::OR:             return combineOr(N, DAG, DCI, Subtarget);
+  case ISD::XOR:            return combineXor(N, DAG, DCI, Subtarget);
+  case ISD::LOAD:           return combineLoad(N, DAG, DCI, Subtarget);
+  case ISD::MLOAD:          return combineMaskedLoad(N, DAG, DCI, Subtarget);
+  case ISD::STORE:          return combineStore(N, DAG, Subtarget);
+  case ISD::MSTORE:         return combineMaskedStore(N, DAG, Subtarget);
+  case ISD::SINT_TO_FP:     return combineSIntToFP(N, DAG, Subtarget);
+  case ISD::UINT_TO_FP:     return combineUIntToFP(N, DAG, Subtarget);
   case ISD::FADD:
-  case ISD::FSUB:           return performFaddFsubCombine(N, DAG, Subtarget);
-  case ISD::FNEG:           return PerformFNEGCombine(N, DAG, Subtarget);
-  case ISD::TRUNCATE:       return PerformTRUNCATECombine(N, DAG, Subtarget);
+  case ISD::FSUB:           return combineFaddFsub(N, DAG, Subtarget);
+  case ISD::FNEG:           return combineFneg(N, DAG, Subtarget);
+  case ISD::TRUNCATE:       return combineTruncate(N, DAG, Subtarget);
   case X86ISD::FXOR:
-  case X86ISD::FOR:         return PerformFORCombine(N, DAG, Subtarget);
+  case X86ISD::FOR:         return combineFOr(N, DAG, Subtarget);
   case X86ISD::FMIN:
-  case X86ISD::FMAX:        return PerformFMinFMaxCombine(N, DAG);
+  case X86ISD::FMAX:        return combineFMinFMax(N, DAG);
   case ISD::FMINNUM:
-  case ISD::FMAXNUM:        return performFMinNumFMaxNumCombine(N, DAG,
-                                                                Subtarget);
-  case X86ISD::FAND:        return PerformFANDCombine(N, DAG, Subtarget);
-  case X86ISD::FANDN:       return PerformFANDNCombine(N, DAG, Subtarget);
-  case X86ISD::BT:          return PerformBTCombine(N, DAG, DCI);
-  case X86ISD::VZEXT_MOVL:  return PerformVZEXT_MOVLCombine(N, DAG);
+  case ISD::FMAXNUM:        return combineFMinNumFMaxNum(N, DAG, Subtarget);
+  case X86ISD::FAND:        return combineFAnd(N, DAG, Subtarget);
+  case X86ISD::FANDN:       return combineFAndn(N, DAG, Subtarget);
+  case X86ISD::BT:          return combineBT(N, DAG, DCI);
+  case X86ISD::VZEXT_MOVL:  return combineVZextMovl(N, DAG);
   case ISD::ANY_EXTEND:
-  case ISD::ZERO_EXTEND:    return PerformZExtCombine(N, DAG, DCI, Subtarget);
-  case ISD::SIGN_EXTEND:    return PerformSExtCombine(N, DAG, DCI, Subtarget);
-  case ISD::SIGN_EXTEND_INREG:
-    return PerformSIGN_EXTEND_INREGCombine(N, DAG, Subtarget);
-  case ISD::SETCC:          return PerformISDSETCCCombine(N, DAG, Subtarget);
-  case X86ISD::SETCC:       return PerformSETCCCombine(N, DAG, DCI, Subtarget);
-  case X86ISD::BRCOND:      return PerformBrCondCombine(N, DAG, DCI, Subtarget);
-  case X86ISD::VZEXT:       return performVZEXTCombine(N, DAG, DCI, Subtarget);
+  case ISD::ZERO_EXTEND:    return combineZext(N, DAG, DCI, Subtarget);
+  case ISD::SIGN_EXTEND:    return combineSext(N, DAG, DCI, Subtarget);
+  case ISD::SIGN_EXTEND_INREG: return combineSignExtendInReg(N, DAG, Subtarget);
+  case ISD::SETCC:          return combineSetCC(N, DAG, Subtarget);
+  case X86ISD::SETCC:       return combineX86SetCC(N, DAG, DCI, Subtarget);
+  case X86ISD::BRCOND:      return combineBrCond(N, DAG, DCI, Subtarget);
+  case X86ISD::VZEXT:       return combineVZext(N, DAG, DCI, Subtarget);
   case X86ISD::SHUFP:       // Handle all target specific shuffles
   case X86ISD::INSERTPS:
   case X86ISD::PALIGNR:
@@ -29031,11 +29062,11 @@ SDValue X86TargetLowering::PerformDAGCombine(SDNode *N,
   case X86ISD::MOVSD:
   case X86ISD::VPERMILPI:
   case X86ISD::VPERM2X128:
-  case ISD::VECTOR_SHUFFLE: return PerformShuffleCombine(N, DAG, DCI,Subtarget);
-  case ISD::FMA:            return PerformFMACombine(N, DAG, Subtarget);
+  case ISD::VECTOR_SHUFFLE: return combineShuffle(N, DAG, DCI,Subtarget);
+  case ISD::FMA:            return combineFMA(N, DAG, Subtarget);
   case ISD::MGATHER:
-  case ISD::MSCATTER:       return PerformGatherScatterCombine(N, DAG);
-  case X86ISD::LSUB:        return performLSUBCombine(N, DAG, Subtarget);
+  case ISD::MSCATTER:       return combineGatherScatter(N, DAG);
+  case X86ISD::LSUB:        return combineLockSub(N, DAG, Subtarget);
   }
 
   return SDValue();

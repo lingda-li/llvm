@@ -7176,6 +7176,22 @@ SDValue DAGCombiner::visitTRUNCATE(SDNode *N) {
     }
   }
 
+  // Fold truncate of a bitcast of a vector to an extract of the low vector
+  // element.
+  //
+  // e.g. trunc (i64 (bitcast v2i32:x)) -> extract_vector_elt v2i32:x, 0
+  if (N0.getOpcode() == ISD::BITCAST && !VT.isVector()) {
+    SDValue VecSrc = N0.getOperand(0);
+    EVT SrcVT = VecSrc.getValueType();
+    if (SrcVT.isVector() && SrcVT.getScalarType() == VT) {
+      SDLoc SL(N);
+
+      EVT IdxVT = TLI.getVectorIdxTy(DAG.getDataLayout());
+      return DAG.getNode(ISD::EXTRACT_VECTOR_ELT, SL, VT,
+                         VecSrc, DAG.getConstant(0, SL, IdxVT));
+    }
+  }
+
   // Simplify the operands using demanded-bits information.
   if (!VT.isVector() &&
       SimplifyDemandedBits(SDValue(N, 0)))
@@ -12182,7 +12198,7 @@ SDValue DAGCombiner::visitEXTRACT_VECTOR_ELT(SDNode *N) {
 
   // extract_vector_elt (v2i32 (bitcast i64:x)), 0 -> i32 (trunc i64:x)
   if (ConstEltNo && InVec.getOpcode() == ISD::BITCAST && InVec.hasOneUse() &&
-      ConstEltNo->isNullValue()) {
+      ConstEltNo->isNullValue() && VT.isInteger()) {
     SDValue BCSrc = InVec.getOperand(0);
     if (BCSrc.getValueType().isScalarInteger())
       return DAG.getNode(ISD::TRUNCATE, SDLoc(N), NVT, BCSrc);
@@ -14159,7 +14175,8 @@ SDValue DAGCombiner::SimplifySelectCC(SDLoc DL, SDValue N0, SDValue N1,
           Temp = DAG.getZeroExtendInReg(SCC, SDLoc(N2),
                                         N2.getValueType());
         else
-          Temp = DAG.getZExtOrTrunc(SCC, SDLoc(N2), N2.getValueType());
+          Temp = DAG.getNode(ISD::ZERO_EXTEND, SDLoc(N2),
+                             N2.getValueType(), SCC);
       } else {
         SCC  = DAG.getSetCC(SDLoc(N0), MVT::i1, N0, N1, CC);
         Temp = DAG.getNode(ISD::ZERO_EXTEND, SDLoc(N2),
