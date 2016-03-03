@@ -3645,6 +3645,26 @@ bool MatchingStackOffset(SDValue Arg, unsigned Offset, ISD::ArgFlagsTy Flags,
                          MachineFrameInfo *MFI, const MachineRegisterInfo *MRI,
                          const X86InstrInfo *TII, const CCValAssign &VA) {
   unsigned Bytes = Arg.getValueType().getSizeInBits() / 8;
+
+  for (;;) {
+    // Look through nodes that don't alter the bits of the incoming value.
+    unsigned Op = Arg.getOpcode();
+    if (Op == ISD::ZERO_EXTEND || Op == ISD::ANY_EXTEND || Op == ISD::BITCAST) {
+      Arg = Arg.getOperand(0);
+      continue;
+    }
+    if (Op == ISD::TRUNCATE) {
+      const SDValue &TruncInput = Arg.getOperand(0);
+      if (TruncInput.getOpcode() == ISD::AssertZext &&
+          cast<VTSDNode>(TruncInput.getOperand(1))->getVT() ==
+              Arg.getValueType()) {
+        Arg = TruncInput.getOperand(0);
+        continue;
+      }
+    }
+    break;
+  }
+
   int FI = INT_MAX;
   if (Arg.getOpcode() == ISD::CopyFromReg) {
     unsigned VR = cast<RegisterSDNode>(Arg.getOperand(1))->getReg();
@@ -16378,8 +16398,9 @@ SDValue
 X86TargetLowering::LowerDYNAMIC_STACKALLOC(SDValue Op,
                                            SelectionDAG &DAG) const {
   MachineFunction &MF = DAG.getMachineFunction();
-  const Function *F = MF.getFunction();
   bool SplitStack = MF.shouldSplitStack();
+  bool Lower = (Subtarget.isOSWindows() && !Subtarget.isTargetMachO()) ||
+               SplitStack;
   SDLoc dl(Op);
 
   // Get the inputs.
@@ -16393,45 +16414,21 @@ X86TargetLowering::LowerDYNAMIC_STACKALLOC(SDValue Op,
   // pointer when other instructions are using the stack.
   Chain = DAG.getCALLSEQ_START(Chain, DAG.getIntPtrConstant(0, dl, true), dl);
 
-  const X86RegisterInfo *RegInfo = Subtarget.getRegisterInfo();
   bool Is64Bit = Subtarget.is64Bit();
   MVT SPTy = getPointerTy(DAG.getDataLayout());
 
-  bool CheckStack = SplitStack;
-  if (!CheckStack && Subtarget.isOSWindows() && !Subtarget.isTargetMachO()) {
-    // The Windows ABI requires us to probe the stack for allocations beyond
-    // the probe size.
-    if (auto *SizeC = dyn_cast<ConstantSDNode>(Size)) {
-      // Try to elide the probe if we can prove that this dynamic allocation is
-      // smaller than the probe size.
-      unsigned StackProbeSize = 4096;
-      if (F->hasFnAttribute("stack-probe-size"))
-        F->getFnAttribute("stack-probe-size")
-            .getValueAsString()
-            .getAsInteger(0, StackProbeSize);
-      unsigned AlignedAlloc = SizeC->getZExtValue();
-      // Round the dynamic alloca's size up to it's alignment.
-      if (Align)
-        AlignedAlloc = alignTo(AlignedAlloc, Align);
-
-      // If the aligned allocation is smaller than the probe size, then we don't
-      // need to probe the stack.
-      CheckStack = AlignedAlloc >= StackProbeSize;
-    } else {
-      // We cannot tell how big this dynamic alloca will be, probe the stack.
-      CheckStack = true;
-    }
-  }
-
   SDValue Result;
-  if (!CheckStack) {
+  if (!Lower) {
     const TargetLowering &TLI = DAG.getTargetLoweringInfo();
     unsigned SPReg = TLI.getStackPointerRegisterToSaveRestore();
     assert(SPReg && "Target cannot require DYNAMIC_STACKALLOC expansion and"
                     " not tell us which reg is the stack pointer!");
+    EVT VT = Node->getValueType(0);
+    SDValue Tmp3 = Node->getOperand(2);
 
     SDValue SP = DAG.getCopyFromReg(Chain, dl, SPReg, VT);
     Chain = SP.getValue(1);
+    unsigned Align = cast<ConstantSDNode>(Tmp3)->getZExtValue();
     const TargetFrameLowering &TFI = *Subtarget.getFrameLowering();
     unsigned StackAlign = TFI.getStackAlignment();
     Result = DAG.getNode(ISD::SUB, dl, VT, SP, Size); // Value
@@ -16445,6 +16442,8 @@ X86TargetLowering::LowerDYNAMIC_STACKALLOC(SDValue Op,
     if (Is64Bit) {
       // The 64 bit implementation of segmented stacks needs to clobber both r10
       // r11. This makes it impossible to use it along with nested parameters.
+      const Function *F = MF.getFunction();
+
       for (Function::const_arg_iterator I = F->arg_begin(), E = F->arg_end();
            I != E; ++I)
         if (I->hasNestAttr())
@@ -16467,6 +16466,7 @@ X86TargetLowering::LowerDYNAMIC_STACKALLOC(SDValue Op,
 
     Chain = DAG.getNode(X86ISD::WIN_ALLOCA, dl, NodeTys, Chain, Flag);
 
+    const X86RegisterInfo *RegInfo = Subtarget.getRegisterInfo();
     unsigned SPReg = RegInfo->getStackRegister();
     SDValue SP = DAG.getCopyFromReg(Chain, dl, SPReg, SPTy);
     Chain = SP.getValue(1);
@@ -18254,6 +18254,10 @@ unsigned X86TargetLowering::getExceptionSelectorRegister(
   // Funclet personalities don't use selectors (the runtime does the selection).
   assert(!isFuncletEHPersonality(classifyEHPersonality(PersonalityFn)));
   return Subtarget.isTarget64BitLP64() ? X86::RDX : X86::EDX;
+}
+
+bool X86TargetLowering::needsFixedCatchObjects() const {
+  return Subtarget.isTargetWin64();
 }
 
 SDValue X86TargetLowering::LowerEH_RETURN(SDValue Op, SelectionDAG &DAG) const {
