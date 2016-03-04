@@ -1032,6 +1032,10 @@ public:
   template <unsigned Bits> bool isConstantSImm() const {
     return isConstantImm() && isInt<Bits>(getConstantImm());
   }
+  template <unsigned Bottom, unsigned Top> bool isConstantUImmRange() const {
+    return isConstantImm() && getConstantImm() >= Bottom &&
+           getConstantImm() <= Top;
+  }
   bool isToken() const override {
     // Note: It's not possible to pretend that other operand kinds are tokens.
     // The matcher emitter checks tokens first.
@@ -2555,7 +2559,8 @@ bool MipsAsmParser::expandBranchImm(MCInst &Inst, SMLoc IDLoc,
   assert(ImmOp.isImm() && "expected immediate operand kind");
 
   const MCOperand &MemOffsetOp = Inst.getOperand(2);
-  assert(MemOffsetOp.isImm() && "expected immediate operand kind");
+  assert((MemOffsetOp.isImm() || MemOffsetOp.isExpr()) &&
+         "expected immediate or expression operand");
 
   unsigned OpCode = 0;
   switch(Inst.getOpcode()) {
@@ -3749,6 +3754,9 @@ bool MipsAsmParser::MatchAndEmitInstruction(SMLoc IDLoc, unsigned &Opcode,
   case Match_UImm5_Lsl2:
     return Error(RefineErrorLoc(IDLoc, Operands, ErrorInfo),
                  "expected both 7-bit unsigned immediate and multiple of 4");
+  case Match_UImmRange2_64:
+    return Error(RefineErrorLoc(IDLoc, Operands, ErrorInfo),
+                 "expected immediate in range 2 .. 64");
   case Match_UImm6_0:
     return Error(RefineErrorLoc(IDLoc, Operands, ErrorInfo),
                  "expected 6-bit unsigned immediate");
@@ -3768,6 +3776,9 @@ bool MipsAsmParser::MatchAndEmitInstruction(SMLoc IDLoc, unsigned &Opcode,
   case Match_UImm16_Relaxed:
     return Error(RefineErrorLoc(IDLoc, Operands, ErrorInfo),
                  "expected 16-bit unsigned immediate");
+  case Match_UImm20_0:
+    return Error(RefineErrorLoc(IDLoc, Operands, ErrorInfo),
+                 "expected 20-bit unsigned immediate");
   }
 
   llvm_unreachable("Implement any new match types added!");

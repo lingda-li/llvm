@@ -127,12 +127,7 @@ bool AArch64FrameLowering::canUseRedZone(const MachineFunction &MF) const {
   const AArch64FunctionInfo *AFI = MF.getInfo<AArch64FunctionInfo>();
   unsigned NumBytes = AFI->getLocalStackSize();
 
-  // Note: currently hasFP() is always true for hasCalls(), but that's an
-  // implementation detail of the current code, not a strict requirement,
-  // so stay safe here and check both.
-  if (MFI->hasCalls() || hasFP(MF) || NumBytes > 128)
-    return false;
-  return true;
+  return !(MFI->hasCalls() || hasFP(MF) || NumBytes > 128);
 }
 
 /// hasFP - Return true if the specified function should have a dedicated frame
@@ -140,9 +135,12 @@ bool AArch64FrameLowering::canUseRedZone(const MachineFunction &MF) const {
 bool AArch64FrameLowering::hasFP(const MachineFunction &MF) const {
   const MachineFrameInfo *MFI = MF.getFrameInfo();
   const TargetRegisterInfo *RegInfo = MF.getSubtarget().getRegisterInfo();
-  return (MFI->hasCalls() || MFI->hasVarSizedObjects() ||
-          MFI->isFrameAddressTaken() || MFI->hasStackMap() ||
-          MFI->hasPatchPoint() || RegInfo->needsStackRealignment(MF));
+  // Retain behavior of always omitting the FP for leaf functions when possible.
+  return (MFI->hasCalls() &&
+          MF.getTarget().Options.DisableFramePointerElim(MF)) ||
+         MFI->hasVarSizedObjects() || MFI->isFrameAddressTaken() ||
+         MFI->hasStackMap() || MFI->hasPatchPoint() ||
+         RegInfo->needsStackRealignment(MF);
 }
 
 /// hasReservedCallFrame - Under normal circumstances, when a frame pointer is
@@ -202,8 +200,7 @@ void AArch64FrameLowering::eliminateCallFramePseudoInstr(
 }
 
 void AArch64FrameLowering::emitCalleeSavedFrameMoves(
-    MachineBasicBlock &MBB, MachineBasicBlock::iterator MBBI,
-    unsigned FramePtr) const {
+    MachineBasicBlock &MBB, MachineBasicBlock::iterator MBBI) const {
   MachineFunction &MF = *MBB.getParent();
   MachineFrameInfo *MFI = MF.getFrameInfo();
   MachineModuleInfo &MMI = MF.getMMI();
@@ -216,34 +213,13 @@ void AArch64FrameLowering::emitCalleeSavedFrameMoves(
   if (CSI.empty())
     return;
 
-  const DataLayout &TD = MF.getDataLayout();
-  bool HasFP = hasFP(MF);
-
-  // Calculate amount of bytes used for return address storing.
-  int stackGrowth = -TD.getPointerSize(0);
-
-  // Calculate offsets.
-  int64_t saveAreaOffset = (HasFP ? 2 : 1) * stackGrowth;
-  unsigned TotalSkipped = 0;
   for (const auto &Info : CSI) {
     unsigned Reg = Info.getReg();
-    int64_t Offset = MFI->getObjectOffset(Info.getFrameIdx()) -
-                     getOffsetOfLocalArea() + saveAreaOffset;
-
-    // Don't output a new CFI directive if we're re-saving the frame pointer or
-    // link register. This happens when the PrologEpilogInserter has inserted an
-    // extra "STP" of the frame pointer and link register -- the "emitPrologue"
-    // method automatically generates the directives when frame pointers are
-    // used. If we generate CFI directives for the extra "STP"s, the linker will
-    // lose track of the correct values for the frame pointer and link register.
-    if (HasFP && (FramePtr == Reg || Reg == AArch64::LR)) {
-      TotalSkipped += stackGrowth;
-      continue;
-    }
-
+    int64_t Offset =
+        MFI->getObjectOffset(Info.getFrameIdx()) - getOffsetOfLocalArea();
     unsigned DwarfReg = MRI->getDwarfRegNum(Reg, true);
-    unsigned CFIIndex = MMI.addFrameInst(MCCFIInstruction::createOffset(
-        nullptr, DwarfReg, Offset - TotalSkipped));
+    unsigned CFIIndex = MMI.addFrameInst(
+        MCCFIInstruction::createOffset(nullptr, DwarfReg, Offset));
     BuildMI(MBB, MBBI, DL, TII->get(TargetOpcode::CFI_INSTRUCTION))
         .addCFIIndex(CFIIndex)
         .setMIFlags(MachineInstr::FrameSetup);
@@ -512,21 +488,6 @@ void AArch64FrameLowering::emitPrologue(MachineFunction &MF,
       BuildMI(MBB, MBBI, DL, TII->get(TargetOpcode::CFI_INSTRUCTION))
           .addCFIIndex(CFIIndex)
           .setMIFlags(MachineInstr::FrameSetup);
-
-      // Record the location of the stored LR
-      unsigned LR = RegInfo->getDwarfRegNum(AArch64::LR, true);
-      CFIIndex = MMI.addFrameInst(
-          MCCFIInstruction::createOffset(nullptr, LR, StackGrowth));
-      BuildMI(MBB, MBBI, DL, TII->get(TargetOpcode::CFI_INSTRUCTION))
-          .addCFIIndex(CFIIndex)
-          .setMIFlags(MachineInstr::FrameSetup);
-
-      // Record the location of the stored FP
-      CFIIndex = MMI.addFrameInst(
-          MCCFIInstruction::createOffset(nullptr, Reg, 2 * StackGrowth));
-      BuildMI(MBB, MBBI, DL, TII->get(TargetOpcode::CFI_INSTRUCTION))
-          .addCFIIndex(CFIIndex)
-          .setMIFlags(MachineInstr::FrameSetup);
     } else {
       // Encode the stack size of the leaf function.
       unsigned CFIIndex = MMI.addFrameInst(
@@ -536,8 +497,9 @@ void AArch64FrameLowering::emitPrologue(MachineFunction &MF,
           .setMIFlags(MachineInstr::FrameSetup);
     }
 
-    // Now emit the moves for whatever callee saved regs we have.
-    emitCalleeSavedFrameMoves(MBB, MBBI, FramePtr);
+    // Now emit the moves for whatever callee saved regs we have (including FP,
+    // LR if those are saved).
+    emitCalleeSavedFrameMoves(MBB, MBBI);
   }
 }
 

@@ -647,6 +647,9 @@ PPCTargetLowering::PPCTargetLowering(const PPCTargetMachine &TM,
       setOperationAction(ISD::SIGN_EXTEND_INREG, MVT::v2i16, Custom);
       setOperationAction(ISD::SIGN_EXTEND_INREG, MVT::v2i8, Custom);
 
+      setOperationAction(ISD::FNEG, MVT::v4f32, Legal);
+      setOperationAction(ISD::FNEG, MVT::v2f64, Legal);
+
       addRegisterClass(MVT::v2i64, &PPC::VSRCRegClass);
     }
 
@@ -6160,11 +6163,11 @@ void PPCTargetLowering::LowerFP_TO_INTForReuse(SDValue Op, ReuseLoadInfo &RLI,
                          MPI, false, false, 0);
 
   // Result is a load from the stack slot.  If loading 4 bytes, make sure to
-  // add in a bias.
+  // add in a bias on big endian.
   if (Op.getValueType() == MVT::i32 && !i32Stack) {
     FIPtr = DAG.getNode(ISD::ADD, dl, FIPtr.getValueType(), FIPtr,
                         DAG.getConstant(4, dl, FIPtr.getValueType()));
-    MPI = MPI.getWithOffset(4);
+    MPI = MPI.getWithOffset(Subtarget.isLittleEndian() ? 0 : 4);
   }
 
   RLI.Chain = Chain;

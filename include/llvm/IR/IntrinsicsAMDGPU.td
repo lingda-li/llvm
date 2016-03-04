@@ -188,6 +188,15 @@ def int_amdgcn_s_dcache_inv :
   GCCBuiltin<"__builtin_amdgcn_s_dcache_inv">,
   Intrinsic<[], [], []>;
 
+def int_amdgcn_s_memtime :
+  GCCBuiltin<"__builtin_amdgcn_s_memtime">,
+  Intrinsic<[llvm_i64_ty], [], []>;
+
+def int_amdgcn_s_sleep :
+  GCCBuiltin<"__builtin_amdgcn_s_sleep">,
+  Intrinsic<[], [llvm_i32_ty], []> {
+}
+
 def int_amdgcn_dispatch_ptr :
   GCCBuiltin<"__builtin_amdgcn_dispatch_ptr">,
   Intrinsic<[LLVMQualPointerType<llvm_i8_ty, 2>], [], [IntrNoMem]>;
@@ -245,5 +254,17 @@ def int_amdgcn_s_dcache_wb :
 def int_amdgcn_s_dcache_wb_vol :
   GCCBuiltin<"__builtin_amdgcn_s_dcache_wb_vol">,
   Intrinsic<[], [], []>;
+
+def int_amdgcn_s_memrealtime :
+  GCCBuiltin<"__builtin_amdgcn_s_memrealtime">,
+  Intrinsic<[llvm_i64_ty], [], []>;
+
+// llvm.amdgcn.ds.permute <index> <src>
+def int_amdgcn_ds_permute :
+  Intrinsic<[llvm_i32_ty], [llvm_i32_ty, llvm_i32_ty], [IntrNoMem, IntrConvergent]>;
+
+// llvm.amdgcn.ds.bpermute <index> <src>
+def int_amdgcn_ds_bpermute :
+  Intrinsic<[llvm_i32_ty], [llvm_i32_ty, llvm_i32_ty], [IntrNoMem, IntrConvergent]>;
 
 }

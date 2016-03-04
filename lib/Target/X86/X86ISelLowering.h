@@ -514,6 +514,10 @@ namespace llvm {
       LCMPXCHG8_DAG,
       LCMPXCHG16_DAG,
 
+      /// LOCK-prefixed arithmetic read-modify-write instructions.
+      /// EFLAGS, OUTCHAIN = LADD(INCHAIN, PTR, RHS)
+      LADD, LSUB, LOR, LXOR, LAND,
+
       // Load, scalar_to_vector, and zero extend.
       VZEXT_LOAD,
 
@@ -554,8 +558,8 @@ namespace llvm {
       VAARG_64
 
       // WARNING: Do not add anything in the end unless you want the node to
-      // have memop! In fact, starting from ATOMADD64_DAG all opcodes will be
-      // thought as target memory ops!
+      // have memop! In fact, starting from FIRST_TARGET_MEMORY_OPCODE all
+      // opcodes will be thought as target memory ops!
     };
   } // end namespace X86ISD
 
@@ -922,6 +926,8 @@ namespace llvm {
     /// exception typeid on entry to a landing pad.
     unsigned
     getExceptionSelectorRegister(const Constant *PersonalityFn) const override;
+
+    virtual bool needsFixedCatchObjects() const override;
 
     /// This method returns a target specific FastISel object,
     /// or null if the target does not support "fast" ISel.

@@ -455,16 +455,6 @@ void DwarfDebug::constructAndAddImportedEntityDIE(DwarfCompileUnit &TheCU,
     D->addChild(TheCU.constructImportedEntityDIE(N));
 }
 
-bool DwarfDebug::collectLocalScopedNode(DIScope *S, const DINode *N,
-                                        DwarfCompileUnit &CU) {
-  if (auto LS = dyn_cast_or_null<DILocalScope>(S)) {
-    getLocalScopes(LS->getSubprogram()).insert(LS);
-    CU.addLocalDeclNode(N, LS);
-    return true;
-  }
-  return false;
-}
-
 // Emit all Dwarf sections that should come prior to the content. Create
 // global DIEs and emit initial debug info sections. This is invoked by
 // the target AsmPrinter.
@@ -484,9 +474,10 @@ void DwarfDebug::beginModule() {
   for (MDNode *N : CU_Nodes->operands()) {
     auto *CUNode = cast<DICompileUnit>(N);
     DwarfCompileUnit &CU = constructDwarfCompileUnit(CUNode);
+    for (auto *IE : CUNode->getImportedEntities())
+      CU.addImportedEntity(IE);
     for (auto *GV : CUNode->getGlobalVariables())
-      if (!collectLocalScopedNode(GV->getScope(), GV, CU))
-        CU.getOrCreateGlobalVariableDIE(GV);
+      CU.getOrCreateGlobalVariableDIE(GV);
     for (auto *SP : CUNode->getSubprograms())
       SPMap.insert(std::make_pair(SP, &CU));
     for (auto *Ty : CUNode->getEnumTypes()) {
@@ -498,17 +489,14 @@ void DwarfDebug::beginModule() {
       // The retained types array by design contains pointers to
       // MDNodes rather than DIRefs. Unique them here.
       DIType *RT = cast<DIType>(resolve(Ty->getRef()));
-      if (RT->isExternalTypeRef())
+      if (!RT->isExternalTypeRef())
         // There is no point in force-emitting a forward declaration.
-        continue;
-      if (!collectLocalScopedNode(resolve(Ty->getScope()), RT, CU))
         CU.getOrCreateTypeDIE(RT);
     }
     // Emit imported_modules last so that the relevant context is already
     // available.
     for (auto *IE : CUNode->getImportedEntities())
-      if (!collectLocalScopedNode(IE->getScope(), IE, CU))
-        constructAndAddImportedEntityDIE(CU, IE);
+      constructAndAddImportedEntityDIE(CU, IE);
   }
 
   // Tell MMI that we have debug info.
@@ -541,11 +529,6 @@ void DwarfDebug::finishSubprogramDefinitions() {
     });
 }
 
-void DwarfDebug::finishLocalScopeDefinitions() {
-  for (const auto &I : CUMap)
-    I.second->finishLocalScopeDefinitions();
-}
-
 // Collect info for variables that were optimized out.
 void DwarfDebug::collectDeadVariables() {
   const Module *M = MMI->getModule();
@@ -570,8 +553,6 @@ void DwarfDebug::finalizeModuleInfo() {
   const TargetLoweringObjectFile &TLOF = Asm->getObjFileLowering();
 
   finishSubprogramDefinitions();
-
-  finishLocalScopeDefinitions();
 
   finishVariableDefinitions();
 
@@ -935,7 +916,7 @@ DwarfDebug::buildLocationList(SmallVectorImpl<DebugLocEntry> &DebugLoc,
     DEBUG({
       dbgs() << CurEntry->getValues().size() << " Values:\n";
       for (auto &Value : CurEntry->getValues())
-        Value.getExpression()->dump();
+        Value.dump();
       dbgs() << "-----\n";
     });
 
@@ -952,6 +933,18 @@ DbgVariable *DwarfDebug::createConcreteVariable(LexicalScope &Scope,
       make_unique<DbgVariable>(IV.first, IV.second, this));
   InfoHolder.addScopeVariable(&Scope, ConcreteVariables.back().get());
   return ConcreteVariables.back().get();
+}
+
+// Determine whether this DBG_VALUE is valid at the beginning of the function.
+static bool validAtEntry(const MachineInstr *MInsn) {
+  auto MBB = MInsn->getParent();
+  // Is it in the entry basic block?
+  if (!MBB->pred_empty())
+    return false;
+  for (MachineBasicBlock::const_reverse_iterator I(MInsn); I != MBB->rend(); ++I)
+    if (!(I->isDebugValue() || I->getFlag(MachineInstr::FrameSetup)))
+      return false;
+  return true;
 }
 
 // Find variables for each lexical scope.
@@ -986,8 +979,11 @@ void DwarfDebug::collectVariableInfo(DwarfCompileUnit &TheCU,
     const MachineInstr *MInsn = Ranges.front().first;
     assert(MInsn->isDebugValue() && "History must begin with debug value");
 
-    // Check if the first DBG_VALUE is valid for the rest of the function.
-    if (Ranges.size() == 1 && Ranges.front().second == nullptr) {
+    // Check if there is a single DBG_VALUE, valid throughout the function.
+    // A single constant is also considered valid for the entire function.
+    if (Ranges.size() == 1 &&
+        (MInsn->getOperand(0).isImm() ||
+         (validAtEntry(MInsn) && Ranges.front().second == nullptr))) {
       RegVar->initializeDbgValue(MInsn);
       continue;
     }
@@ -999,7 +995,7 @@ void DwarfDebug::collectVariableInfo(DwarfCompileUnit &TheCU,
     SmallVector<DebugLocEntry, 8> Entries;
     buildLocationList(Entries, Ranges);
 
-    // If the variable has an DIBasicType, extract it.  Basic types cannot have
+    // If the variable has a DIBasicType, extract it.  Basic types cannot have
     // unique identifiers, so don't bother resolving the type with the
     // identifier map.
     const DIBasicType *BT = dyn_cast<DIBasicType>(
@@ -1168,9 +1164,6 @@ void DwarfDebug::endFunction(const MachineFunction *MF) {
       assert(LScopes.getAbstractScopesList().size() == NumAbstractScopes
              && "ensureAbstractVariableIsCreated inserted abstract scopes");
     }
-    // Assure abstract local scope created for each one contains local DIEs.
-    for (const DILocalScope *LS : getLocalScopes(SP))
-      LScopes.getOrCreateAbstractScope(LS);
     constructAbstractSubprogramScopeDIE(AScope);
   }
 

@@ -103,6 +103,9 @@ def S_DCACHE_WB : SMEM_Inval <0x21,
 def S_DCACHE_WB_VOL : SMEM_Inval <0x23,
   "s_dcache_wb_vol", int_amdgcn_s_dcache_wb_vol>;
 
+def S_MEMREALTIME : SMEM_Ret<0x25,
+  "s_memrealtime", int_amdgcn_s_memrealtime>;
+
 } // End SIAssemblerPredicate = DisableInst, SubtargetPredicate = isVI
 
 let Predicates = [isVI] in {
@@ -114,7 +117,7 @@ def : Pat <
 >;
 
 //===----------------------------------------------------------------------===//
-// DPP Paterns
+// DPP Patterns
 //===----------------------------------------------------------------------===//
 
 def : Pat <
@@ -123,5 +126,25 @@ def : Pat <
   (V_MOV_B32_dpp $src, (as_i32imm $dpp_ctrl), (as_i1imm $bound_ctrl),
                        (as_i32imm $bank_mask), (as_i32imm $row_mask))
 >;
+
+//===----------------------------------------------------------------------===//
+// Misc Patterns
+//===----------------------------------------------------------------------===//
+
+def : Pat <
+  (i64 (readcyclecounter)),
+  (S_MEMREALTIME)
+>;
+
+//===----------------------------------------------------------------------===//
+// DS_PERMUTE/DS_BPERMUTE Instructions.
+//===----------------------------------------------------------------------===//
+
+let Uses = [EXEC] in {
+defm DS_PERMUTE_B32 : DS_1A1D_PERMUTE <0x3e, "ds_permute_b32", VGPR_32,
+                                       int_amdgcn_ds_permute>;
+defm DS_BPERMUTE_B32 : DS_1A1D_PERMUTE <0x3f, "ds_bpermute_b32", VGPR_32,
+                                       int_amdgcn_ds_bpermute>;
+}
 
 } // End Predicates = [isVI]

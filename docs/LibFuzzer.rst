@@ -82,6 +82,7 @@ The most important flags are::
   only_ascii                            0       If 1, generate only ASCII (isprint+isspace) inputs.
   artifact_prefix                       ""      Write fuzzing artifacts (crash, timeout, or slow inputs) as $(artifact_prefix)file
   exact_artifact_path                   ""      Write the single artifact on failure (crash, timeout) as $(exact_artifact_path). This overrides -artifact_prefix and will not use checksum in the file name. Do not use the same path for several parallel processes.
+  print_final_stats                     0       If 1, print statistics at exit.
 
 For the full list of flags run the fuzzer binary with ``-help=1``.
 
@@ -520,7 +521,7 @@ Trophies
 
 * `Python <http://bugs.python.org/issue25388>`_
 
-* OpenSSL/BoringSSL: `[1] <https://boringssl.googlesource.com/boringssl/+/cb852981cd61733a7a1ae4fd8755b7ff950e857d>`_
+* OpenSSL/BoringSSL: `[1] <https://boringssl.googlesource.com/boringssl/+/cb852981cd61733a7a1ae4fd8755b7ff950e857d>`_ `[2] <https://openssl.org/news/secadv/20160301.txt>`_ `[3] <https://boringssl.googlesource.com/boringssl/+/2b07fa4b22198ac02e0cee8f37f3337c3dba91bc>`_
 
 * `Libxml2
   <https://bugzilla.gnome.org/buglist.cgi?bug_status=__all__&content=libFuzzer&list_id=68957&order=Importance&product=libxml2&query_format=specific>`_

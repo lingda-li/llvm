@@ -273,6 +273,7 @@ namespace {
     SDValue visitANY_EXTEND(SDNode *N);
     SDValue visitSIGN_EXTEND_INREG(SDNode *N);
     SDValue visitSIGN_EXTEND_VECTOR_INREG(SDNode *N);
+    SDValue visitZERO_EXTEND_VECTOR_INREG(SDNode *N);
     SDValue visitTRUNCATE(SDNode *N);
     SDValue visitBITCAST(SDNode *N);
     SDValue visitBUILD_PAIR(SDNode *N);
@@ -846,9 +847,9 @@ SDValue DAGCombiner::ReassociateOps(unsigned Opc, SDLoc DL,
         return SDValue();
       }
       if (N1.hasOneUse()) {
-        // reassoc. (op y, (op x, c1)) -> (op (op x, y), c1) iff x+c1 has one
+        // reassoc. (op x, (op y, c1)) -> (op (op x, y), c1) iff x+c1 has one
         // use
-        SDValue OpNode = DAG.getNode(Opc, SDLoc(N0), VT, N1.getOperand(0), N0);
+        SDValue OpNode = DAG.getNode(Opc, SDLoc(N0), VT, N0, N1.getOperand(0));
         if (!OpNode.getNode())
           return SDValue();
         AddToWorklist(OpNode.getNode());
@@ -1396,6 +1397,7 @@ SDValue DAGCombiner::visit(SDNode *N) {
   case ISD::ANY_EXTEND:         return visitANY_EXTEND(N);
   case ISD::SIGN_EXTEND_INREG:  return visitSIGN_EXTEND_INREG(N);
   case ISD::SIGN_EXTEND_VECTOR_INREG: return visitSIGN_EXTEND_VECTOR_INREG(N);
+  case ISD::ZERO_EXTEND_VECTOR_INREG: return visitZERO_EXTEND_VECTOR_INREG(N);
   case ISD::TRUNCATE:           return visitTRUNCATE(N);
   case ISD::BITCAST:            return visitBITCAST(N);
   case ISD::BUILD_PAIR:         return visitBUILD_PAIR(N);
@@ -5715,7 +5717,8 @@ static SDNode *tryToFoldExtendOfConstant(SDNode *N, const TargetLowering &TLI,
   EVT VT = N->getValueType(0);
 
   assert((Opcode == ISD::SIGN_EXTEND || Opcode == ISD::ZERO_EXTEND ||
-         Opcode == ISD::ANY_EXTEND || Opcode == ISD::SIGN_EXTEND_VECTOR_INREG)
+         Opcode == ISD::ANY_EXTEND || Opcode == ISD::SIGN_EXTEND_VECTOR_INREG ||
+         Opcode == ISD::ZERO_EXTEND_VECTOR_INREG)
          && "Expected EXTEND dag node in input!");
 
   // fold (sext c1) -> c1
@@ -6993,6 +6996,20 @@ SDValue DAGCombiner::visitSIGN_EXTEND_VECTOR_INREG(SDNode *N) {
   return SDValue();
 }
 
+SDValue DAGCombiner::visitZERO_EXTEND_VECTOR_INREG(SDNode *N) {
+  SDValue N0 = N->getOperand(0);
+  EVT VT = N->getValueType(0);
+
+  if (N0.getOpcode() == ISD::UNDEF)
+    return DAG.getUNDEF(VT);
+
+  if (SDNode *Res = tryToFoldExtendOfConstant(N, TLI, DAG, LegalTypes,
+                                              LegalOperations))
+    return SDValue(Res, 0);
+
+  return SDValue();
+}
+
 SDValue DAGCombiner::visitTRUNCATE(SDNode *N) {
   SDValue N0 = N->getOperand(0);
   EVT VT = N->getValueType(0);
@@ -7173,6 +7190,22 @@ SDValue DAGCombiner::visitTRUNCATE(SDNode *N) {
         Opnds.push_back(NV);
       }
       return DAG.getNode(ISD::CONCAT_VECTORS, SDLoc(N), VT, Opnds);
+    }
+  }
+
+  // Fold truncate of a bitcast of a vector to an extract of the low vector
+  // element.
+  //
+  // e.g. trunc (i64 (bitcast v2i32:x)) -> extract_vector_elt v2i32:x, 0
+  if (N0.getOpcode() == ISD::BITCAST && !VT.isVector()) {
+    SDValue VecSrc = N0.getOperand(0);
+    EVT SrcVT = VecSrc.getValueType();
+    if (SrcVT.isVector() && SrcVT.getScalarType() == VT) {
+      SDLoc SL(N);
+
+      EVT IdxVT = TLI.getVectorIdxTy(DAG.getDataLayout());
+      return DAG.getNode(ISD::EXTRACT_VECTOR_ELT, SL, VT,
+                         VecSrc, DAG.getConstant(0, SL, IdxVT));
     }
   }
 
@@ -12180,6 +12213,14 @@ SDValue DAGCombiner::visitEXTRACT_VECTOR_ELT(SDNode *N) {
     // converts.
   }
 
+  // extract_vector_elt (v2i32 (bitcast i64:x)), 0 -> i32 (trunc i64:x)
+  if (ConstEltNo && InVec.getOpcode() == ISD::BITCAST && InVec.hasOneUse() &&
+      ConstEltNo->isNullValue() && VT.isInteger()) {
+    SDValue BCSrc = InVec.getOperand(0);
+    if (BCSrc.getValueType().isScalarInteger())
+      return DAG.getNode(ISD::TRUNCATE, SDLoc(N), NVT, BCSrc);
+  }
+
   // Transform: (EXTRACT_VECTOR_ELT( VECTOR_SHUFFLE )) -> EXTRACT_VECTOR_ELT.
   // We only perform this optimization before the op legalization phase because
   // we may introduce new vector instructions which are not backed by TD
@@ -13814,33 +13855,33 @@ SDValue DAGCombiner::SimplifySelect(SDLoc DL, SDValue N0,
 bool DAGCombiner::SimplifySelectOps(SDNode *TheSelect, SDValue LHS,
                                     SDValue RHS) {
 
-  // fold (select (setcc x, -0.0, *lt), NaN, (fsqrt x))
-  // The select + setcc is redundant, because fsqrt returns NaN for X < -0.
+  // fold (select (setcc x, [+-]0.0, *lt), NaN, (fsqrt x))
+  // The select + setcc is redundant, because fsqrt returns NaN for X < 0.
   if (const ConstantFPSDNode *NaN = isConstOrConstSplatFP(LHS)) {
     if (NaN->isNaN() && RHS.getOpcode() == ISD::FSQRT) {
       // We have: (select (setcc ?, ?, ?), NaN, (fsqrt ?))
       SDValue Sqrt = RHS;
       ISD::CondCode CC;
       SDValue CmpLHS;
-      const ConstantFPSDNode *NegZero = nullptr;
+      const ConstantFPSDNode *Zero = nullptr;
 
       if (TheSelect->getOpcode() == ISD::SELECT_CC) {
         CC = dyn_cast<CondCodeSDNode>(TheSelect->getOperand(4))->get();
         CmpLHS = TheSelect->getOperand(0);
-        NegZero = isConstOrConstSplatFP(TheSelect->getOperand(1));
+        Zero = isConstOrConstSplatFP(TheSelect->getOperand(1));
       } else {
         // SELECT or VSELECT
         SDValue Cmp = TheSelect->getOperand(0);
         if (Cmp.getOpcode() == ISD::SETCC) {
           CC = dyn_cast<CondCodeSDNode>(Cmp.getOperand(2))->get();
           CmpLHS = Cmp.getOperand(0);
-          NegZero = isConstOrConstSplatFP(Cmp.getOperand(1));
+          Zero = isConstOrConstSplatFP(Cmp.getOperand(1));
         }
       }
-      if (NegZero && NegZero->isNegative() && NegZero->isZero() &&
+      if (Zero && Zero->isZero() &&
           Sqrt.getOperand(0) == CmpLHS && (CC == ISD::SETOLT ||
           CC == ISD::SETULT || CC == ISD::SETLT)) {
-        // We have: (select (setcc x, -0.0, *lt), NaN, (fsqrt x))
+        // We have: (select (setcc x, [+-]0.0, *lt), NaN, (fsqrt x))
         CombineTo(TheSelect, Sqrt);
         return true;
       }
