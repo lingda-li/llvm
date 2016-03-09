@@ -273,7 +273,6 @@ namespace {
     SDValue visitANY_EXTEND(SDNode *N);
     SDValue visitSIGN_EXTEND_INREG(SDNode *N);
     SDValue visitSIGN_EXTEND_VECTOR_INREG(SDNode *N);
-    SDValue visitZERO_EXTEND_VECTOR_INREG(SDNode *N);
     SDValue visitTRUNCATE(SDNode *N);
     SDValue visitBITCAST(SDNode *N);
     SDValue visitBUILD_PAIR(SDNode *N);
@@ -1397,7 +1396,6 @@ SDValue DAGCombiner::visit(SDNode *N) {
   case ISD::ANY_EXTEND:         return visitANY_EXTEND(N);
   case ISD::SIGN_EXTEND_INREG:  return visitSIGN_EXTEND_INREG(N);
   case ISD::SIGN_EXTEND_VECTOR_INREG: return visitSIGN_EXTEND_VECTOR_INREG(N);
-  case ISD::ZERO_EXTEND_VECTOR_INREG: return visitZERO_EXTEND_VECTOR_INREG(N);
   case ISD::TRUNCATE:           return visitTRUNCATE(N);
   case ISD::BITCAST:            return visitBITCAST(N);
   case ISD::BUILD_PAIR:         return visitBUILD_PAIR(N);
@@ -5724,8 +5722,7 @@ static SDNode *tryToFoldExtendOfConstant(SDNode *N, const TargetLowering &TLI,
   EVT VT = N->getValueType(0);
 
   assert((Opcode == ISD::SIGN_EXTEND || Opcode == ISD::ZERO_EXTEND ||
-         Opcode == ISD::ANY_EXTEND || Opcode == ISD::SIGN_EXTEND_VECTOR_INREG ||
-         Opcode == ISD::ZERO_EXTEND_VECTOR_INREG)
+         Opcode == ISD::ANY_EXTEND || Opcode == ISD::SIGN_EXTEND_VECTOR_INREG)
          && "Expected EXTEND dag node in input!");
 
   // fold (sext c1) -> c1
@@ -7003,20 +7000,6 @@ SDValue DAGCombiner::visitSIGN_EXTEND_VECTOR_INREG(SDNode *N) {
   return SDValue();
 }
 
-SDValue DAGCombiner::visitZERO_EXTEND_VECTOR_INREG(SDNode *N) {
-  SDValue N0 = N->getOperand(0);
-  EVT VT = N->getValueType(0);
-
-  if (N0.getOpcode() == ISD::UNDEF)
-    return DAG.getUNDEF(VT);
-
-  if (SDNode *Res = tryToFoldExtendOfConstant(N, TLI, DAG, LegalTypes,
-                                              LegalOperations))
-    return SDValue(Res, 0);
-
-  return SDValue();
-}
-
 SDValue DAGCombiner::visitTRUNCATE(SDNode *N) {
   SDValue N0 = N->getOperand(0);
   EVT VT = N->getValueType(0);
@@ -7207,7 +7190,9 @@ SDValue DAGCombiner::visitTRUNCATE(SDNode *N) {
   if (N0.getOpcode() == ISD::BITCAST && !VT.isVector()) {
     SDValue VecSrc = N0.getOperand(0);
     EVT SrcVT = VecSrc.getValueType();
-    if (SrcVT.isVector() && SrcVT.getScalarType() == VT) {
+    if (SrcVT.isVector() && SrcVT.getScalarType() == VT &&
+        (!LegalOperations ||
+         TLI.isOperationLegal(ISD::EXTRACT_VECTOR_ELT, SrcVT))) {
       SDLoc SL(N);
 
       EVT IdxVT = TLI.getVectorIdxTy(DAG.getDataLayout());
