@@ -9730,19 +9730,19 @@ void ScalarEvolution::verify() const {
   // TODO: Verify more things.
 }
 
-template class llvm::AnalysisBase<ScalarEvolutionAnalysis>;
+char ScalarEvolutionAnalysis::PassID;
 
 ScalarEvolution ScalarEvolutionAnalysis::run(Function &F,
-                                             AnalysisManager<Function> *AM) {
-  return ScalarEvolution(F, AM->getResult<TargetLibraryAnalysis>(F),
-                         AM->getResult<AssumptionAnalysis>(F),
-                         AM->getResult<DominatorTreeAnalysis>(F),
-                         AM->getResult<LoopAnalysis>(F));
+                                             AnalysisManager<Function> &AM) {
+  return ScalarEvolution(F, AM.getResult<TargetLibraryAnalysis>(F),
+                         AM.getResult<AssumptionAnalysis>(F),
+                         AM.getResult<DominatorTreeAnalysis>(F),
+                         AM.getResult<LoopAnalysis>(F));
 }
 
 PreservedAnalyses
-ScalarEvolutionPrinterPass::run(Function &F, AnalysisManager<Function> *AM) {
-  AM->getResult<ScalarEvolutionAnalysis>(F).print(OS);
+ScalarEvolutionPrinterPass::run(Function &F, AnalysisManager<Function> &AM) {
+  AM.getResult<ScalarEvolutionAnalysis>(F).print(OS);
   return PreservedAnalyses::all();
 }
 

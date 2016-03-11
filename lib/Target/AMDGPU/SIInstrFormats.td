@@ -229,15 +229,25 @@ class SOPPe <bits<7> op> : Enc32 {
 class SMRDe <bits<5> op, bits<1> imm> : Enc32 {
   bits<7> sdst;
   bits<7> sbase;
-  bits<8> offset;
 
-  let Inst{7-0} = offset;
   let Inst{8} = imm;
   let Inst{14-9} = sbase{6-1};
   let Inst{21-15} = sdst;
   let Inst{26-22} = op;
   let Inst{31-27} = 0x18; //encoding
 }
+
+class SMRD_IMMe <bits<5> op> : SMRDe<op, 1> {
+  bits<8> offset;
+  let Inst{7-0} = offset;
+}
+
+class SMRD_SOFFe <bits<5> op> : SMRDe<op, 0> {
+  bits<8> soff;
+  let Inst{7-0} = soff;
+}
+
+
 
 class SMRD_IMMe_ci <bits<5> op> : Enc64 {
   bits<7> sdst;
@@ -435,10 +445,10 @@ class VOP3be <bits<9> op> : Enc64 {
 
 class VOPCe <bits<8> op> : Enc32 {
   bits<9> src0;
-  bits<8> vsrc1;
+  bits<8> src1;
 
   let Inst{8-0} = src0;
-  let Inst{16-9} = vsrc1;
+  let Inst{16-9} = src1;
   let Inst{24-17} = op;
   let Inst{31-25} = 0x3e;
 }

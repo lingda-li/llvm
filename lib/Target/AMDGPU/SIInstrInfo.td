@@ -1083,53 +1083,88 @@ class SMRD_Pseudo <string opName, dag outs, dag ins, list<dag> pattern> :
   let isCodeGenOnly = 1;
 }
 
-class SMRD_Real_si <bits<5> op, string opName, bit imm, dag outs, dag ins,
-                    string asm> :
+class SMRD_IMM_Real_si <bits<5> op, string opName, dag outs, dag ins,
+                        string asm> :
   SMRD <outs, ins, asm, []>,
-  SMRDe <op, imm>,
+  SMRD_IMMe <op>,
   SIMCInstr<opName, SISubtarget.SI> {
   let AssemblerPredicates = [isSICI];
   let DecoderNamespace = "SICI";
   let DisableDecoder = DisableSIDecoder;
 }
 
-class SMRD_Real_vi <bits<8> op, string opName, bit imm, dag outs, dag ins,
-                    string asm, list<dag> pattern = []> :
+class SMRD_SOFF_Real_si <bits<5> op, string opName, dag outs, dag ins,
+                         string asm> :
+  SMRD <outs, ins, asm, []>,
+  SMRD_SOFFe <op>,
+  SIMCInstr<opName, SISubtarget.SI> {
+  let AssemblerPredicates = [isSICI];
+  let DecoderNamespace = "SICI";
+  let DisableDecoder = DisableSIDecoder;
+}
+
+
+class SMRD_IMM_Real_vi <bits<8> op, string opName, dag outs, dag ins,
+                        string asm, list<dag> pattern = []> :
   SMRD <outs, ins, asm, pattern>,
-  SMEMe_vi <op, imm>,
+  SMEM_IMMe_vi <op>,
   SIMCInstr<opName, SISubtarget.VI> {
   let AssemblerPredicates = [isVI];
   let DecoderNamespace = "VI";
   let DisableDecoder = DisableVIDecoder;
 }
 
-multiclass SMRD_m <smrd op, string opName, bit imm, dag outs, dag ins,
+class SMRD_SOFF_Real_vi <bits<8> op, string opName, dag outs, dag ins,
+                         string asm, list<dag> pattern = []> :
+  SMRD <outs, ins, asm, pattern>,
+  SMEM_SOFFe_vi <op>,
+  SIMCInstr<opName, SISubtarget.VI> {
+  let AssemblerPredicates = [isVI];
+  let DecoderNamespace = "VI";
+  let DisableDecoder = DisableVIDecoder;
+}
+
+
+multiclass SMRD_IMM_m <smrd op, string opName, dag outs, dag ins,
                    string asm, list<dag> pattern> {
 
   def "" : SMRD_Pseudo <opName, outs, ins, pattern>;
 
-  def _si : SMRD_Real_si <op.SI, opName, imm, outs, ins, asm>;
+  def _si : SMRD_IMM_Real_si <op.SI, opName, outs, ins, asm>;
 
   // glc is only applicable to scalar stores, which are not yet
   // implemented.
   let glc = 0 in {
-    def _vi : SMRD_Real_vi <op.VI, opName, imm, outs, ins, asm>;
+    def _vi : SMRD_IMM_Real_vi <op.VI, opName, outs, ins, asm>;
+  }
+}
+
+multiclass SMRD_SOFF_m <smrd op, string opName, dag outs, dag ins,
+                        string asm, list<dag> pattern> {
+
+  def "" : SMRD_Pseudo <opName, outs, ins, pattern>;
+
+  def _si : SMRD_SOFF_Real_si <op.SI, opName, outs, ins, asm>;
+
+  // glc is only applicable to scalar stores, which are not yet
+  // implemented.
+  let glc = 0 in {
+    def _vi : SMRD_SOFF_Real_vi <op.VI, opName, outs, ins, asm>;
   }
 }
 
 multiclass SMRD_Special <smrd op, string opName, dag outs,
+                       int sdst_ = ?,
                        string opStr = "",
                        list<dag> pattern = []> {
   let hasSideEffects = 1 in {
     def "" : SMRD_Pseudo <opName, outs, (ins), pattern>;
 
-    let sbase = 0, offset = 0 in {
-      let sdst = 0 in {
-        def _si : SMRD_Real_si <op.SI, opName, 0, outs, (ins), opName#opStr>;
-      }
+    let sbase = 0, soff = 0, sdst = sdst_ in {
+      def _si : SMRD_SOFF_Real_si <op.SI, opName, outs, (ins), opName#opStr>;
 
-      let glc = 0, sdata = 0 in {
-        def _vi : SMRD_Real_vi <op.VI, opName, 0, outs, (ins), opName#opStr>;
+      let glc = 0 in {
+        def _vi : SMRD_SOFF_Real_vi <op.VI, opName, outs, (ins), opName#opStr>;
       }
     }
   }
@@ -1138,51 +1173,50 @@ multiclass SMRD_Special <smrd op, string opName, dag outs,
 multiclass SMRD_Inval <smrd op, string opName,
                      SDPatternOperator node> {
   let mayStore = 1 in {
-    defm : SMRD_Special<op, opName, (outs), "", [(node)]>;
+    defm : SMRD_Special<op, opName, (outs), 0, "", [(node)]>;
   }
 }
 
 class SMEM_Inval <bits<8> op, string opName, SDPatternOperator node> :
-  SMRD_Real_vi<op, opName, 0, (outs), (ins), opName, [(node)]> {
+  SMRD_SOFF_Real_vi<op, opName, (outs), (ins), opName, [(node)]> {
   let hasSideEffects = 1;
   let mayStore = 1;
   let sbase = 0;
-  let sdata = 0;
+  let sdst = 0;
   let glc = 0;
-  let offset = 0;
+  let soff = 0;
 }
 
 class SMEM_Ret <bits<8> op, string opName, SDPatternOperator node> :
-  SMRD_Real_vi<op, opName, 0, (outs SReg_64:$dst), (ins),
-  opName#" $dst", [(set i64:$dst, (node))]> {
+  SMRD_SOFF_Real_vi<op, opName, (outs SReg_64:$sdst), (ins),
+  opName#" $sdst", [(set i64:$sdst, (node))]> {
   let hasSideEffects = 1;
   let mayStore = ?;
   let mayLoad = ?;
   let sbase = 0;
-  let sdata = 0;
   let glc = 0;
-  let offset = 0;
+  let soff = 0;
 }
 
 multiclass SMRD_Helper <smrd op, string opName, RegisterClass baseClass,
                         RegisterClass dstClass> {
-  defm _IMM : SMRD_m <
-    op, opName#"_IMM", 1, (outs dstClass:$dst),
+  defm _IMM : SMRD_IMM_m <
+    op, opName#"_IMM", (outs dstClass:$sdst),
     (ins baseClass:$sbase, smrd_offset:$offset),
-    opName#" $dst, $sbase, $offset", []
+    opName#" $sdst, $sbase, $offset", []
   >;
 
   def _IMM_ci : SMRD <
-    (outs dstClass:$dst), (ins baseClass:$sbase, smrd_literal_offset:$offset),
-    opName#" $dst, $sbase, $offset", []>, SMRD_IMMe_ci <op.SI> {
+    (outs dstClass:$sdst), (ins baseClass:$sbase, smrd_literal_offset:$offset),
+    opName#" $sdst, $sbase, $offset", []>, SMRD_IMMe_ci <op.SI> {
     let AssemblerPredicates = [isCIOnly];
     let DecoderNamespace = "CI";
   }
 
-  defm _SGPR : SMRD_m <
-    op, opName#"_SGPR", 0, (outs dstClass:$dst),
+  defm _SGPR : SMRD_SOFF_m <
+    op, opName#"_SGPR", (outs dstClass:$sdst),
     (ins baseClass:$sbase, SReg_32:$soff),
-    opName#" $dst, $sbase, $soff", []
+    opName#" $sdst, $sbase, $soff", []
   >;
 }
 
@@ -1526,9 +1560,13 @@ def VOP_CNDMASK : VOPProfile <[i32, i32, i32, untyped]> {
 }
 
 def VOP_F32_F32_F32_F32 : VOPProfile <[f32, f32, f32, f32]>;
-def VOP_MADK : VOPProfile <[f32, f32, f32, f32]> {
-  field dag Ins = (ins VCSrc_32:$src0, VGPR_32:$vsrc1, u32imm:$src2);
-  field string Asm = "$vdst, $src0, $vsrc1, $src2";
+def VOP_MADAK : VOPProfile <[f32, f32, f32, f32]> {
+  field dag Ins32 = (ins VCSrc_32:$src0, VGPR_32:$vsrc1, u32imm:$k);
+  field string Asm32 = "$vdst, $src0, $vsrc1, $k";
+}
+def VOP_MADMK : VOPProfile <[f32, f32, f32, f32]> {
+  field dag Ins32 = (ins VCSrc_32:$src0, u32imm:$k, VGPR_32:$vsrc1);
+  field string Asm32 = "$vdst, $src0, $k, $vsrc1";
 }
 def VOP_MAC : VOPProfile <[f32, f32, f32, f32]> {
   let Ins32 = (ins Src0RC32:$src0, Src1RC32:$src1, VGPR_32:$src2);
@@ -2064,13 +2102,13 @@ multiclass VOP2_VI3_Inst <vop23 op, string opName, VOPProfile P,
   revOp
 >;
 
-multiclass VOP2MADK <vop2 op, string opName, list<dag> pattern = []> {
+multiclass VOP2MADK <vop2 op, string opName, VOPProfile P, list<dag> pattern = []> {
 
-  def "" : VOP2_Pseudo <VOP_MADK.Outs, VOP_MADK.Ins, pattern, opName>;
+  def "" : VOP2_Pseudo <P.Outs, P.Ins32, pattern, opName>;
 
 let isCodeGenOnly = 0 in {
-  def _si : VOP2Common <VOP_MADK.Outs, VOP_MADK.Ins,
-                        !strconcat(opName, VOP_MADK.Asm), []>,
+  def _si : VOP2Common <P.Outs, P.Ins32,
+                        !strconcat(opName, P.Asm32), []>,
             SIMCInstr <opName#"_e32", SISubtarget.SI>,
             VOP2_MADKe <op.SI> {
             let AssemblerPredicates = [isSICI];
@@ -2078,8 +2116,8 @@ let isCodeGenOnly = 0 in {
             let DisableDecoder = DisableSIDecoder;
             }
 
-  def _vi : VOP2Common <VOP_MADK.Outs, VOP_MADK.Ins,
-                        !strconcat(opName, VOP_MADK.Asm), []>,
+  def _vi : VOP2Common <P.Outs, P.Ins32,
+                        !strconcat(opName, P.Asm32), []>,
             SIMCInstr <opName#"_e32", SISubtarget.VI>,
             VOP2_MADKe <op.VI> {
             let AssemblerPredicates = [isVI];
