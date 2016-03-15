@@ -2245,7 +2245,7 @@ static void WriteInstruction(const Instruction &I, unsigned InstID,
 }
 
 /// Emit names for globals/functions etc. The VSTOffsetPlaceholder,
-/// BitcodeStartBit and FunctionIndex are only passed for the module-level
+/// BitcodeStartBit and ModuleSummaryIndex are only passed for the module-level
 /// VST, where we are including a function bitcode index and need to
 /// backpatch the VST forward declaration record.
 static void WriteValueSymbolTable(
@@ -2347,7 +2347,6 @@ static void WriteValueSymbolTable(
 
       // Save the word offset of the function (from the start of the
       // actual bitcode written to the stream).
-      assert(FunctionIndex->count(F) == 1);
       uint64_t BitcodeIndex =
           (*FunctionIndex)[F]->bitcodeIndex() - BitcodeStartBit;
       assert((BitcodeIndex & 31) == 0 && "function block not 32-bit aligned");
@@ -2380,7 +2379,7 @@ static void WriteValueSymbolTable(
 /// Emit function names and summary offsets for the combined index
 /// used by ThinLTO.
 static void
-WriteCombinedValueSymbolTable(const FunctionInfoIndex &Index,
+WriteCombinedValueSymbolTable(const ModuleSummaryIndex &Index,
                               BitstreamWriter &Stream,
                               std::map<uint64_t, unsigned> &GUIDToValueIdMap,
                               uint64_t VSTOffsetPlaceholder) {
@@ -2810,7 +2809,7 @@ static void WriteBlockInfo(const ValueEnumerator &VE, BitstreamWriter &Stream) {
 
 /// Write the module path strings, currently only used when generating
 /// a combined index file.
-static void WriteModStrings(const FunctionInfoIndex &I,
+static void WriteModStrings(const ModuleSummaryIndex &I,
                             BitstreamWriter &Stream) {
   Stream.EnterSubblock(bitc::MODULE_STRTAB_BLOCK_ID, 3);
 
@@ -2974,7 +2973,7 @@ static void WritePerModuleGlobalValueSummary(
     assert(FunctionIndex.count(&F) == 1);
 
     WritePerModuleFunctionSummaryRecord(
-        NameVals, dyn_cast<FunctionSummary>(FunctionIndex[&F]->summary()),
+        NameVals, cast<FunctionSummary>(FunctionIndex[&F]->summary()),
         VE.getValueID(M->getValueSymbolTable().lookup(F.getName())),
         FSCallsAbbrev, FSCallsProfileAbbrev, Stream, F);
   }
@@ -2988,7 +2987,7 @@ static void WritePerModuleGlobalValueSummary(
 
     assert(FunctionIndex.count(F) == 1);
     FunctionSummary *FS =
-        dyn_cast<FunctionSummary>(FunctionIndex[F]->summary());
+        cast<FunctionSummary>(FunctionIndex[F]->summary());
     // Add the alias to the reference list of aliasee function.
     FS->addRefEdge(
         VE.getValueID(M->getValueSymbolTable().lookup(A.getName())));
@@ -3002,19 +3001,16 @@ static void WritePerModuleGlobalValueSummary(
   // of a function scope.
   for (const GlobalVariable &G : M->globals())
     WriteModuleLevelReferences(G, VE, NameVals, FSModRefsAbbrev, Stream);
-  for (const GlobalAlias &A : M->aliases()) {
-    const auto *GV = dyn_cast<GlobalVariable>(A.getBaseObject());
-    if (GV)
+  for (const GlobalAlias &A : M->aliases())
+    if (auto *GV = dyn_cast<GlobalVariable>(A.getBaseObject()))
       WriteModuleLevelReferences(*GV, VE, NameVals, FSModRefsAbbrev, Stream);
-  }
 
   Stream.ExitBlock();
 }
 
-/// Emit the combined function summary section into the combined index
-/// file.
+/// Emit the combined summary section into the combined index file.
 static void WriteCombinedGlobalValueSummary(
-    const FunctionInfoIndex &I, BitstreamWriter &Stream,
+    const ModuleSummaryIndex &I, BitstreamWriter &Stream,
     std::map<uint64_t, unsigned> &GUIDToValueIdMap, unsigned GlobalValueId) {
   Stream.EnterSubblock(bitc::GLOBALVAL_SUMMARY_BLOCK_ID, 3);
 
@@ -3087,8 +3083,7 @@ static void WriteCombinedGlobalValueSummary(
         continue;
       }
 
-      auto *FS = dyn_cast<FunctionSummary>(S);
-      assert(FS);
+      auto *FS = cast<FunctionSummary>(S);
       NameVals.push_back(I.getModuleId(FS->modulePath()));
       NameVals.push_back(getEncodedLinkage(FS->linkage()));
       NameVals.push_back(FS->instCount());
@@ -3354,7 +3349,7 @@ void llvm::WriteBitcodeToFile(const Module *M, raw_ostream &Out,
 // Write the specified module summary index to the given raw output stream,
 // where it will be written in a new bitcode block. This is used when
 // writing the combined index file for ThinLTO.
-void llvm::WriteIndexToFile(const FunctionInfoIndex &Index, raw_ostream &Out) {
+void llvm::WriteIndexToFile(const ModuleSummaryIndex &Index, raw_ostream &Out) {
   SmallVector<char, 0> Buffer;
   Buffer.reserve(256 * 1024);
 

@@ -1605,8 +1605,8 @@ int BoUpSLP::getEntryCost(TreeEntry *E) {
               CInt != cast<ConstantInt>(I->getOperand(1)))
             Op2VK = TargetTransformInfo::OK_NonUniformConstantValue;
         }
-        // FIXME: Currently cost of model modification for division by
-        // power of 2 is handled only for X86. Add support for other targets.
+        // FIXME: Currently cost of model modification for division by power of
+        // 2 is handled for X86 and AArch64. Add support for other targets.
         if (Op2VK == TargetTransformInfo::OK_UniformConstantValue && CInt &&
             CInt->getValue().isPowerOf2())
           Op2VP = TargetTransformInfo::OP_PowerOf2;
@@ -4575,6 +4575,7 @@ INITIALIZE_PASS_DEPENDENCY(TargetTransformInfoWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(AssumptionCacheTracker)
 INITIALIZE_PASS_DEPENDENCY(ScalarEvolutionWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(LoopSimplify)
+INITIALIZE_PASS_DEPENDENCY(DemandedBits)
 INITIALIZE_PASS_END(SLPVectorizer, SV_NAME, lv_name, false, false)
 
 namespace llvm {
