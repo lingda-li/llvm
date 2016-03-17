@@ -390,10 +390,6 @@ ARMTargetLowering::ARMTargetLowering(const TargetMachine &TM,
       { RTLIB::SINTTOFP_I64_F64, "__i64tod", CallingConv::ARM_AAPCS_VFP },
       { RTLIB::UINTTOFP_I64_F32, "__u64tos", CallingConv::ARM_AAPCS_VFP },
       { RTLIB::UINTTOFP_I64_F64, "__u64tod", CallingConv::ARM_AAPCS_VFP },
-      { RTLIB::SDIV_I32, "__rt_sdiv",   CallingConv::ARM_AAPCS_VFP },
-      { RTLIB::UDIV_I32, "__rt_udiv",   CallingConv::ARM_AAPCS_VFP },
-      { RTLIB::SDIV_I64, "__rt_sdiv64", CallingConv::ARM_AAPCS_VFP },
-      { RTLIB::UDIV_I64, "__rt_udiv64", CallingConv::ARM_AAPCS_VFP },
     };
 
     for (const auto &LC : LibraryCalls) {
@@ -781,6 +777,14 @@ ARMTargetLowering::ARMTargetLowering(const TargetMachine &TM,
     setOperationAction(ISD::UDIV,  MVT::i32, LibCall);
   }
 
+  if (Subtarget->isTargetWindows() && !Subtarget->hasDivide()) {
+    setOperationAction(ISD::SDIV, MVT::i32, Custom);
+    setOperationAction(ISD::UDIV, MVT::i32, Custom);
+
+    setOperationAction(ISD::SDIV, MVT::i64, Custom);
+    setOperationAction(ISD::UDIV, MVT::i64, Custom);
+  }
+
   setOperationAction(ISD::SREM,  MVT::i32, Expand);
   setOperationAction(ISD::UREM,  MVT::i32, Expand);
   // Register based DivRem for AEABI (RTABI 4.2)
@@ -840,6 +844,7 @@ ARMTargetLowering::ARMTargetLowering(const TargetMachine &TM,
   // the default expansion. If we are targeting a single threaded system,
   // then set them all for expand so we can lower them later into their
   // non-atomic form.
+  InsertFencesForAtomic = false;
   if (TM.Options.ThreadModel == ThreadModel::Single)
     setOperationAction(ISD::ATOMIC_FENCE,   MVT::Other, Expand);
   else if (Subtarget->hasAnyDataBarrier() && (!Subtarget->isThumb() ||
@@ -852,7 +857,7 @@ ARMTargetLowering::ARMTargetLowering(const TargetMachine &TM,
     // if they can be combined with nearby atomic loads and stores.
     if (!Subtarget->hasV8Ops()) {
       // Automatically insert fences (dmb ish) around ATOMIC_SWAP etc.
-      setInsertFencesForAtomic(true);
+      InsertFencesForAtomic = true;
     }
   } else {
     // If there's anything we can use as a barrier, go through custom lowering
@@ -7009,8 +7014,14 @@ SDValue ARMTargetLowering::LowerOperation(SDValue Op, SelectionDAG &DAG) const {
   case ISD::CONCAT_VECTORS: return LowerCONCAT_VECTORS(Op, DAG);
   case ISD::FLT_ROUNDS_:   return LowerFLT_ROUNDS_(Op, DAG);
   case ISD::MUL:           return LowerMUL(Op, DAG);
-  case ISD::SDIV:          return LowerSDIV(Op, DAG);
-  case ISD::UDIV:          return LowerUDIV(Op, DAG);
+  case ISD::SDIV:
+    if (Subtarget->isTargetWindows())
+      return LowerDIV_Windows(Op, DAG, /* Signed */ true);
+    return LowerSDIV(Op, DAG);
+  case ISD::UDIV:
+    if (Subtarget->isTargetWindows())
+      return LowerDIV_Windows(Op, DAG, /* Signed */ false);
+    return LowerUDIV(Op, DAG);
   case ISD::ADDC:
   case ISD::ADDE:
   case ISD::SUBC:
@@ -8007,7 +8018,7 @@ ARMTargetLowering::EmitLowered__dbzchk(MachineInstr *MI,
   MF->push_back(ContBB);
   ContBB->splice(ContBB->begin(), MBB,
                  std::next(MachineBasicBlock::iterator(MI)), MBB->end());
-  MBB->addSuccessor(ContBB);
+  ContBB->transferSuccessorsAndUpdatePHIs(MBB);
 
   MachineBasicBlock *TrapBB = MF->CreateMachineBasicBlock();
   MF->push_back(TrapBB);
@@ -8017,6 +8028,7 @@ ARMTargetLowering::EmitLowered__dbzchk(MachineInstr *MI,
   BuildMI(*MBB, MI, DL, TII->get(ARM::tCBZ))
       .addReg(MI->getOperand(0).getReg())
       .addMBB(TrapBB);
+  MBB->addSuccessor(ContBB);
 
   MI->eraseFromParent();
   return ContBB;
@@ -11997,9 +12009,6 @@ Instruction* ARMTargetLowering::makeDMB(IRBuilder<> &Builder,
 Instruction* ARMTargetLowering::emitLeadingFence(IRBuilder<> &Builder,
                                          AtomicOrdering Ord, bool IsStore,
                                          bool IsLoad) const {
-  if (!getInsertFencesForAtomic())
-    return nullptr;
-
   switch (Ord) {
   case NotAtomic:
   case Unordered:
@@ -12025,9 +12034,6 @@ Instruction* ARMTargetLowering::emitLeadingFence(IRBuilder<> &Builder,
 Instruction* ARMTargetLowering::emitTrailingFence(IRBuilder<> &Builder,
                                           AtomicOrdering Ord, bool IsStore,
                                           bool IsLoad) const {
-  if (!getInsertFencesForAtomic())
-    return nullptr;
-
   switch (Ord) {
   case NotAtomic:
   case Unordered:
@@ -12079,6 +12085,11 @@ ARMTargetLowering::shouldExpandAtomicRMWInIR(AtomicRMWInst *AI) const {
 bool ARMTargetLowering::shouldExpandAtomicCmpXchgInIR(
     AtomicCmpXchgInst *AI) const {
   return true;
+}
+
+bool ARMTargetLowering::shouldInsertFencesForAtomic(
+    const Instruction *I) const {
+  return InsertFencesForAtomic;
 }
 
 // This has so far only been implemented for MachO.
