@@ -163,8 +163,7 @@ public:
   /// considered unchecked. The source error becomes a checked success value,
   /// regardless of its original state.
   Error &operator=(Error &&Other) {
-    // Move assignment shouldn't drop an existing error, but we won't complain
-    // about overwriting success.
+    // Don't allow overwriting of unchecked values.
     assertIsChecked();
     setPtr(Other.getPtr());
 
@@ -195,7 +194,7 @@ public:
 
   /// Check whether one error is a subclass of another.
   template <typename ErrT> bool isA() const {
-    return getPtr()->isA(ErrT::classID());
+    return getPtr() && getPtr()->isA(ErrT::classID());
   }
 
 private:
@@ -519,7 +518,8 @@ inline void handleAllErrors(Error E) {
 /// (allowing clean deallocation of resources, etc.), while reporting error
 /// information to the user.
 template <typename... HandlerTs>
-void logAllUnhandledErrors(Error E, raw_ostream &OS, std::string ErrorBanner) {
+void logAllUnhandledErrors(Error E, raw_ostream &OS,
+                           const std::string &ErrorBanner) {
   if (!E)
     return;
   OS << ErrorBanner;
@@ -741,6 +741,55 @@ inline std::error_code errorToErrorCode(Error Err) {
                   [&](const ECError &ECE) { EC = ECE.getErrorCode(); });
   return EC;
 }
+
+/// Helper for check-and-exit error handling.
+///
+/// For tool use only. NOT FOR USE IN LIBRARY CODE.
+///
+class ExitOnError {
+public:
+
+  /// Create an error on exit helper.
+  ExitOnError(std::string Banner = "", int DefaultErrorExitCode = 1)
+    : Banner(std::move(Banner)),
+      GetExitCode([=](const Error&) { return DefaultErrorExitCode; }) {}
+
+  /// Set the banner string for any errors caught by operator().
+  void setBanner(std::string Banner) {
+    this->Banner = std::move(Banner);
+  }
+
+  /// Set the exit-code mapper function.
+  void setExitCodeMapper(std::function<int(const Error&)> GetExitCode) {
+    this->GetExitCode = std::move(GetExitCode);
+  }
+
+  /// Check Err. If it's in a failure state log the error(s) and exit.
+  void operator()(Error Err) const {
+    checkError(std::move(Err));
+  }
+
+  /// Check E. If it's in a success state return the contained value. If it's
+  /// in a failure state log the error(s) and exit.
+  template <typename T>
+  T operator()(Expected<T> &&E) const {
+    checkError(E.takeError());
+    return std::move(*E);
+  }
+
+private:
+
+  void checkError(Error Err) const {
+    if (Err) {
+      int ExitCode = GetExitCode(Err);
+      logAllUnhandledErrors(std::move(Err), errs(), Banner);
+      exit(ExitCode);
+    }
+  }
+
+  std::string Banner;
+  std::function<int(const Error&)> GetExitCode;
+};
 
 } // namespace llvm
 
