@@ -146,11 +146,6 @@ class BitcodeReader : public GVMaterializer {
   uint64_t VSTOffset = 0;
   // Contains an arbitrary and optional string identifying the bitcode producer
   std::string ProducerIdentification;
-  // Number of module level metadata records specified by the
-  // MODULE_CODE_METADATA_VALUES record.
-  unsigned NumModuleMDs = 0;
-  // Support older bitcode without the MODULE_CODE_METADATA_VALUES record.
-  bool SeenModuleValuesRecord = false;
 
   std::vector<Type*> TypeList;
   BitcodeReaderValueList ValueList;
@@ -165,6 +160,8 @@ class BitcodeReader : public GVMaterializer {
   std::vector<std::pair<Function*, unsigned> > FunctionPersonalityFns;
 
   SmallVector<Instruction*, 64> InstsWithTBAATag;
+
+  bool HasSeenOldLoopTags = false;
 
   /// The set of attributes by index.  Index zero in the file is for null, and
   /// is thus not represented here.  As such all indices are off by one.
@@ -399,6 +396,9 @@ private:
   std::error_code globalCleanup();
   std::error_code resolveGlobalAndAliasInits();
   std::error_code parseMetadata(bool ModuleLevel = false);
+  std::error_code parseMetadataStrings(ArrayRef<uint64_t> Record,
+                                       StringRef Blob,
+                                       unsigned &NextMetadataNo);
   std::error_code parseMetadataKinds();
   std::error_code parseMetadataKindRecord(SmallVectorImpl<uint64_t> &Record);
   std::error_code parseMetadataAttachment(Function &F);
@@ -1886,25 +1886,52 @@ BitcodeReader::parseMetadataKindRecord(SmallVectorImpl<uint64_t> &Record) {
 
 static int64_t unrotateSign(uint64_t U) { return U & 1 ? ~(U >> 1) : U >> 1; }
 
+std::error_code BitcodeReader::parseMetadataStrings(ArrayRef<uint64_t> Record,
+                                                    StringRef Blob,
+                                                    unsigned &NextMetadataNo) {
+  // All the MDStrings in the block are emitted together in a single
+  // record.  The strings are concatenated and stored in a blob along with
+  // their sizes.
+  if (Record.size() != 2)
+    return error("Invalid record: metadata strings layout");
+
+  unsigned NumStrings = Record[0];
+  unsigned StringsOffset = Record[1];
+  if (!NumStrings)
+    return error("Invalid record: metadata strings with no strings");
+  if (StringsOffset >= Blob.size())
+    return error("Invalid record: metadata strings corrupt offset");
+
+  StringRef Lengths = Blob.slice(0, StringsOffset);
+  SimpleBitstreamCursor R(*StreamFile);
+  R.jumpToPointer(Lengths.begin());
+
+  // Ensure that Blob doesn't get invalidated, even if this is reading from
+  // a StreamingMemoryObject with corrupt data.
+  R.setArtificialByteLimit(R.getCurrentByteNo() + StringsOffset);
+
+  StringRef Strings = Blob.drop_front(StringsOffset);
+  do {
+    if (R.AtEndOfStream())
+      return error("Invalid record: metadata strings bad length");
+
+    unsigned Size = R.ReadVBR(6);
+    if (Strings.size() < Size)
+      return error("Invalid record: metadata strings truncated chars");
+
+    MetadataList.assignValue(MDString::get(Context, Strings.slice(0, Size)),
+                             NextMetadataNo++);
+    Strings = Strings.drop_front(Size);
+  } while (--NumStrings);
+
+  return std::error_code();
+}
+
 /// Parse a METADATA_BLOCK. If ModuleLevel is true then we are parsing
 /// module level metadata.
 std::error_code BitcodeReader::parseMetadata(bool ModuleLevel) {
   IsMetadataMaterialized = true;
   unsigned NextMetadataNo = MetadataList.size();
-  if (ModuleLevel && SeenModuleValuesRecord) {
-    // Now that we are parsing the module level metadata, we want to restart
-    // the numbering of the MD values, and replace temp MD created earlier
-    // with their real values. If we saw a METADATA_VALUE record then we
-    // would have set the MetadataList size to the number specified in that
-    // record, to support parsing function-level metadata first, and we need
-    // to reset back to 0 to fill the MetadataList in with the parsed module
-    // The function-level metadata parsing should have reset the MetadataList
-    // size back to the value reported by the METADATA_VALUE record, saved in
-    // NumModuleMDs.
-    assert(NumModuleMDs == MetadataList.size() &&
-           "Expected MetadataList to only contain module level values");
-    NextMetadataNo = 0;
-  }
 
   if (Stream.EnterSubBlock(bitc::METADATA_BLOCK_ID))
     return error("Invalid record");
@@ -1938,9 +1965,6 @@ std::error_code BitcodeReader::parseMetadata(bool ModuleLevel) {
       return error("Malformed block");
     case BitstreamEntry::EndBlock:
       MetadataList.tryToResolveCycles();
-      assert((!(ModuleLevel && SeenModuleValuesRecord) ||
-              NumModuleMDs == MetadataList.size()) &&
-             "Inconsistent bitcode: METADATA_VALUES mismatch");
       return std::error_code();
     case BitstreamEntry::Record:
       // The interesting case.
@@ -1949,7 +1973,8 @@ std::error_code BitcodeReader::parseMetadata(bool ModuleLevel) {
 
     // Read a record.
     Record.clear();
-    unsigned Code = Stream.readRecord(Entry.ID, Record);
+    StringRef Blob;
+    unsigned Code = Stream.readRecord(Entry.ID, Record, &Blob);
     bool IsDistinct = false;
     switch (Code) {
     default:  // Default behavior: ignore.
@@ -2383,13 +2408,21 @@ std::error_code BitcodeReader::parseMetadata(bool ModuleLevel) {
           NextMetadataNo++);
       break;
     }
-    case bitc::METADATA_STRING: {
+    case bitc::METADATA_STRING_OLD: {
       std::string String(Record.begin(), Record.end());
-      llvm::UpgradeMDStringConstant(String);
+
+      // Test for upgrading !llvm.loop.
+      HasSeenOldLoopTags |= mayBeOldLoopAttachmentTag(String);
+
       Metadata *MD = MDString::get(Context, String);
       MetadataList.assignValue(MD, NextMetadataNo++);
       break;
     }
+    case bitc::METADATA_STRINGS:
+      if (std::error_code EC =
+              parseMetadataStrings(Record, Blob, NextMetadataNo))
+        return EC;
+      break;
     case bitc::METADATA_KIND: {
       // Support older bitcode files that had METADATA_KIND records in a
       // block with METADATA_BLOCK_ID.
@@ -3703,28 +3736,6 @@ std::error_code BitcodeReader::parseModule(uint64_t ResumeBit,
         return error("Invalid record");
       VSTOffset = Record[0];
       break;
-    /// MODULE_CODE_METADATA_VALUES: [numvals]
-    case bitc::MODULE_CODE_METADATA_VALUES:
-      if (Record.size() < 1)
-        return error("Invalid record");
-      assert(!IsMetadataMaterialized);
-      // This record contains the number of metadata values in the module-level
-      // METADATA_BLOCK. It is used to support lazy parsing of metadata as
-      // a postpass, where we will parse function-level metadata first.
-      // This is needed because the ids of metadata are assigned implicitly
-      // based on their ordering in the bitcode, with the function-level
-      // metadata ids starting after the module-level metadata ids. Otherwise,
-      // we would have to parse the module-level metadata block to prime the
-      // MetadataList when we are lazy loading metadata during function
-      // importing. Initialize the MetadataList size here based on the
-      // record value, regardless of whether we are doing lazy metadata
-      // loading, so that we have consistent handling and assertion
-      // checking in parseMetadata for module-level metadata.
-      NumModuleMDs = Record[0];
-      SeenModuleValuesRecord = true;
-      assert(MetadataList.size() == 0);
-      MetadataList.resize(NumModuleMDs);
-      break;
     /// MODULE_CODE_SOURCE_FILENAME: [namechar x N]
     case bitc::MODULE_CODE_SOURCE_FILENAME:
       SmallString<128> ValueName;
@@ -3956,9 +3967,15 @@ std::error_code BitcodeReader::parseMetadataAttachment(Function &F) {
         MDNode *MD = dyn_cast_or_null<MDNode>(Node);
         if (!MD)
           return error("Invalid metadata attachment");
+
+        if (HasSeenOldLoopTags && I->second == LLVMContext::MD_loop)
+          MD = upgradeInstructionLoopAttachment(*MD);
+
         Inst->setMetadata(I->second, MD);
-        if (I->second == LLVMContext::MD_tbaa)
+        if (I->second == LLVMContext::MD_tbaa) {
           InstsWithTBAATag.push_back(Inst);
+          continue;
+        }
       }
       break;
     }
@@ -5277,12 +5294,8 @@ std::error_code BitcodeReader::findFunctionInStream(
 void BitcodeReader::releaseBuffer() { Buffer.release(); }
 
 std::error_code BitcodeReader::materialize(GlobalValue *GV) {
-  // In older bitcode we must materialize the metadata before parsing
-  // any functions, in order to set up the MetadataList properly.
-  if (!SeenModuleValuesRecord) {
-    if (std::error_code EC = materializeMetadata())
-      return EC;
-  }
+  if (std::error_code EC = materializeMetadata())
+    return EC;
 
   Function *F = dyn_cast<Function>(GV);
   // If it's not a function or is already material, ignore the request.
