@@ -330,7 +330,8 @@ TEST_P(MaybeSparseInstrProfTest, annotate_vp_data) {
   // Annotate with 4 records.
   InstrProfValueData VD0Sorted[] = {{1000, 6}, {2000, 5}, {3000, 4}, {4000, 3},
                               {5000, 2}, {6000, 1}};
-  annotateValueSite(*M, *Inst, &VD0Sorted[2], 4, 10, IPVK_IndirectCallTarget, 5);
+  annotateValueSite(*M, *Inst, makeArrayRef(VD0Sorted).slice(2), 10,
+                    IPVK_IndirectCallTarget, 5);
   Res = getValueProfDataFromInst(*Inst, IPVK_IndirectCallTarget, 5,
                                       ValueData, N, T);
   ASSERT_TRUE(Res);
@@ -893,7 +894,7 @@ TEST_P(MaybeSparseInstrProfTest, instr_prof_symtab_compression_test) {
     OS << "func_" << I;
     FuncNames1.push_back(OS.str());
     str.clear();
-    OS << "fooooooooooooooo_" << I;
+    OS << "f oooooooooooooo_" << I;
     FuncNames1.push_back(OS.str());
     str.clear();
     OS << "BAR_" << I;
@@ -931,7 +932,7 @@ TEST_P(MaybeSparseInstrProfTest, instr_prof_symtab_compression_test) {
       StringRef R = Symtab.getFuncName(IndexedInstrProf::ComputeHash(FuncNames1[0]));
       ASSERT_EQ(StringRef("func_0"), R);
       R = Symtab.getFuncName(IndexedInstrProf::ComputeHash(FuncNames1[1]));
-      ASSERT_EQ(StringRef("fooooooooooooooo_0"), R);
+      ASSERT_EQ(StringRef("f oooooooooooooo_0"), R);
       for (int I = 0; I < 3; I++) {
         std::string N[4];
         N[0] = FuncNames1[2 * I];

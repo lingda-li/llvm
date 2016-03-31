@@ -1068,6 +1068,21 @@ X86TargetLowering::X86TargetLowering(const X86TargetMachine &TM,
     setOperationAction(ISD::ROTL,              MVT::v16i16, Custom);
     setOperationAction(ISD::ROTL,              MVT::v8i32, Custom);
     setOperationAction(ISD::ROTL,              MVT::v4i64, Custom);
+
+    // XOP can efficiently perform BITREVERSE with VPPERM.
+    setOperationAction(ISD::BITREVERSE,        MVT::i8, Custom);
+    setOperationAction(ISD::BITREVERSE,        MVT::i16, Custom);
+    setOperationAction(ISD::BITREVERSE,        MVT::i32, Custom);
+    setOperationAction(ISD::BITREVERSE,        MVT::i64, Custom);
+
+    setOperationAction(ISD::BITREVERSE,        MVT::v16i8, Custom);
+    setOperationAction(ISD::BITREVERSE,        MVT::v8i16, Custom);
+    setOperationAction(ISD::BITREVERSE,        MVT::v4i32, Custom);
+    setOperationAction(ISD::BITREVERSE,        MVT::v2i64, Custom);
+    setOperationAction(ISD::BITREVERSE,        MVT::v32i8, Custom);
+    setOperationAction(ISD::BITREVERSE,        MVT::v16i16, Custom);
+    setOperationAction(ISD::BITREVERSE,        MVT::v8i32, Custom);
+    setOperationAction(ISD::BITREVERSE,        MVT::v4i64, Custom);
   }
 
   if (!Subtarget.useSoftFloat() && Subtarget.hasFp256()) {
@@ -3814,6 +3829,7 @@ bool X86TargetLowering::IsEligibleForTailCallOptimization(
 
   // Do not sibcall optimize vararg calls unless all arguments are passed via
   // registers.
+  LLVMContext &C = *DAG.getContext();
   if (isVarArg && !Outs.empty()) {
     // Optimizing for varargs on Win64 is unlikely to be safe without
     // additional testing.
@@ -3821,8 +3837,7 @@ bool X86TargetLowering::IsEligibleForTailCallOptimization(
       return false;
 
     SmallVector<CCValAssign, 16> ArgLocs;
-    CCState CCInfo(CalleeCC, isVarArg, DAG.getMachineFunction(), ArgLocs,
-                   *DAG.getContext());
+    CCState CCInfo(CalleeCC, isVarArg, MF, ArgLocs, C);
 
     CCInfo.AnalyzeCallOperands(Outs, CC_X86);
     for (unsigned i = 0, e = ArgLocs.size(); i != e; ++i)
@@ -3842,8 +3857,7 @@ bool X86TargetLowering::IsEligibleForTailCallOptimization(
   }
   if (Unused) {
     SmallVector<CCValAssign, 16> RVLocs;
-    CCState CCInfo(CalleeCC, false, DAG.getMachineFunction(), RVLocs,
-                   *DAG.getContext());
+    CCState CCInfo(CalleeCC, false, MF, RVLocs, C);
     CCInfo.AnalyzeCallResult(Ins, RetCC_X86);
     for (unsigned i = 0, e = RVLocs.size(); i != e; ++i) {
       CCValAssign &VA = RVLocs[i];
@@ -3852,35 +3866,10 @@ bool X86TargetLowering::IsEligibleForTailCallOptimization(
     }
   }
 
-  // If the calling conventions do not match, then we'd better make sure the
-  // results are returned in the same way as what the caller expects.
-  if (!CCMatch) {
-    SmallVector<CCValAssign, 16> RVLocs1;
-    CCState CCInfo1(CalleeCC, false, DAG.getMachineFunction(), RVLocs1,
-                    *DAG.getContext());
-    CCInfo1.AnalyzeCallResult(Ins, RetCC_X86);
-
-    SmallVector<CCValAssign, 16> RVLocs2;
-    CCState CCInfo2(CallerCC, false, DAG.getMachineFunction(), RVLocs2,
-                    *DAG.getContext());
-    CCInfo2.AnalyzeCallResult(Ins, RetCC_X86);
-
-    if (RVLocs1.size() != RVLocs2.size())
-      return false;
-    for (unsigned i = 0, e = RVLocs1.size(); i != e; ++i) {
-      if (RVLocs1[i].isRegLoc() != RVLocs2[i].isRegLoc())
-        return false;
-      if (RVLocs1[i].getLocInfo() != RVLocs2[i].getLocInfo())
-        return false;
-      if (RVLocs1[i].isRegLoc()) {
-        if (RVLocs1[i].getLocReg() != RVLocs2[i].getLocReg())
-          return false;
-      } else {
-        if (RVLocs1[i].getLocMemOffset() != RVLocs2[i].getLocMemOffset())
-          return false;
-      }
-    }
-  }
+  // Check that the call results are passed in the same way.
+  if (!CCState::resultsCompatible(CalleeCC, CallerCC, MF, C, Ins,
+                                  RetCC_X86, RetCC_X86))
+    return false;
 
   unsigned StackArgsSize = 0;
 
@@ -3890,8 +3879,7 @@ bool X86TargetLowering::IsEligibleForTailCallOptimization(
     // Check if stack adjustment is needed. For now, do not do this if any
     // argument is passed on the stack.
     SmallVector<CCValAssign, 16> ArgLocs;
-    CCState CCInfo(CalleeCC, isVarArg, DAG.getMachineFunction(), ArgLocs,
-                   *DAG.getContext());
+    CCState CCInfo(CalleeCC, isVarArg, MF, ArgLocs, C);
 
     // Allocate shadow area for Win64
     if (IsCalleeWin64)
@@ -5757,7 +5745,6 @@ static SDValue EltsFromConsecutiveLoads(EVT VT, ArrayRef<SDValue> Elts,
       }
     } else if (ZeroMask[i]) {
       IsConsecutiveLoad = false;
-      break;
     }
   }
 
@@ -6625,6 +6612,54 @@ static SDValue LowerToHorizontalOp(const BuildVectorSDNode *BV,
   return SDValue();
 }
 
+/// If a BUILD_VECTOR's source elements all apply the same bit operation and
+/// one of their operands is constant, lower to a pair of BUILD_VECTOR and
+/// just apply the bit to the vectors.
+/// NOTE: Its not in our interest to start make a general purpose vectorizer
+/// from this, but enough scalar bit operations are created from the later
+/// legalization + scalarization stages to need basic support.
+static SDValue lowerBuildVectorToBitOp(SDValue Op, SelectionDAG &DAG) {
+  SDLoc DL(Op);
+  MVT VT = Op.getSimpleValueType();
+  unsigned NumElems = VT.getVectorNumElements();
+  const TargetLowering &TLI = DAG.getTargetLoweringInfo();
+
+  // Check that all elements have the same opcode.
+  // TODO: Should we allow UNDEFS and if so how many?
+  unsigned Opcode = Op.getOperand(0).getOpcode();
+  for (unsigned i = 1; i < NumElems; ++i)
+    if (Opcode != Op.getOperand(i).getOpcode())
+      return SDValue();
+
+  // TODO: We may be able to add support for other Ops (ADD/SUB + shifts).
+  switch (Opcode) {
+  default:
+    return SDValue();
+  case ISD::AND:
+  case ISD::XOR:
+  case ISD::OR:
+    if (!TLI.isOperationLegalOrPromote(Opcode, VT))
+      return SDValue();
+    break;
+  }
+
+  SmallVector<SDValue, 4> LHSElts, RHSElts;
+  for (SDValue Elt : Op->ops()) {
+    SDValue LHS = Elt.getOperand(0);
+    SDValue RHS = Elt.getOperand(1);
+
+    // We expect the canonicalized RHS operand to be the constant.
+    if (!isa<ConstantSDNode>(RHS))
+      return SDValue();
+    LHSElts.push_back(LHS);
+    RHSElts.push_back(RHS);
+  }
+
+  SDValue LHS = DAG.getNode(ISD::BUILD_VECTOR, DL, VT, LHSElts);
+  SDValue RHS = DAG.getNode(ISD::BUILD_VECTOR, DL, VT, RHSElts);
+  return DAG.getNode(Opcode, DL, VT, LHS, RHS);
+}
+
 /// Create a vector constant without a load. SSE/AVX provide the bare minimum
 /// functionality to do this, so it's all zeros, all ones, or some derivation
 /// that is cheap to calculate.
@@ -6679,6 +6714,8 @@ X86TargetLowering::LowerBUILD_VECTOR(SDValue Op, SelectionDAG &DAG) const {
     return HorizontalOp;
   if (SDValue Broadcast = LowerVectorBroadcast(Op, Subtarget, DAG))
     return Broadcast;
+  if (SDValue BitOp = lowerBuildVectorToBitOp(Op, DAG))
+    return BitOp;
 
   unsigned EVTBits = ExtVT.getSizeInBits();
 
@@ -15523,11 +15560,15 @@ SDValue X86TargetLowering::LowerSETCC(SDValue Op, SelectionDAG &DAG) const {
       return SetCC;
     }
   }
-  if ((Op0.getValueType() == MVT::i1) && isOneConstant(Op1) &&
-      (CC == ISD::SETEQ || CC == ISD::SETNE)) {
-
-    ISD::CondCode NewCC = ISD::getSetCCInverse(CC, true);
-    return DAG.getSetCC(dl, VT, Op0, DAG.getConstant(0, dl, MVT::i1), NewCC);
+  if (Op0.getValueType() == MVT::i1 && (CC == ISD::SETEQ || CC == ISD::SETNE)) {
+    if (isOneConstant(Op1)) {
+      ISD::CondCode NewCC = ISD::getSetCCInverse(CC, true);
+      return DAG.getSetCC(dl, VT, Op0, DAG.getConstant(0, dl, MVT::i1), NewCC);
+    }
+    if (!isNullConstant(Op1)) {
+      SDValue Xor = DAG.getNode(ISD::XOR, dl, MVT::i1, Op0, Op1);
+      return DAG.getSetCC(dl, VT, Xor, DAG.getConstant(0, dl, MVT::i1), CC);
+    }
   }
 
   bool isFP = Op1.getSimpleValueType().isFloatingPoint();
@@ -20645,6 +20686,59 @@ static SDValue LowerCTPOP(SDValue Op, const X86Subtarget &Subtarget,
   return LowerVectorCTPOP(Op, Subtarget, DAG);
 }
 
+static SDValue LowerBITREVERSE(SDValue Op, SelectionDAG &DAG) {
+  MVT VT = Op.getSimpleValueType();
+  SDValue In = Op.getOperand(0);
+  SDLoc DL(Op);
+
+  // For scalars, its still beneficial to transfer to/from the SIMD unit to
+  // perform the BITREVERSE.
+  if (!VT.isVector()) {
+    MVT VecVT = MVT::getVectorVT(VT, 128 / VT.getSizeInBits());
+    SDValue Res = DAG.getNode(ISD::SCALAR_TO_VECTOR, DL, VecVT, In);
+    Res = DAG.getNode(ISD::BITREVERSE, DL, VecVT, Res);
+    return DAG.getNode(ISD::EXTRACT_VECTOR_ELT, DL, VT, Res,
+                       DAG.getIntPtrConstant(0, DL));
+  }
+
+  MVT SVT = VT.getVectorElementType();
+  int NumElts = VT.getVectorNumElements();
+  int ScalarSizeInBytes = VT.getScalarSizeInBits() / 8;
+
+  // Decompose 256-bit ops into smaller 128-bit ops.
+  if (VT.is256BitVector()) {
+    SDValue Lo = extract128BitVector(In, 0, DAG, DL);
+    SDValue Hi = extract128BitVector(In, NumElts / 2, DAG, DL);
+
+    MVT HalfVT = MVT::getVectorVT(SVT, NumElts / 2);
+    return DAG.getNode(ISD::CONCAT_VECTORS, DL, VT,
+                       DAG.getNode(ISD::BITREVERSE, DL, HalfVT, Lo),
+                       DAG.getNode(ISD::BITREVERSE, DL, HalfVT, Hi));
+  }
+
+  assert(VT.is128BitVector() &&
+         "Only 128-bit vector bitreverse lowering supported.");
+
+  // VPPERM reverses the bits of a byte with the permute Op (2 << 5), and we
+  // perform the BSWAP in the shuffle.
+  // Its best to shuffle using the second operand as this will implicitly allow
+  // memory folding for multiple vectors.
+  SmallVector<SDValue, 16> MaskElts;
+  for (int i = 0; i != NumElts; ++i) {
+    for (int j = ScalarSizeInBytes - 1; j >= 0; --j) {
+      int SourceByte = 16 + (i * ScalarSizeInBytes) + j;
+      int PermuteByte = SourceByte | (2 << 5);
+      MaskElts.push_back(DAG.getConstant(PermuteByte, DL, MVT::i8));
+    }
+  }
+
+  SDValue Mask = DAG.getNode(ISD::BUILD_VECTOR, DL, MVT::v16i8, MaskElts);
+  SDValue Res = DAG.getBitcast(MVT::v16i8, In);
+  Res = DAG.getNode(X86ISD::VPPERM, DL, MVT::v16i8, DAG.getUNDEF(MVT::v16i8),
+                    Res, Mask);
+  return DAG.getBitcast(VT, Res);
+}
+
 static SDValue lowerAtomicArithWithLOCK(SDValue N, SelectionDAG &DAG) {
   unsigned NewOpc = 0;
   switch (N->getOpcode()) {
@@ -21142,7 +21236,8 @@ SDValue X86TargetLowering::LowerOperation(SDValue Op, SelectionDAG &DAG) const {
   case ISD::ATOMIC_LOAD_OR:
   case ISD::ATOMIC_LOAD_XOR:
   case ISD::ATOMIC_LOAD_AND:    return lowerAtomicArith(Op, DAG, Subtarget);
-  case ISD::ATOMIC_STORE:       return LowerATOMIC_STORE(Op,DAG);
+  case ISD::ATOMIC_STORE:       return LowerATOMIC_STORE(Op, DAG);
+  case ISD::BITREVERSE:         return LowerBITREVERSE(Op, DAG);
   case ISD::BUILD_VECTOR:       return LowerBUILD_VECTOR(Op, DAG);
   case ISD::CONCAT_VECTORS:     return LowerCONCAT_VECTORS(Op, Subtarget, DAG);
   case ISD::VECTOR_SHUFFLE:     return lowerVectorShuffle(Op, Subtarget, DAG);
@@ -22889,34 +22984,37 @@ X86TargetLowering::EmitLoweredAtomicFP(MachineInstr *MI,
   unsigned MOp, FOp;
   switch (MI->getOpcode()) {
   default: llvm_unreachable("unexpected instr type for EmitLoweredAtomicFP");
-  case X86::RELEASE_FADD32mr: MOp = X86::MOVSSmr; FOp = X86::ADDSSrm; break;
-  case X86::RELEASE_FADD64mr: MOp = X86::MOVSDmr; FOp = X86::ADDSDrm; break;
+  case X86::RELEASE_FADD32mr:
+    FOp = X86::ADDSSrm;
+    MOp = X86::MOVSSmr;
+    break;
+  case X86::RELEASE_FADD64mr:
+    FOp = X86::ADDSDrm;
+    MOp = X86::MOVSDmr;
+    break;
   }
   const X86InstrInfo *TII = Subtarget.getInstrInfo();
   DebugLoc DL = MI->getDebugLoc();
   MachineRegisterInfo &MRI = BB->getParent()->getRegInfo();
-  MachineOperand MSrc = MI->getOperand(0);
-  unsigned VSrc = MI->getOperand(5).getReg();
-  const MachineOperand &Disp = MI->getOperand(3);
-  MachineOperand ZeroDisp = MachineOperand::CreateImm(0);
-  bool hasDisp = Disp.isGlobal() || Disp.isImm();
-  if (hasDisp && MSrc.isReg())
-    MSrc.setIsKill(false);
-  MachineInstrBuilder MIM = BuildMI(*BB, MI, DL, TII->get(MOp))
-                                .addOperand(/*Base=*/MSrc)
-                                .addImm(/*Scale=*/1)
-                                .addReg(/*Index=*/0)
-                                .addDisp(hasDisp ? Disp : ZeroDisp, /*off=*/0)
-                                .addReg(0);
-  MachineInstr *MIO = BuildMI(*BB, (MachineInstr *)MIM, DL, TII->get(FOp),
-                              MRI.createVirtualRegister(MRI.getRegClass(VSrc)))
-                          .addReg(VSrc)
-                          .addOperand(/*Base=*/MSrc)
-                          .addImm(/*Scale=*/1)
-                          .addReg(/*Index=*/0)
-                          .addDisp(hasDisp ? Disp : ZeroDisp, /*off=*/0)
-                          .addReg(/*Segment=*/0);
-  MIM.addReg(MIO->getOperand(0).getReg(), RegState::Kill);
+  unsigned ValOpIdx = X86::AddrNumOperands;
+  unsigned VSrc = MI->getOperand(ValOpIdx).getReg();
+  MachineInstrBuilder MIB =
+      BuildMI(*BB, MI, DL, TII->get(FOp),
+              MRI.createVirtualRegister(MRI.getRegClass(VSrc)))
+          .addReg(VSrc);
+  for (int i = 0; i < X86::AddrNumOperands; ++i) {
+    MachineOperand &Operand = MI->getOperand(i);
+    // Clear any kill flags on register operands as we'll create a second
+    // instruction using the same address operands.
+    if (Operand.isReg())
+      Operand.setIsKill(false);
+    MIB.addOperand(Operand);
+  }
+  MachineInstr *FOpMI = MIB;
+  MIB = BuildMI(*BB, MI, DL, TII->get(MOp));
+  for (int i = 0; i < X86::AddrNumOperands; ++i)
+    MIB.addOperand(MI->getOperand(i));
+  MIB.addReg(FOpMI->getOperand(0).getReg(), RegState::Kill);
   MI->eraseFromParent(); // The pseudo instruction is gone now.
   return BB;
 }
@@ -23653,27 +23751,7 @@ X86TargetLowering::EmitInstrWithCustomInserter(MachineInstr *MI,
     case X86::FP80_TO_INT64_IN_MEM: Opc = X86::IST_Fp64m80; break;
     }
 
-    X86AddressMode AM;
-    MachineOperand &Op = MI->getOperand(0);
-    if (Op.isReg()) {
-      AM.BaseType = X86AddressMode::RegBase;
-      AM.Base.Reg = Op.getReg();
-    } else {
-      AM.BaseType = X86AddressMode::FrameIndexBase;
-      AM.Base.FrameIndex = Op.getIndex();
-    }
-    Op = MI->getOperand(1);
-    if (Op.isImm())
-      AM.Scale = Op.getImm();
-    Op = MI->getOperand(2);
-    if (Op.isImm())
-      AM.IndexReg = Op.getImm();
-    Op = MI->getOperand(3);
-    if (Op.isGlobal()) {
-      AM.GV = Op.getGlobal();
-    } else {
-      AM.Disp = Op.getImm();
-    }
+    X86AddressMode AM = getAddressFromInstr(MI, 0);
     addFullAddress(BuildMI(*BB, MI, DL, TII->get(Opc)), AM)
                       .addReg(MI->getOperand(X86::AddrNumOperands).getReg());
 
