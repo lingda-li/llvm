@@ -48,7 +48,7 @@ class SCD_R6_ENC : SPECIAL3_LL_SC_FM<OPCODE6_SCD>;
 
 class AHI_ATI_DESC_BASE<string instr_asm, RegisterOperand GPROpnd, InstrItinClass itin> {
   dag OutOperandList = (outs GPROpnd:$rs);
-  dag InOperandList = (ins GPROpnd:$rt, simm16:$imm);
+  dag InOperandList = (ins GPROpnd:$rt, simm16_relaxed:$imm);
   string AsmString = !strconcat(instr_asm, "\t$rt, $imm");
   string Constraints = "$rs = $rt";
   InstrItinClass Itinerary = itin;
@@ -91,13 +91,11 @@ let AdditionalPredicates = [NotInMicroMips] in {
 def DBITSWAP : DBITSWAP_ENC, DBITSWAP_DESC, ISA_MIPS64R6;
 def DCLO_R6 : DCLO_R6_ENC, DCLO_R6_DESC, ISA_MIPS64R6;
 def DCLZ_R6 : DCLZ_R6_ENC, DCLZ_R6_DESC, ISA_MIPS64R6;
-let AdditionalPredicates = [NotInMicroMips] in {
-  def DDIV : DDIV_ENC, DDIV_DESC, ISA_MIPS64R6;
-  def DDIVU : DDIVU_ENC, DDIVU_DESC, ISA_MIPS64R6;
-  def DMOD : DMOD_ENC, DMOD_DESC, ISA_MIPS64R6;
-  def DMODU : DMODU_ENC, DMODU_DESC, ISA_MIPS64R6;
-}
+def DDIV : DDIV_ENC, DDIV_DESC, ISA_MIPS64R6;
+def DDIVU : DDIVU_ENC, DDIVU_DESC, ISA_MIPS64R6;
 def DLSA_R6 : DLSA_R6_ENC, DLSA_R6_DESC, ISA_MIPS64R6;
+def DMOD : DMOD_ENC, DMOD_DESC, ISA_MIPS64R6;
+def DMODU : DMODU_ENC, DMODU_DESC, ISA_MIPS64R6;
 def DMUH: DMUH_ENC, DMUH_DESC, ISA_MIPS64R6;
 def DMUHU: DMUHU_ENC, DMUHU_DESC, ISA_MIPS64R6;
 def DMUL_R6: DMUL_R6_ENC, DMUL_R6_DESC, ISA_MIPS64R6;

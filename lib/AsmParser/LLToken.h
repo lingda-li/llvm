@@ -152,6 +152,7 @@ namespace lltok {
     kw_sret,
     kw_sanitize_thread,
     kw_sanitize_memory,
+    kw_swifterror,
     kw_swiftself,
     kw_uwtable,
     kw_zeroext,
@@ -221,6 +222,7 @@ namespace lltok {
     DwarfAttEncoding,  // DW_ATE_foo
     DwarfVirtuality,   // DW_VIRTUALITY_foo
     DwarfLang,         // DW_LANG_foo
+    EmissionKind,      // lineTablesOnly
     DwarfOp,           // DW_OP_foo
     DIFlag,            // DIFlagFoo
     DwarfMacinfo,      // DW_MACINFO_foo
