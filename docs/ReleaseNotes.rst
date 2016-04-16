@@ -38,6 +38,8 @@ Non-comprehensive list of changes in this release
   (other than GlobalValue). This is intended to be used in release builds by
   clients that are interested in saving CPU/memory as much as possible.
 
+* There is no longer a "global context" available in LLVM, except for the C API.
+
 * .. note about autoconf build having been removed.
 
 * .. note about C API functions LLVMParseBitcode,
@@ -97,7 +99,7 @@ Changes to the MIPS Target
 Changes to the PowerPC Target
 -----------------------------
 
- During this release ...
+ Moved some optimizations from O3 to O2 (D18562)
 
 
 Changes to the X86 Target
