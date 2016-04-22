@@ -25,7 +25,6 @@
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/IntrinsicInst.h"
-#include "llvm/IR/OptBisect.h"
 #include "llvm/IR/PatternMatch.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/Debug.h"
@@ -41,6 +40,7 @@ using namespace llvm::PatternMatch;
 
 STATISTIC(NumSimplify, "Number of instructions simplified or DCE'd");
 STATISTIC(NumCSE,      "Number of instructions CSE'd");
+STATISTIC(NumCSECVP,   "Number of compare instructions CVP'd");
 STATISTIC(NumCSELoad,  "Number of load instructions CSE'd");
 STATISTIC(NumCSECall,  "Number of call instructions CSE'd");
 STATISTIC(NumDSE,      "Number of trivial dead stores removed");
@@ -98,15 +98,6 @@ unsigned DenseMapInfo<SimpleValue>::getHashValue(SimpleValue Val) {
     if (BinOp->isCommutative() && BinOp->getOperand(0) > BinOp->getOperand(1))
       std::swap(LHS, RHS);
 
-    if (isa<OverflowingBinaryOperator>(BinOp)) {
-      // Hash the overflow behavior
-      unsigned Overflow =
-          BinOp->hasNoSignedWrap() * OverflowingBinaryOperator::NoSignedWrap |
-          BinOp->hasNoUnsignedWrap() *
-              OverflowingBinaryOperator::NoUnsignedWrap;
-      return hash_combine(BinOp->getOpcode(), Overflow, LHS, RHS);
-    }
-
     return hash_combine(BinOp->getOpcode(), LHS, RHS);
   }
 
@@ -153,7 +144,7 @@ bool DenseMapInfo<SimpleValue>::isEqual(SimpleValue LHS, SimpleValue RHS) {
 
   if (LHSI->getOpcode() != RHSI->getOpcode())
     return false;
-  if (LHSI->isIdenticalTo(RHSI))
+  if (LHSI->isIdenticalToWhenDefined(RHSI))
     return true;
 
   // If we're not strictly identical, we still might be a commutable instruction
@@ -164,15 +155,6 @@ bool DenseMapInfo<SimpleValue>::isEqual(SimpleValue LHS, SimpleValue RHS) {
     assert(isa<BinaryOperator>(RHSI) &&
            "same opcode, but different instruction type?");
     BinaryOperator *RHSBinOp = cast<BinaryOperator>(RHSI);
-
-    // Check overflow attributes
-    if (isa<OverflowingBinaryOperator>(LHSBinOp)) {
-      assert(isa<OverflowingBinaryOperator>(RHSBinOp) &&
-             "same opcode, but different operator type?");
-      if (LHSBinOp->hasNoUnsignedWrap() != RHSBinOp->hasNoUnsignedWrap() ||
-          LHSBinOp->hasNoSignedWrap() != RHSBinOp->hasNoSignedWrap())
-        return false;
-    }
 
     // Commuted equality
     return LHSBinOp->getOperand(0) == RHSBinOp->getOperand(1) &&
@@ -501,6 +483,7 @@ private:
 }
 
 bool EarlyCSE::processNode(DomTreeNode *Node) {
+  bool Changed = false;
   BasicBlock *BB = Node->getBlock();
 
   // If this block has a single predecessor, then the predecessor is the parent
@@ -531,9 +514,13 @@ bool EarlyCSE::processNode(DomTreeNode *Node) {
             DEBUG(dbgs() << "EarlyCSE CVP: Add conditional value for '"
                   << CondInst->getName() << "' as " << *ConditionalConstant
                   << " in " << BB->getName() << "\n");
-            // Replace all dominated uses with the known value
-            replaceDominatedUsesWith(CondInst, ConditionalConstant, DT,
-                                     BasicBlockEdge(Pred, BB));
+            // Replace all dominated uses with the known value.
+            if (unsigned Count =
+                    replaceDominatedUsesWith(CondInst, ConditionalConstant, DT,
+                                             BasicBlockEdge(Pred, BB))) {
+              Changed = true;
+              NumCSECVP = NumCSECVP + Count;
+            }
           }
 
   /// LastStore - Keep track of the last non-volatile store that we saw... for
@@ -542,7 +529,6 @@ bool EarlyCSE::processNode(DomTreeNode *Node) {
   /// stores which can occur in bitfield code among other things.
   Instruction *LastStore = nullptr;
 
-  bool Changed = false;
   const DataLayout &DL = BB->getModule()->getDataLayout();
 
   // See if any instructions in the block can be eliminated.  If so, do it.  If
@@ -584,6 +570,8 @@ bool EarlyCSE::processNode(DomTreeNode *Node) {
       // See if the instruction has an available value.  If so, use it.
       if (Value *V = AvailableValues.lookup(Inst)) {
         DEBUG(dbgs() << "EarlyCSE CSE: " << *Inst << "  to: " << *V << '\n');
+        if (auto *I = dyn_cast<Instruction>(V))
+          I->andIRFlags(Inst);
         Inst->replaceAllUsesWith(V);
         Inst->eraseFromParent();
         Changed = true;
@@ -820,9 +808,6 @@ bool EarlyCSE::run() {
 
 PreservedAnalyses EarlyCSEPass::run(Function &F,
                                     AnalysisManager<Function> &AM) {
-  if (skipPassForFunction(name(), F))
-    return PreservedAnalyses::all();
-
   auto &TLI = AM.getResult<TargetLibraryAnalysis>(F);
   auto &TTI = AM.getResult<TargetIRAnalysis>(F);
   auto &DT = AM.getResult<DominatorTreeAnalysis>(F);
@@ -857,7 +842,7 @@ public:
   }
 
   bool runOnFunction(Function &F) override {
-    if (skipFunction(F))
+    if (skipOptnoneFunction(F))
       return false;
 
     auto &TLI = getAnalysis<TargetLibraryInfoWrapperPass>().getTLI();
