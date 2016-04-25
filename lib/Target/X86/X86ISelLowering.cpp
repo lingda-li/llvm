@@ -4678,7 +4678,22 @@ static bool getTargetShuffleMaskIndices(SDValue MaskNode,
   MVT VT = MaskNode.getSimpleValueType();
   assert(VT.isVector() && "Can't produce a non-vector with a build_vector!");
 
+  // Split an APInt element into MaskEltSizeInBits sized pieces and
+  // insert into the shuffle mask.
+  auto SplitElementToMask = [&](APInt Element) {
+    // Note that this is x86 and so always little endian: the low byte is
+    // the first byte of the mask.
+    int Split = VT.getScalarSizeInBits() / MaskEltSizeInBits;
+    for (int i = 0; i < Split; ++i) {
+      APInt RawElt = Element.getLoBits(MaskEltSizeInBits);
+      Element = Element.lshr(MaskEltSizeInBits);
+      RawMask.push_back(RawElt.getZExtValue());
+    }
+  };
+
   if (MaskNode.getOpcode() == X86ISD::VBROADCAST) {
+    // TODO: Handle (MaskEltSizeInBits % VT.getScalarSizeInBits()) == 0
+    // TODO: Handle (VT.getScalarSizeInBits() % MaskEltSizeInBits) == 0
     if (VT.getScalarSizeInBits() != MaskEltSizeInBits)
       return false;
     if (auto *CN = dyn_cast<ConstantSDNode>(MaskNode.getOperand(0))) {
@@ -4693,13 +4708,16 @@ static bool getTargetShuffleMaskIndices(SDValue MaskNode,
 
   if (MaskNode.getOpcode() == X86ISD::VZEXT_MOVL &&
       MaskNode.getOperand(0).getOpcode() == ISD::SCALAR_TO_VECTOR) {
-    if (VT.getScalarSizeInBits() != MaskEltSizeInBits)
+
+    // TODO: Handle (MaskEltSizeInBits % VT.getScalarSizeInBits()) == 0
+    if ((VT.getScalarSizeInBits() % MaskEltSizeInBits) != 0)
       return false;
-    SDValue MaskElement = MaskNode.getOperand(0).getOperand(0);
-    if (auto *CN = dyn_cast<ConstantSDNode>(MaskElement)) {
-      APInt RawElt = CN->getAPIntValue().getLoBits(MaskEltSizeInBits);
-      RawMask.push_back(RawElt.getZExtValue());
-      RawMask.append(VT.getVectorNumElements() - 1, 0);
+    unsigned ElementSplit = VT.getScalarSizeInBits() / MaskEltSizeInBits;
+
+    SDValue MaskOp = MaskNode.getOperand(0).getOperand(0);
+    if (auto *CN = dyn_cast<ConstantSDNode>(MaskOp)) {
+      SplitElementToMask(CN->getAPIntValue());
+      RawMask.append((VT.getVectorNumElements() - 1) * ElementSplit, 0);
       return true;
     }
     return false;
@@ -4711,32 +4729,14 @@ static bool getTargetShuffleMaskIndices(SDValue MaskNode,
   // TODO: Handle (MaskEltSizeInBits % VT.getScalarSizeInBits()) == 0
   if ((VT.getScalarSizeInBits() % MaskEltSizeInBits) != 0)
     return false;
-  unsigned ElementSplit = VT.getScalarSizeInBits() / MaskEltSizeInBits;
 
-  for (int i = 0, e = MaskNode.getNumOperands(); i < e; ++i) {
-    SDValue Op = MaskNode.getOperand(i);
-    if (Op->isUndef()) {
-      RawMask.push_back((uint64_t)SM_SentinelUndef);
-      continue;
-    }
-
-    APInt MaskElement;
+  for (SDValue Op : MaskNode->ops()) {
     if (auto *CN = dyn_cast<ConstantSDNode>(Op.getNode()))
-      MaskElement = CN->getAPIntValue();
+      SplitElementToMask(CN->getAPIntValue());
     else if (auto *CFN = dyn_cast<ConstantFPSDNode>(Op.getNode()))
-      MaskElement = CFN->getValueAPF().bitcastToAPInt();
+      SplitElementToMask(CFN->getValueAPF().bitcastToAPInt());
     else
       return false;
-
-    // We now have to decode the element which could be any integer size and
-    // extract each byte of it.
-    for (unsigned j = 0; j < ElementSplit; ++j) {
-      // Note that this is x86 and so always little endian: the low byte is
-      // the first byte of the mask.
-      APInt RawElt = MaskElement.getLoBits(MaskEltSizeInBits);
-      RawMask.push_back(RawElt.getZExtValue());
-      MaskElement = MaskElement.lshr(MaskEltSizeInBits);
-    }
   }
 
   return true;
@@ -18112,7 +18112,6 @@ static SDValue LowerINTRINSIC_W_CHAIN(SDValue Op, const X86Subtarget &Subtarget,
   }
   // ADC/ADCX/SBB
   case ADX: {
-    SmallVector<SDValue, 2> Results;
     SDVTList CFVTs = DAG.getVTList(Op->getValueType(0), MVT::Other);
     SDVTList VTs = DAG.getVTList(Op.getOperand(3)->getValueType(0), MVT::Other);
     SDValue GenCF = DAG.getNode(X86ISD::ADD, dl, CFVTs, Op.getOperand(2),
@@ -18125,8 +18124,7 @@ static SDValue LowerINTRINSIC_W_CHAIN(SDValue Op, const X86Subtarget &Subtarget,
     SDValue SetCC = DAG.getNode(X86ISD::SETCC, dl, MVT::i8,
                                 DAG.getConstant(X86::COND_B, dl, MVT::i8),
                                 Res.getValue(1));
-    Results.push_back(SetCC);
-    Results.push_back(Store);
+    SDValue Results[] = { SetCC, Store };
     return DAG.getMergeValues(Results, dl);
   }
   case COMPRESS_TO_MEM: {
@@ -18661,6 +18659,7 @@ SDValue X86TargetLowering::LowerFLT_ROUNDS_(SDValue Op,
 //    split the vector, perform operation on it's Lo a Hi part and
 //    concatenate the results.
 static SDValue LowerVectorCTLZ_AVX512(SDValue Op, SelectionDAG &DAG) {
+  assert(Op.getOpcode() == ISD::CTLZ);
   SDLoc dl(Op);
   MVT VT = Op.getSimpleValueType();
   MVT EltVT = VT.getVectorElementType();
@@ -18691,8 +18690,8 @@ static SDValue LowerVectorCTLZ_AVX512(SDValue Op, SelectionDAG &DAG) {
     std::tie(Lo, Hi) = DAG.SplitVector(Op.getOperand(0), dl);
     MVT OutVT = MVT::getVectorVT(EltVT, NumElems/2);
 
-    Lo = DAG.getNode(Op.getOpcode(), dl, OutVT, Lo);
-    Hi = DAG.getNode(Op.getOpcode(), dl, OutVT, Hi);
+    Lo = DAG.getNode(ISD::CTLZ, dl, OutVT, Lo);
+    Hi = DAG.getNode(ISD::CTLZ, dl, OutVT, Hi);
 
     return DAG.getNode(ISD::CONCAT_VECTORS, dl, VT, Lo, Hi);
   }
@@ -18711,14 +18710,14 @@ static SDValue LowerVectorCTLZ_AVX512(SDValue Op, SelectionDAG &DAG) {
   return DAG.getNode(ISD::SUB, dl, VT, TruncNode, Delta);
 }
 
-static SDValue LowerCTLZ(SDValue Op, const X86Subtarget &Subtarget,
-                         SelectionDAG &DAG) {
+static SDValue LowerCTLZ(SDValue Op, SelectionDAG &DAG) {
   MVT VT = Op.getSimpleValueType();
   MVT OpVT = VT;
   unsigned NumBits = VT.getSizeInBits();
   SDLoc dl(Op);
+  unsigned Opc = Op.getOpcode();
 
-  if (VT.isVector() && Subtarget.hasAVX512())
+  if (VT.isVector())
     return LowerVectorCTLZ_AVX512(Op, DAG);
 
   Op = Op.getOperand(0);
@@ -18732,43 +18731,18 @@ static SDValue LowerCTLZ(SDValue Op, const X86Subtarget &Subtarget,
   SDVTList VTs = DAG.getVTList(OpVT, MVT::i32);
   Op = DAG.getNode(X86ISD::BSR, dl, VTs, Op);
 
-  // If src is zero (i.e. bsr sets ZF), returns NumBits.
-  SDValue Ops[] = {
-    Op,
-    DAG.getConstant(NumBits + NumBits - 1, dl, OpVT),
-    DAG.getConstant(X86::COND_E, dl, MVT::i8),
-    Op.getValue(1)
-  };
-  Op = DAG.getNode(X86ISD::CMOV, dl, OpVT, Ops);
-
-  // Finally xor with NumBits-1.
-  Op = DAG.getNode(ISD::XOR, dl, OpVT, Op,
-                   DAG.getConstant(NumBits - 1, dl, OpVT));
-
-  if (VT == MVT::i8)
-    Op = DAG.getNode(ISD::TRUNCATE, dl, MVT::i8, Op);
-  return Op;
-}
-
-static SDValue LowerCTLZ_ZERO_UNDEF(SDValue Op, const X86Subtarget &Subtarget,
-                                    SelectionDAG &DAG) {
-  MVT VT = Op.getSimpleValueType();
-  EVT OpVT = VT;
-  unsigned NumBits = VT.getSizeInBits();
-  SDLoc dl(Op);
-
-  Op = Op.getOperand(0);
-  if (VT == MVT::i8) {
-    // Zero extend to i32 since there is not an i8 bsr.
-    OpVT = MVT::i32;
-    Op = DAG.getNode(ISD::ZERO_EXTEND, dl, OpVT, Op);
+  if (Opc == ISD::CTLZ) {
+    // If src is zero (i.e. bsr sets ZF), returns NumBits.
+    SDValue Ops[] = {
+      Op,
+      DAG.getConstant(NumBits + NumBits - 1, dl, OpVT),
+      DAG.getConstant(X86::COND_E, dl, MVT::i8),
+      Op.getValue(1)
+    };
+    Op = DAG.getNode(X86ISD::CMOV, dl, OpVT, Ops);
   }
 
-  // Issue a bsr (scan bits in reverse).
-  SDVTList VTs = DAG.getVTList(OpVT, MVT::i32);
-  Op = DAG.getNode(X86ISD::BSR, dl, VTs, Op);
-
-  // And xor with NumBits-1.
+  // Finally xor with NumBits-1.
   Op = DAG.getNode(ISD::XOR, dl, OpVT, Op,
                    DAG.getConstant(NumBits - 1, dl, OpVT));
 
@@ -21272,8 +21246,8 @@ SDValue X86TargetLowering::LowerOperation(SDValue Op, SelectionDAG &DAG) const {
   case ISD::INIT_TRAMPOLINE:    return LowerINIT_TRAMPOLINE(Op, DAG);
   case ISD::ADJUST_TRAMPOLINE:  return LowerADJUST_TRAMPOLINE(Op, DAG);
   case ISD::FLT_ROUNDS_:        return LowerFLT_ROUNDS_(Op, DAG);
-  case ISD::CTLZ:               return LowerCTLZ(Op, Subtarget, DAG);
-  case ISD::CTLZ_ZERO_UNDEF:    return LowerCTLZ_ZERO_UNDEF(Op, Subtarget, DAG);
+  case ISD::CTLZ:
+  case ISD::CTLZ_ZERO_UNDEF:    return LowerCTLZ(Op, DAG);
   case ISD::CTTZ:
   case ISD::CTTZ_ZERO_UNDEF:    return LowerCTTZ(Op, DAG);
   case ISD::MUL:                return LowerMUL(Op, Subtarget, DAG);
