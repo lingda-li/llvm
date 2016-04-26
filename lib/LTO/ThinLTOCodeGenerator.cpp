@@ -137,6 +137,7 @@ bool IsFirstDefinitionForLinker(const GlobalValueSummaryList &GVSummaryList,
 static GlobalValue::LinkageTypes
 ResolveODR(const ModuleSummaryIndex &Index,
            const FunctionImporter::ExportSetTy &ExportList,
+           const DenseSet<GlobalValue::GUID> &GUIDPreservedSymbols,
            StringRef ModuleIdentifier, GlobalValue::GUID GUID,
            const GlobalValueSummary &GV) {
   auto HasMultipleCopies = [&](const GlobalValueSummaryList &GVSummaryList) {
@@ -163,7 +164,7 @@ ResolveODR(const ModuleSummaryIndex &Index,
     if (!HasMultipleCopies(GVSummaryList)) {
       // Exported LinkonceODR needs to be promoted to not be discarded
       if (GlobalValue::isDiscardableIfUnused(OriginalLinkage) &&
-          ExportList.count(GUID))
+          (ExportList.count(GUID) || GUIDPreservedSymbols.count(GUID)))
         return GlobalValue::WeakODRLinkage;
       break;
     }
@@ -187,8 +188,8 @@ ResolveODR(const ModuleSummaryIndex &Index,
 static void ResolveODR(
     const ModuleSummaryIndex &Index,
     const FunctionImporter::ExportSetTy &ExportList,
-    const std::map<GlobalValue::GUID, GlobalValueSummary *> &DefinedGlobals,
-    StringRef ModuleIdentifier,
+    const DenseSet<GlobalValue::GUID> &GUIDPreservedSymbols,
+    const GVSummaryMapTy &DefinedGlobals, StringRef ModuleIdentifier,
     std::map<GlobalValue::GUID, GlobalValue::LinkageTypes> &ResolvedODR) {
   if (Index.modulePaths().size() == 1)
     // Nothing to do if we don't have multiple modules
@@ -207,7 +208,7 @@ static void ResolveODR(
     if (GlobalInvolvedWithAlias.count(GV.second))
       continue;
     auto NewLinkage =
-        ResolveODR(Index, ExportList, ModuleIdentifier, GV.first, *GV.second);
+        ResolveODR(Index, ExportList, GUIDPreservedSymbols, ModuleIdentifier, GV.first, *GV.second);
     if (NewLinkage != GV.second->linkage()) {
       ResolvedODR[GV.first] = NewLinkage;
     }
@@ -423,7 +424,7 @@ public:
       const FunctionImporter::ImportMapTy &ImportList,
       const FunctionImporter::ExportSetTy &ExportList,
       const std::map<GlobalValue::GUID, GlobalValue::LinkageTypes> &ResolvedODR,
-      const std::map<GlobalValue::GUID, GlobalValueSummary *> &DefinedFunctions,
+      const GVSummaryMapTy &DefinedFunctions,
       const DenseSet<GlobalValue::GUID> &PreservedSymbols) {
     if (CachePath.empty())
       return;
@@ -672,8 +673,7 @@ void ThinLTOCodeGenerator::promote(Module &TheModule,
   auto ModuleCount = Index.modulePaths().size();
   auto ModuleIdentifier = TheModule.getModuleIdentifier();
   // Collect for each module the list of function it defines (GUID -> Summary).
-  StringMap<std::map<GlobalValue::GUID, GlobalValueSummary *>>
-      ModuleToDefinedGVSummaries;
+  StringMap<GVSummaryMapTy> ModuleToDefinedGVSummaries;
   Index.collectDefinedGVSummariesPerModule(ModuleToDefinedGVSummaries);
 
   // Generate import/export list
@@ -683,13 +683,17 @@ void ThinLTOCodeGenerator::promote(Module &TheModule,
                            ExportLists);
   auto &ExportList = ExportLists[ModuleIdentifier];
 
+  // Convert the preserved symbols set from string to GUID
+  auto GUIDPreservedSymbols =
+  computeGUIDPreservedSymbols(PreservedSymbols, TMBuilder.TheTriple);
+
   // Resolve the LinkOnceODR, trying to turn them into "available_externally"
   // where possible.
   // This is a compile-time optimization.
   // We use a std::map here to be able to have a defined ordering when
   // producing a hash for the cache entry.
   std::map<GlobalValue::GUID, GlobalValue::LinkageTypes> ResolvedODR;
-  ResolveODR(Index, ExportList, ModuleToDefinedGVSummaries[ModuleIdentifier],
+  ResolveODR(Index, ExportList, GUIDPreservedSymbols, ModuleToDefinedGVSummaries[ModuleIdentifier],
              ModuleIdentifier, ResolvedODR);
   fixupODR(TheModule, ResolvedODR);
 
@@ -705,8 +709,7 @@ void ThinLTOCodeGenerator::crossModuleImport(Module &TheModule,
   auto ModuleCount = Index.modulePaths().size();
 
   // Collect for each module the list of function it defines (GUID -> Summary).
-  StringMap<std::map<GlobalValue::GUID, GlobalValueSummary *>>
-      ModuleToDefinedGVSummaries(ModuleCount);
+  StringMap<GVSummaryMapTy> ModuleToDefinedGVSummaries(ModuleCount);
   Index.collectDefinedGVSummariesPerModule(ModuleToDefinedGVSummaries);
 
   // Generate import/export list
@@ -733,8 +736,7 @@ void ThinLTOCodeGenerator::internalize(Module &TheModule,
       computeGUIDPreservedSymbols(PreservedSymbols, TMBuilder.TheTriple);
 
   // Collect for each module the list of function it defines (GUID -> Summary).
-  StringMap<std::map<GlobalValue::GUID, GlobalValueSummary *>>
-      ModuleToDefinedGVSummaries(ModuleCount);
+  StringMap<GVSummaryMapTy> ModuleToDefinedGVSummaries(ModuleCount);
   Index.collectDefinedGVSummariesPerModule(ModuleToDefinedGVSummaries);
 
   // Generate import/export list
@@ -815,8 +817,7 @@ void ThinLTOCodeGenerator::run() {
   auto ModuleCount = Modules.size();
 
   // Collect for each module the list of function it defines (GUID -> Summary).
-  StringMap<std::map<GlobalValue::GUID, GlobalValueSummary *>>
-      ModuleToDefinedGVSummaries(ModuleCount);
+  StringMap<GVSummaryMapTy> ModuleToDefinedGVSummaries(ModuleCount);
   Index->collectDefinedGVSummariesPerModule(ModuleToDefinedGVSummaries);
 
   // Collect the import/export lists for all modules from the call-graph in the
@@ -846,7 +847,7 @@ void ThinLTOCodeGenerator::run() {
         // We use a std::map here to be able to have a defined ordering when
         // producing a hash for the cache entry.
         std::map<GlobalValue::GUID, GlobalValue::LinkageTypes> ResolvedODR;
-        ResolveODR(*Index, ExportList, DefinedFunctions, ModuleIdentifier,
+        ResolveODR(*Index, ExportList, GUIDPreservedSymbols, DefinedFunctions, ModuleIdentifier,
                    ResolvedODR);
 
         // The module may be cached, this helps handling it.
