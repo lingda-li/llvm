@@ -12952,9 +12952,9 @@ X86TargetLowering::LowerGlobalTLSAddress(SDValue Op, SelectionDAG &DAG) const {
     Chain = DAG.getCALLSEQ_START(Chain, DAG.getIntPtrConstant(0, DL, true), DL);
     SDValue Args[] = { Chain, Offset };
     Chain = DAG.getNode(X86ISD::TLSCALL, DL, NodeTys, Args);
-    Chain =
-        DAG.getCALLSEQ_END(Chain, DAG.getIntPtrConstant(0, DL, true),
-                           DAG.getIntPtrConstant(0, DL, true), SDValue(), DL);
+    Chain = DAG.getCALLSEQ_END(Chain, DAG.getIntPtrConstant(0, DL, true),
+                               DAG.getIntPtrConstant(0, DL, true),
+                               Chain.getValue(1), DL);
 
     // TLSCALL will be codegen'ed as call. Inform MFI that function has calls.
     MachineFrameInfo *MFI = DAG.getMachineFunction().getFrameInfo();
@@ -29639,23 +29639,6 @@ bool X86TargetLowering::IsDesirableToPromoteOp(SDValue Op, EVT &PVT) const {
   bool Commute = false;
   switch (Op.getOpcode()) {
   default: break;
-  case ISD::LOAD: {
-    LoadSDNode *LD = cast<LoadSDNode>(Op);
-    // If the non-extending load has a single use and it's not live out, then it
-    // might be folded.
-    if (LD->getExtensionType() == ISD::NON_EXTLOAD /*&&
-                                                     Op.hasOneUse()*/) {
-      for (SDNode::use_iterator UI = Op.getNode()->use_begin(),
-             UE = Op.getNode()->use_end(); UI != UE; ++UI) {
-        // The only case where we'd want to promote LOAD (rather then it being
-        // promoted as an operand is when it's only use is liveout.
-        if (UI->getOpcode() != ISD::CopyToReg)
-          return false;
-      }
-    }
-    Promote = true;
-    break;
-  }
   case ISD::SIGN_EXTEND:
   case ISD::ZERO_EXTEND:
   case ISD::ANY_EXTEND:
