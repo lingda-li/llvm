@@ -454,7 +454,6 @@ bool SITargetLowering::isLegalAddressingMode(const DataLayout &DL,
   }
 
   case AMDGPUAS::PRIVATE_ADDRESS:
-  case AMDGPUAS::UNKNOWN_ADDRESS_SPACE:
     return isLegalMUBUFAddressingMode(AM);
 
   case AMDGPUAS::LOCAL_ADDRESS:
@@ -475,6 +474,12 @@ bool SITargetLowering::isLegalAddressingMode(const DataLayout &DL,
     return false;
   }
   case AMDGPUAS::FLAT_ADDRESS:
+  case AMDGPUAS::UNKNOWN_ADDRESS_SPACE:
+    // For an unknown address space, this usually means that this is for some
+    // reason being used for pure arithmetic, and not based on some addressing
+    // computation. We don't have instructions that compute pointers with any
+    // addressing modes, so treat them as having no offset like flat
+    // instructions.
     return isLegalFlatAddressingMode(AM);
 
   default:
@@ -1553,6 +1558,11 @@ SDValue SITargetLowering::LowerINTRINSIC_WO_CHAIN(SDValue Op,
       SIRegisterInfo::DISPATCH_PTR : SIRegisterInfo::QUEUE_PTR;
     return CreateLiveInRegister(DAG, &AMDGPU::SReg_64RegClass,
                                 TRI->getPreloadedValue(MF, Reg), VT);
+  }
+  case Intrinsic::amdgcn_kernarg_segment_ptr: {
+    unsigned Reg
+      = TRI->getPreloadedValue(MF, SIRegisterInfo::KERNARG_SEGMENT_PTR);
+    return CreateLiveInRegister(DAG, &AMDGPU::SReg_64RegClass, Reg, VT);
   }
   case Intrinsic::amdgcn_rcp:
     return DAG.getNode(AMDGPUISD::RCP, DL, VT, Op.getOperand(1));

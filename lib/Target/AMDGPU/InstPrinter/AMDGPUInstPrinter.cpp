@@ -94,7 +94,7 @@ void AMDGPUInstPrinter::printMBUFOffset(const MCInst *MI, unsigned OpNo,
   }
 }
 
-void AMDGPUInstPrinter::printDSOffset(const MCInst *MI, unsigned OpNo,
+void AMDGPUInstPrinter::printOffset(const MCInst *MI, unsigned OpNo,
                                       raw_ostream &O) {
   uint16_t Imm = MI->getOperand(OpNo).getImm();
   if (Imm != 0) {
@@ -103,7 +103,7 @@ void AMDGPUInstPrinter::printDSOffset(const MCInst *MI, unsigned OpNo,
   }
 }
 
-void AMDGPUInstPrinter::printDSOffset0(const MCInst *MI, unsigned OpNo,
+void AMDGPUInstPrinter::printOffset0(const MCInst *MI, unsigned OpNo,
                                         raw_ostream &O) {
   if (MI->getOperand(OpNo).getImm()) {
     O << " offset0:";
@@ -111,12 +111,22 @@ void AMDGPUInstPrinter::printDSOffset0(const MCInst *MI, unsigned OpNo,
   }
 }
 
-void AMDGPUInstPrinter::printDSOffset1(const MCInst *MI, unsigned OpNo,
+void AMDGPUInstPrinter::printOffset1(const MCInst *MI, unsigned OpNo,
                                         raw_ostream &O) {
   if (MI->getOperand(OpNo).getImm()) {
     O << " offset1:";
     printU8ImmDecOperand(MI, OpNo, O);
   }
+}
+
+void AMDGPUInstPrinter::printSMRDOffset(const MCInst *MI, unsigned OpNo,
+                                        raw_ostream &O) {
+  printU32ImmOperand(MI, OpNo, O);
+}
+
+void AMDGPUInstPrinter::printSMRDLiteralOffset(const MCInst *MI, unsigned OpNo,
+                                               raw_ostream &O) {
+  printU32ImmOperand(MI, OpNo, O);
 }
 
 void AMDGPUInstPrinter::printGDS(const MCInst *MI, unsigned OpNo,
@@ -240,8 +250,11 @@ void AMDGPUInstPrinter::printRegOperand(unsigned reg, raw_ostream &O,
   } else if (MRI.getRegClass(AMDGPU::VReg_128RegClassID).contains(reg)) {
     Type = "v";
     NumRegs = 4;
-  } else  if (MRI.getRegClass(AMDGPU::SReg_128RegClassID).contains(reg)) {
+  } else  if (MRI.getRegClass(AMDGPU::SGPR_128RegClassID).contains(reg)) {
     Type = "s";
+    NumRegs = 4;
+  } else  if (MRI.getRegClass(AMDGPU::TTMP_128RegClassID).contains(reg)) {
+    Type = "ttmp";
     NumRegs = 4;
   } else if (MRI.getRegClass(AMDGPU::VReg_96RegClassID).contains(reg)) {
     Type = "v";
@@ -422,7 +435,7 @@ void AMDGPUInstPrinter::printOperandAndMods(const MCInst *MI, unsigned OpNo,
 }
 
 
-void AMDGPUInstPrinter::printDPPCtrlOperand(const MCInst *MI, unsigned OpNo,
+void AMDGPUInstPrinter::printDPPCtrl(const MCInst *MI, unsigned OpNo,
                                              raw_ostream &O) {
   unsigned Imm = MI->getOperand(OpNo).getImm();
   if (Imm <= 0x0ff) {
@@ -461,19 +474,19 @@ void AMDGPUInstPrinter::printDPPCtrlOperand(const MCInst *MI, unsigned OpNo,
   }
 }
 
-void AMDGPUInstPrinter::printRowMaskOperand(const MCInst *MI, unsigned OpNo,
+void AMDGPUInstPrinter::printRowMask(const MCInst *MI, unsigned OpNo,
                                             raw_ostream &O) {
   O << " row_mask:";
   printU4ImmOperand(MI, OpNo, O);
 }
 
-void AMDGPUInstPrinter::printBankMaskOperand(const MCInst *MI, unsigned OpNo,
+void AMDGPUInstPrinter::printBankMask(const MCInst *MI, unsigned OpNo,
                                              raw_ostream &O) {
   O << " bank_mask:";
   printU4ImmOperand(MI, OpNo, O);
 }
 
-void AMDGPUInstPrinter::printBoundCtrlOperand(const MCInst *MI, unsigned OpNo,
+void AMDGPUInstPrinter::printBoundCtrl(const MCInst *MI, unsigned OpNo,
                                               raw_ostream &O) {
   unsigned Imm = MI->getOperand(OpNo).getImm();
   if (Imm) {

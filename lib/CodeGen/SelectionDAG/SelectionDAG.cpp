@@ -971,8 +971,8 @@ SDNode *SelectionDAG::FindNodeOrInsertPos(const FoldingSetNodeID &ID,
     case ISD::Constant:
     case ISD::ConstantFP:
       // Erase debug location from the node if the node is used at several
-      // different places to do not propagate one location to all uses as it
-      // leads to incorrect debug info.
+      // different places. Do not propagate one location to all uses as it
+      // will cause a worse single stepping debugging experience.
       if (N->getDebugLoc() != DL)
         N->setDebugLoc(DebugLoc());
       break;
@@ -7294,9 +7294,9 @@ void llvm::checkForCycles(const llvm::SDNode *N,
                           bool force) {
 #ifndef NDEBUG
   bool check = force;
-#ifdef XDEBUG
+#ifdef EXPENSIVE_CHECKS
   check = true;
-#endif  // XDEBUG
+#endif  // EXPENSIVE_CHECKS
   if (check) {
     assert(N && "Checking nonexistent SDNode");
     SmallPtrSet<const SDNode*, 32> visited;

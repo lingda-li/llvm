@@ -593,83 +593,135 @@ static Value *simplifyX86insertq(IntrinsicInst &II, Value *Op0, Value *Op1,
 /// Attempt to convert pshufb* to shufflevector if the mask is constant.
 static Value *simplifyX86pshufb(const IntrinsicInst &II,
                                 InstCombiner::BuilderTy &Builder) {
-  auto *V = II.getArgOperand(1);
-  auto *VTy = cast<VectorType>(V->getType());
-  unsigned NumElts = VTy->getNumElements();
-  assert((NumElts == 16 || NumElts == 32) &&
-         "Unexpected number of elements in shuffle mask!");
-  // Initialize the resulting shuffle mask to all zeroes.
-  uint32_t Indexes[32] = {0};
-
-  if (auto *Mask = dyn_cast<ConstantDataVector>(V)) {
-    // Each byte in the shuffle control mask forms an index to permute the
-    // corresponding byte in the destination operand.
-    for (unsigned I = 0; I < NumElts; ++I) {
-      int8_t Index = Mask->getElementAsInteger(I);
-      // If the most significant bit (bit[7]) of each byte of the shuffle
-      // control mask is set, then zero is written in the result byte.
-      // The zero vector is in the right-hand side of the resulting
-      // shufflevector.
-
-      // The value of each index is the least significant 4 bits of the
-      // shuffle control byte.
-      Indexes[I] = (Index < 0) ? NumElts : Index & 0xF;
-    }
-  } else if (!isa<ConstantAggregateZero>(V))
+  Constant *V = dyn_cast<Constant>(II.getArgOperand(1));
+  if (!V)
     return nullptr;
 
-  // The value of each index for the high 128-bit lane is the least
-  // significant 4 bits of the respective shuffle control byte.
-  for (unsigned I = 16; I < NumElts; ++I)
-    Indexes[I] += I & 0xF0;
+  auto *VecTy = cast<VectorType>(II.getType());
+  auto *MaskEltTy = Type::getInt32Ty(II.getContext());
+  unsigned NumElts = VecTy->getNumElements();
+  assert((NumElts == 16 || NumElts == 32) &&
+         "Unexpected number of elements in shuffle mask!");
 
-  auto ShuffleMask =
-      ConstantDataVector::get(V->getContext(), makeArrayRef(Indexes, NumElts));
+  // Construct a shuffle mask from constant integers or UNDEFs.
+  Constant *Indexes[32] = {NULL};
+
+  // Each byte in the shuffle control mask forms an index to permute the
+  // corresponding byte in the destination operand.
+  for (unsigned I = 0; I < NumElts; ++I) {
+    Constant *COp = V->getAggregateElement(I);
+    if (!COp || (!isa<UndefValue>(COp) && !isa<ConstantInt>(COp)))
+      return nullptr;
+
+    if (isa<UndefValue>(COp)) {
+      Indexes[I] = UndefValue::get(MaskEltTy);
+      continue;
+    }
+
+    int8_t Index = cast<ConstantInt>(COp)->getValue().getZExtValue();
+
+    // If the most significant bit (bit[7]) of each byte of the shuffle
+    // control mask is set, then zero is written in the result byte.
+    // The zero vector is in the right-hand side of the resulting
+    // shufflevector.
+
+    // The value of each index for the high 128-bit lane is the least
+    // significant 4 bits of the respective shuffle control byte.
+    Index = ((Index < 0) ? NumElts : Index & 0x0F) + (I & 0xF0);
+    Indexes[I] = ConstantInt::get(MaskEltTy, Index);
+  }
+
+  auto ShuffleMask = ConstantVector::get(makeArrayRef(Indexes, NumElts));
   auto V1 = II.getArgOperand(0);
-  auto V2 = Constant::getNullValue(II.getType());
+  auto V2 = Constant::getNullValue(VecTy);
   return Builder.CreateShuffleVector(V1, V2, ShuffleMask);
 }
 
 /// Attempt to convert vpermilvar* to shufflevector if the mask is constant.
 static Value *simplifyX86vpermilvar(const IntrinsicInst &II,
                                     InstCombiner::BuilderTy &Builder) {
-  Value *V = II.getArgOperand(1);
-
-  unsigned Size = cast<VectorType>(V->getType())->getNumElements();
-  assert(Size == 8 || Size == 4 || Size == 2);
-
-  uint32_t Indexes[8];
-  if (auto C = dyn_cast<ConstantDataVector>(V)) {
-    // The intrinsics only read one or two bits, clear the rest.
-    for (unsigned I = 0; I < Size; ++I) {
-      uint32_t Index = C->getElementAsInteger(I) & 0x3;
-      // The PD variants uses bit 1 to select per-lane element index, so
-      // shift down to convert to generic shuffle mask index.
-      if (II.getIntrinsicID() == Intrinsic::x86_avx_vpermilvar_pd ||
-          II.getIntrinsicID() == Intrinsic::x86_avx_vpermilvar_pd_256)
-        Index >>= 1;
-      Indexes[I] = Index;
-    }
-  } else if (isa<ConstantAggregateZero>(V)) {
-    for (unsigned I = 0; I < Size; ++I)
-      Indexes[I] = 0;
-  } else {
+  Constant *V = dyn_cast<Constant>(II.getArgOperand(1));
+  if (!V)
     return nullptr;
+
+  auto *MaskEltTy = Type::getInt32Ty(II.getContext());
+  unsigned NumElts = cast<VectorType>(V->getType())->getNumElements();
+  assert(NumElts == 8 || NumElts == 4 || NumElts == 2);
+
+  // Construct a shuffle mask from constant integers or UNDEFs.
+  Constant *Indexes[8] = {NULL};
+
+  // The intrinsics only read one or two bits, clear the rest.
+  for (unsigned I = 0; I < NumElts; ++I) {
+    Constant *COp = V->getAggregateElement(I);
+    if (!COp || (!isa<UndefValue>(COp) && !isa<ConstantInt>(COp)))
+      return nullptr;
+
+    if (isa<UndefValue>(COp)) {
+      Indexes[I] = UndefValue::get(MaskEltTy);
+      continue;
+    }
+
+    APInt Index = cast<ConstantInt>(COp)->getValue();
+    Index = Index.zextOrTrunc(32).getLoBits(2);
+
+    // The PD variants uses bit 1 to select per-lane element index, so
+    // shift down to convert to generic shuffle mask index.
+    if (II.getIntrinsicID() == Intrinsic::x86_avx_vpermilvar_pd ||
+        II.getIntrinsicID() == Intrinsic::x86_avx_vpermilvar_pd_256)
+      Index = Index.lshr(1);
+
+    // The _256 variants are a bit trickier since the mask bits always index
+    // into the corresponding 128 half. In order to convert to a generic
+    // shuffle, we have to make that explicit.
+    if ((II.getIntrinsicID() == Intrinsic::x86_avx_vpermilvar_ps_256 ||
+         II.getIntrinsicID() == Intrinsic::x86_avx_vpermilvar_pd_256) &&
+        ((NumElts / 2) <= I)) {
+      Index += APInt(32, NumElts / 2);
+    }
+
+    Indexes[I] = ConstantInt::get(MaskEltTy, Index);
   }
 
-  // The _256 variants are a bit trickier since the mask bits always index
-  // into the corresponding 128 half. In order to convert to a generic
-  // shuffle, we have to make that explicit.
-  if (II.getIntrinsicID() == Intrinsic::x86_avx_vpermilvar_ps_256 ||
-      II.getIntrinsicID() == Intrinsic::x86_avx_vpermilvar_pd_256) {
-    for (unsigned I = Size / 2; I < Size; ++I)
-      Indexes[I] += Size / 2;
-  }
-
-  auto ShuffleMask =
-      ConstantDataVector::get(V->getContext(), makeArrayRef(Indexes, Size));
+  auto ShuffleMask = ConstantVector::get(makeArrayRef(Indexes, NumElts));
   auto V1 = II.getArgOperand(0);
   auto V2 = UndefValue::get(V1->getType());
+  return Builder.CreateShuffleVector(V1, V2, ShuffleMask);
+}
+
+/// Attempt to convert vpermd/vpermps to shufflevector if the mask is constant.
+static Value *simplifyX86vpermv(const IntrinsicInst &II,
+                                InstCombiner::BuilderTy &Builder) {
+  auto *V = dyn_cast<Constant>(II.getArgOperand(1));
+  if (!V)
+    return nullptr;
+
+  auto *VecTy = cast<VectorType>(II.getType());
+  auto *MaskEltTy = Type::getInt32Ty(II.getContext());
+  unsigned Size = VecTy->getNumElements();
+  assert(Size == 8 && "Unexpected shuffle mask size");
+
+  // Construct a shuffle mask from constant integers or UNDEFs.
+  Constant *Indexes[8] = {NULL};
+
+  for (unsigned I = 0; I < Size; ++I) {
+    Constant *COp = V->getAggregateElement(I);
+    if (!COp || (!isa<UndefValue>(COp) && !isa<ConstantInt>(COp)))
+      return nullptr;
+
+    if (isa<UndefValue>(COp)) {
+      Indexes[I] = UndefValue::get(MaskEltTy);
+      continue;
+    }
+
+    APInt Index = cast<ConstantInt>(COp)->getValue();
+    Index = Index.zextOrTrunc(32).getLoBits(3);
+    Indexes[I] = ConstantInt::get(MaskEltTy, Index);
+  }
+
+  auto ShuffleMask = ConstantVector::get(makeArrayRef(Indexes, Size));
+  auto V1 = II.getArgOperand(0);
+  auto V2 = UndefValue::get(VecTy);
   return Builder.CreateShuffleVector(V1, V2, ShuffleMask);
 }
 
@@ -1743,6 +1795,12 @@ Instruction *InstCombiner::visitCallInst(CallInst &CI) {
       return replaceInstUsesWith(*II, V);
     break;
 
+  case Intrinsic::x86_avx2_permd:
+  case Intrinsic::x86_avx2_permps:
+    if (Value *V = simplifyX86vpermv(*II, *Builder))
+      return replaceInstUsesWith(*II, V);
+    break;
+
   case Intrinsic::x86_avx_vperm2f128_pd_256:
   case Intrinsic::x86_avx_vperm2f128_ps_256:
   case Intrinsic::x86_avx_vperm2f128_si_256:
@@ -2793,15 +2851,18 @@ InstCombiner::transformCallThroughTrampoline(CallSite CS,
       const AttributeSet &NewPAL =
           AttributeSet::get(FTy->getContext(), NewAttrs);
 
+      SmallVector<OperandBundleDef, 1> OpBundles;
+      CS.getOperandBundlesAsDefs(OpBundles);
+
       Instruction *NewCaller;
       if (InvokeInst *II = dyn_cast<InvokeInst>(Caller)) {
         NewCaller = InvokeInst::Create(NewCallee,
                                        II->getNormalDest(), II->getUnwindDest(),
-                                       NewArgs);
+                                       NewArgs, OpBundles);
         cast<InvokeInst>(NewCaller)->setCallingConv(II->getCallingConv());
         cast<InvokeInst>(NewCaller)->setAttributes(NewPAL);
       } else {
-        NewCaller = CallInst::Create(NewCallee, NewArgs);
+        NewCaller = CallInst::Create(NewCallee, NewArgs, OpBundles);
         if (cast<CallInst>(Caller)->isTailCall())
           cast<CallInst>(NewCaller)->setTailCall();
         cast<CallInst>(NewCaller)->

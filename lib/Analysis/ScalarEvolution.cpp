@@ -111,7 +111,7 @@ MaxBruteForceIterations("scalar-evolution-max-iterations", cl::ReallyHidden,
                                  "derived loop"),
                         cl::init(100));
 
-// FIXME: Enable this with XDEBUG when the test suite is clean.
+// FIXME: Enable this with EXPENSIVE_CHECKS when the test suite is clean.
 static cl::opt<bool>
 VerifySCEV("verify-scev",
            cl::desc("Verify ScalarEvolution's backedge taken counts (slow)"));
@@ -9565,6 +9565,18 @@ static void PrintLoopInfo(raw_ostream &OS, ScalarEvolution *SE,
   OS << "\n";
 }
 
+static StringRef loopDispositionToStr(ScalarEvolution::LoopDisposition LD) {
+  switch (LD) {
+  case ScalarEvolution::LoopVariant:
+    return "Variant";
+  case ScalarEvolution::LoopInvariant:
+    return "Invariant";
+  case ScalarEvolution::LoopComputable:
+    return "Computable";
+  }
+  llvm_unreachable("Unknown ScalarEvolution::LoopDisposition kind!");
+}
+
 void ScalarEvolution::print(raw_ostream &OS) const {
   // ScalarEvolution's implementation of the print method is to print
   // out SCEV values of all instructions that are interesting. Doing
@@ -9612,6 +9624,20 @@ void ScalarEvolution::print(raw_ostream &OS) const {
         } else {
           OS << *ExitValue;
         }
+
+        bool First = true;
+        for (auto *Iter = L; Iter; Iter = Iter->getParentLoop()) {
+          if (First) {
+            OS << "\t\t" "LoopDispositions: [ ";
+            First = false;
+          } else {
+            OS << ", ";
+          }
+
+          OS << loopDispositionToStr(SE.getLoopDisposition(SV, Iter));
+        }
+
+        OS << " ]";
       }
 
       OS << "\n";

@@ -16,8 +16,8 @@
 #include "llvm/ADT/Hashing.h"
 #include "llvm/ADT/ScopedHashTable.h"
 #include "llvm/ADT/Statistic.h"
-#include "llvm/Analysis/GlobalsModRef.h"
 #include "llvm/Analysis/AssumptionCache.h"
+#include "llvm/Analysis/GlobalsModRef.h"
 #include "llvm/Analysis/InstructionSimplify.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Analysis/TargetTransformInfo.h"
@@ -279,15 +279,15 @@ public:
   /// present the table; it is the responsibility of the consumer to inspect
   /// the atomicity/volatility if needed.
   struct LoadValue {
-    Value *Data;
+    Instruction *Inst;
     unsigned Generation;
     int MatchingId;
     bool IsAtomic;
     LoadValue()
-      : Data(nullptr), Generation(0), MatchingId(-1), IsAtomic(false) {}
-    LoadValue(Value *Data, unsigned Generation, unsigned MatchingId,
+      : Inst(nullptr), Generation(0), MatchingId(-1), IsAtomic(false) {}
+    LoadValue(Instruction *Inst, unsigned Generation, unsigned MatchingId,
               bool IsAtomic)
-      : Data(Data), Generation(Generation), MatchingId(MatchingId),
+      : Inst(Inst), Generation(Generation), MatchingId(MatchingId),
         IsAtomic(IsAtomic) {}
   };
   typedef RecyclingAllocator<BumpPtrAllocator,
@@ -554,6 +554,22 @@ bool EarlyCSE::processNode(DomTreeNode *Node) {
       continue;
     }
 
+    if (match(Inst, m_Intrinsic<Intrinsic::experimental_guard>())) {
+      if (auto *CondI =
+              dyn_cast<Instruction>(cast<CallInst>(Inst)->getArgOperand(0))) {
+        // The condition we're on guarding here is true for all dominated
+        // locations.
+        if (SimpleValue::canHandle(CondI))
+          AvailableValues.insert(CondI, ConstantInt::getTrue(BB->getContext()));
+      }
+
+      // Guard intrinsics read all memory, but don't write any memory.
+      // Accordingly, don't update the generation but consume the last store (to
+      // avoid an incorrect DSE).
+      LastStore = nullptr;
+      continue;
+    }
+
     // If the instruction can be simplified (e.g. X+0 = X) then replace it with
     // its simpler value.
     if (Value *V = SimplifyInstruction(Inst, DL, &TLI, &DT, &AC)) {
@@ -597,16 +613,16 @@ bool EarlyCSE::processNode(DomTreeNode *Node) {
       // If we have an available version of this load, and if it is the right
       // generation, replace this instruction.
       LoadValue InVal = AvailableLoads.lookup(MemInst.getPointerOperand());
-      if (InVal.Data != nullptr && InVal.Generation == CurrentGeneration &&
+      if (InVal.Inst != nullptr && InVal.Generation == CurrentGeneration &&
           InVal.MatchingId == MemInst.getMatchingId() &&
           // We don't yet handle removing loads with ordering of any kind.
           !MemInst.isVolatile() && MemInst.isUnordered() &&
           // We can't replace an atomic load with one which isn't also atomic.
           InVal.IsAtomic >= MemInst.isAtomic()) {
-        Value *Op = getOrCreateResult(InVal.Data, Inst->getType());
+        Value *Op = getOrCreateResult(InVal.Inst, Inst->getType());
         if (Op != nullptr) {
           DEBUG(dbgs() << "EarlyCSE CSE LOAD: " << *Inst
-                       << "  to: " << *InVal.Data << '\n');
+                       << "  to: " << *InVal.Inst << '\n');
           if (!Inst->use_empty())
             Inst->replaceAllUsesWith(Op);
           Inst->eraseFromParent();
@@ -674,8 +690,8 @@ bool EarlyCSE::processNode(DomTreeNode *Node) {
     // the store originally was.
     if (MemInst.isValid() && MemInst.isStore()) {
       LoadValue InVal = AvailableLoads.lookup(MemInst.getPointerOperand());
-      if (InVal.Data &&
-          InVal.Data == getOrCreateResult(Inst, InVal.Data->getType()) &&
+      if (InVal.Inst &&
+          InVal.Inst == getOrCreateResult(Inst, InVal.Inst->getType()) &&
           InVal.Generation == CurrentGeneration &&
           InVal.MatchingId == MemInst.getMatchingId() &&
           // We don't yet handle removing stores with ordering of any kind.
