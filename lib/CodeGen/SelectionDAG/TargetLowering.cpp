@@ -1203,22 +1203,22 @@ unsigned TargetLowering::ComputeNumSignBitsForTargetNode(SDValue Op,
 
 /// Test if the given value is known to have exactly one bit set. This differs
 /// from computeKnownBits in that it doesn't need to determine which bit is set.
-static bool ValueHasExactlyOneBitSet(SDValue Val, const SelectionDAG &DAG) {
-  // A left-shift of a constant one will have exactly one bit set, because
+static bool valueHasExactlyOneBitSet(SDValue Val, const SelectionDAG &DAG) {
+  // A left-shift of a constant one will have exactly one bit set because
   // shifting the bit off the end is undefined.
-  if (Val.getOpcode() == ISD::SHL)
-    if (ConstantSDNode *C =
-         dyn_cast<ConstantSDNode>(Val.getNode()->getOperand(0)))
-      if (C->getAPIntValue() == 1)
-        return true;
+  if (Val.getOpcode() == ISD::SHL) {
+    auto *C = dyn_cast<ConstantSDNode>(Val.getOperand(0));
+    if (C && C->getAPIntValue() == 1)
+      return true;
+  }
 
-  // Similarly, a right-shift of a constant sign-bit will have exactly
+  // Similarly, a logical right-shift of a constant sign-bit will have exactly
   // one bit set.
-  if (Val.getOpcode() == ISD::SRL)
-    if (ConstantSDNode *C =
-         dyn_cast<ConstantSDNode>(Val.getNode()->getOperand(0)))
-      if (C->getAPIntValue().isSignBit())
-        return true;
+  if (Val.getOpcode() == ISD::SRL) {
+    auto *C = dyn_cast<ConstantSDNode>(Val.getOperand(0));
+    if (C && C->getAPIntValue().isSignBit())
+      return true;
+  }
 
   // More could be done here, though the above checks are enough
   // to handle some common cases.
@@ -1302,6 +1302,52 @@ bool TargetLowering::isExtendedTrueVal(const ConstantSDNode *N, EVT VT,
     return N->isAllOnesValue() && SExt;
   }
   llvm_unreachable("Unexpected enumeration.");
+}
+
+/// If the target supports an 'and-not' or 'and-complement' logic operation,
+/// try to use that to make a comparison operation more efficient.
+static SDValue createAndNotSetCC(EVT VT, SDValue N0, SDValue N1,
+                                 ISD::CondCode Cond, SelectionDAG &DAG,
+                                 SDLoc dl) {
+  // Match these patterns in any of their permutations:
+  // (X & Y) == Y
+  // (X & Y) != Y
+  if (N1.getOpcode() == ISD::AND && N0.getOpcode() != ISD::AND)
+    std::swap(N0, N1);
+
+  if (N0.getOpcode() != ISD::AND || !N0.hasOneUse() ||
+      (Cond != ISD::SETEQ && Cond != ISD::SETNE))
+    return SDValue();
+
+  SDValue X, Y;
+  if (N0.getOperand(0) == N1) {
+    X = N0.getOperand(1);
+    Y = N0.getOperand(0);
+  } else if (N0.getOperand(1) == N1) {
+    X = N0.getOperand(0);
+    Y = N0.getOperand(1);
+  } else {
+    return SDValue();
+  }
+
+  // Bail out if the compare operand that we want to turn into a zero is already
+  // a zero (otherwise, infinite loop).
+  auto *YConst = dyn_cast<ConstantSDNode>(Y);
+  if (YConst && YConst->isNullValue())
+    return SDValue();
+
+  // We don't want to do this transform if the mask is a single bit because
+  // there are more efficient ways to deal with that case (for example, 'bt' on
+  // x86 or 'rlwinm' on PPC).
+  if (!DAG.getTargetLoweringInfo().hasAndNotCompare(Y) ||
+      valueHasExactlyOneBitSet(Y, DAG))
+    return SDValue();
+
+  // Transform this into: ~X & Y == 0.
+  EVT OpVT = X.getValueType();
+  SDValue NotX = DAG.getNOT(SDLoc(X), X, OpVT);
+  SDValue NewAnd = DAG.getNode(ISD::AND, SDLoc(N0), OpVT, NotX, Y);
+  return DAG.getSetCC(dl, VT, NewAnd, DAG.getConstant(0, dl, OpVT), Cond);
 }
 
 /// Try to simplify a setcc built with the specified operands and cc. If it is
@@ -2094,7 +2140,7 @@ TargetLowering::SimplifySetCC(EVT VT, SDValue N0, SDValue N1,
     // the expressions are not equivalent when y==0.
     if (N0.getOpcode() == ISD::AND)
       if (N0.getOperand(0) == N1 || N0.getOperand(1) == N1) {
-        if (ValueHasExactlyOneBitSet(N1, DAG)) {
+        if (valueHasExactlyOneBitSet(N1, DAG)) {
           Cond = ISD::getSetCCInverse(Cond, /*isInteger=*/true);
           if (DCI.isBeforeLegalizeOps() ||
               isCondCodeLegal(Cond, N0.getSimpleValueType())) {
@@ -2105,7 +2151,7 @@ TargetLowering::SimplifySetCC(EVT VT, SDValue N0, SDValue N1,
       }
     if (N1.getOpcode() == ISD::AND)
       if (N1.getOperand(0) == N0 || N1.getOperand(1) == N0) {
-        if (ValueHasExactlyOneBitSet(N0, DAG)) {
+        if (valueHasExactlyOneBitSet(N0, DAG)) {
           Cond = ISD::getSetCCInverse(Cond, /*isInteger=*/true);
           if (DCI.isBeforeLegalizeOps() ||
               isCondCodeLegal(Cond, N1.getSimpleValueType())) {
@@ -2165,6 +2211,9 @@ TargetLowering::SimplifySetCC(EVT VT, SDValue N0, SDValue N1,
     }
     return N0;
   }
+
+  if (SDValue AndNotCC = createAndNotSetCC(VT, N0, N1, Cond, DAG, dl))
+    return AndNotCC;
 
   // Could not fold it.
   return SDValue();

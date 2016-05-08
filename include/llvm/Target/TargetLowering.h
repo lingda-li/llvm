@@ -334,6 +334,22 @@ public:
     return MaskAndBranchFoldingIsLegal;
   }
 
+  /// Return true if the target should transform:
+  /// (X & Y) == Y ---> (~X & Y) == 0
+  /// (X & Y) != Y ---> (~X & Y) != 0
+  ///
+  /// This may be profitable if the target has a bitwise and-not operation that
+  /// sets comparison flags. A target may want to limit the transformation based
+  /// on the type of Y or if Y is a constant.
+  ///
+  /// Note that the transform will not occur if Y is known to be a power-of-2
+  /// because a mask and compare of a single bit can be handled by inverting the
+  /// predicate, for example:
+  /// (X & 8) == 8 ---> (X & 8) != 0
+  virtual bool hasAndNotCompare(SDValue Y) const {
+    return false;
+  }
+
   /// \brief Return true if the target wants to use the optimization that
   /// turns ext(promotableInst1(...(promotableInstN(load)))) into
   /// promotedInst1(...(promotedInstN(ext(load)))).
@@ -600,7 +616,17 @@ public:
        getOperationAction(Op, VT) == Promote);
   }
 
-  /// Return true if the specified operation is ilegal but has a custom lowering
+  /// Return true if the specified operation is legal on this target or can be
+  /// made legal with custom lowering or using promotion. This is used to help
+  /// guide high-level lowering decisions.
+  bool isOperationLegalOrCustomOrPromote(unsigned Op, EVT VT) const {
+    return (VT == MVT::Other || isTypeLegal(VT)) &&
+      (getOperationAction(Op, VT) == Legal ||
+       getOperationAction(Op, VT) == Custom ||
+       getOperationAction(Op, VT) == Promote);
+  }
+
+  /// Return true if the specified operation is illegal but has a custom lowering
   /// on that type. This is used to help guide high-level lowering
   /// decisions.
   bool isOperationCustom(unsigned Op, EVT VT) const {

@@ -539,6 +539,10 @@ EmitMatcher(const Matcher *N, unsigned Indent, unsigned CurrentIdx,
   case Matcher::MorphNodeTo: {
     const EmitNodeMatcherCommon *EN = cast<EmitNodeMatcherCommon>(N);
     OS << (isa<EmitNodeMatcher>(EN) ? "OPC_EmitNode" : "OPC_MorphNodeTo");
+    bool CompressVTs = EN->getNumVTs() < 3;
+    if (CompressVTs)
+      OS << EN->getNumVTs();
+
     OS << ", TARGET_VAL(" << EN->getOpcodeName() << "), 0";
 
     if (EN->hasChain())   OS << "|OPFL_Chain";
@@ -549,10 +553,13 @@ EmitMatcher(const Matcher *N, unsigned Indent, unsigned CurrentIdx,
       OS << "|OPFL_Variadic" << EN->getNumFixedArityOperands();
     OS << ",\n";
 
-    OS.PadToColumn(Indent*2+4) << EN->getNumVTs();
-    if (!OmitComments)
-      OS << "/*#VTs*/";
-    OS << ", ";
+    OS.PadToColumn(Indent*2+4);
+    if (!CompressVTs) {
+      OS << EN->getNumVTs();
+      if (!OmitComments)
+        OS << "/*#VTs*/";
+      OS << ", ";
+    }
     for (unsigned i = 0, e = EN->getNumVTs(); i != e; ++i)
       OS << getEnumName(EN->getVT(i)) << ", ";
 
@@ -586,16 +593,7 @@ EmitMatcher(const Matcher *N, unsigned Indent, unsigned CurrentIdx,
     } else
       OS << '\n';
 
-    return 6+EN->getNumVTs()+NumOperandBytes;
-  }
-  case Matcher::MarkGlueResults: {
-    const MarkGlueResultsMatcher *CFR = cast<MarkGlueResultsMatcher>(N);
-    OS << "OPC_MarkGlueResults, " << CFR->getNumNodes() << ", ";
-    unsigned NumOperandBytes = 0;
-    for (unsigned i = 0, e = CFR->getNumNodes(); i != e; ++i)
-      NumOperandBytes += EmitVBRValue(CFR->getNode(i), OS);
-    OS << '\n';
-    return 2+NumOperandBytes;
+    return 5 + !CompressVTs + EN->getNumVTs() + NumOperandBytes;
   }
   case Matcher::CompleteMatch: {
     const CompleteMatchMatcher *CM = cast<CompleteMatchMatcher>(N);
@@ -814,7 +812,6 @@ void MatcherTableEmitter::EmitHistogram(const Matcher *M,
     case Matcher::EmitNode: OS << "OPC_EmitNode"; break;
     case Matcher::MorphNodeTo: OS << "OPC_MorphNodeTo"; break;
     case Matcher::EmitNodeXForm: OS << "OPC_EmitNodeXForm"; break;
-    case Matcher::MarkGlueResults: OS << "OPC_MarkGlueResults"; break;
     case Matcher::CompleteMatch: OS << "OPC_CompleteMatch"; break;
     }
 

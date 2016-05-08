@@ -508,7 +508,7 @@ X86TargetLowering::X86TargetLowering(const X86TargetMachine &TM,
       setOperationAction(ISD::FSINCOS, VT, Expand);
     }
 
-    // Lower this to FGETSIGNx86 plus an AND.
+    // Lower this to MOVMSK plus an AND.
     setOperationAction(ISD::FGETSIGN, MVT::i64, Custom);
     setOperationAction(ISD::FGETSIGN, MVT::i32, Custom);
 
@@ -1919,7 +1919,9 @@ unsigned X86TargetLowering::getAddressSpace() const {
 }
 
 Value *X86TargetLowering::getIRStackGuard(IRBuilder<> &IRB) const {
-  if (!Subtarget.isTargetLinux())
+  // glibc has a special slot for the stack guard in tcbhead_t, use it instead
+  // of the usual global variable (see sysdeps/{i386,x86_64}/nptl/tls.h)
+  if (!Subtarget.isTargetGlibc())
     return TargetLowering::getIRStackGuard(IRB);
 
   // %fs:0x28, unless we're using a Kernel code model, in which case it's %gs:
@@ -1932,7 +1934,7 @@ Value *X86TargetLowering::getIRStackGuard(IRBuilder<> &IRB) const {
 }
 
 void X86TargetLowering::insertSSPDeclarations(Module &M) const {
-  if (!Subtarget.isTargetLinux())
+  if (!Subtarget.isTargetGlibc())
     TargetLowering::insertSSPDeclarations(M);
 }
 
@@ -4118,6 +4120,18 @@ bool X86TargetLowering::isCheapToSpeculateCttz() const {
 bool X86TargetLowering::isCheapToSpeculateCtlz() const {
   // Speculate ctlz only if we can directly use LZCNT.
   return Subtarget.hasLZCNT();
+}
+
+bool X86TargetLowering::hasAndNotCompare(SDValue Y) const {
+  if (!Subtarget.hasBMI())
+    return false;
+
+  // There are only 32-bit and 64-bit forms for 'andn'.
+  EVT VT = Y.getValueType();
+  if (VT != MVT::i32 && VT != MVT::i64)
+    return false;
+
+  return true;
 }
 
 /// Return true if every element in Mask, beginning
@@ -11542,6 +11556,23 @@ static SDValue lowerV4X128VectorShuffle(SDLoc DL, MVT VT,
   if (!canWidenShuffleElements(Mask, WidenedMask))
     return SDValue();
 
+  SDValue Ops[2] = {DAG.getUNDEF(VT), DAG.getUNDEF(VT)};
+  // Insure elements came from the same Op.
+  int MaxOp1Index = VT.getVectorNumElements()/2 - 1;
+  for (int i = 0, Size = WidenedMask.size(); i < Size; ++i) {
+    if (WidenedMask[i] == SM_SentinelZero)
+      return SDValue();
+    if (WidenedMask[i] == SM_SentinelUndef)
+      continue;
+
+    SDValue Op = WidenedMask[i] > MaxOp1Index ? V2 : V1;
+    unsigned OpIndex = (i < Size/2) ? 0 : 1;
+    if (Ops[OpIndex].isUndef())
+      Ops[OpIndex] = Op;
+    else if (Ops[OpIndex] != Op)
+      return SDValue();
+  }
+
   // Form a 128-bit permutation.
   // Convert the 64-bit shuffle mask selection values into 128-bit selection
   // bits defined by a vshuf64x2 instruction's immediate control byte.
@@ -11549,15 +11580,12 @@ static SDValue lowerV4X128VectorShuffle(SDLoc DL, MVT VT,
   unsigned ControlBitsNum = WidenedMask.size() / 2;
 
   for (int i = 0, Size = WidenedMask.size(); i < Size; ++i) {
-    if (WidenedMask[i] == SM_SentinelZero)
-      return SDValue();
-
     // Use first element in place of undef mask.
     Imm = (WidenedMask[i] == SM_SentinelUndef) ? 0 : WidenedMask[i];
     PermMask |= (Imm % WidenedMask.size()) << (i * ControlBitsNum);
   }
 
-  return DAG.getNode(X86ISD::SHUF128, DL, VT, V1, V2,
+  return DAG.getNode(X86ISD::SHUF128, DL, VT, Ops[0], Ops[1],
                      DAG.getConstant(PermMask, DL, MVT::i8));
 }
 
@@ -14222,10 +14250,17 @@ static SDValue LowerFGETSIGN(SDValue Op, SelectionDAG &DAG) {
   SDLoc dl(Op);
   MVT VT = Op.getSimpleValueType();
 
-  // Lower ISD::FGETSIGN to (AND (X86ISD::FGETSIGNx86 ...) 1).
-  SDValue xFGETSIGN = DAG.getNode(X86ISD::FGETSIGNx86, dl, VT, N0,
-                                  DAG.getConstant(1, dl, VT));
-  return DAG.getNode(ISD::AND, dl, VT, xFGETSIGN, DAG.getConstant(1, dl, VT));
+  MVT OpVT = N0.getSimpleValueType();
+  assert((OpVT == MVT::f32 || OpVT == MVT::f64) &&
+         "Unexpected type for FGETSIGN");
+
+  // Lower ISD::FGETSIGN to (AND (X86ISD::MOVMSK ...) 1).
+  MVT VecVT = (OpVT == MVT::f32 ? MVT::v4f32 : MVT::v2f64);
+  SDValue Res = DAG.getNode(ISD::SCALAR_TO_VECTOR, dl, VecVT, N0);
+  Res = DAG.getNode(X86ISD::MOVMSK, dl, MVT::i32, Res);
+  Res = DAG.getZExtOrTrunc(Res, dl, VT);
+  Res = DAG.getNode(ISD::AND, dl, VT, Res, DAG.getConstant(1, dl, VT));
+  return Res;
 }
 
 // Check whether an OR'd tree is PTEST-able.
@@ -21616,7 +21651,6 @@ const char *X86TargetLowering::getTargetNodeName(unsigned Opcode) const {
   case X86ISD::SETCC:              return "X86ISD::SETCC";
   case X86ISD::SETCC_CARRY:        return "X86ISD::SETCC_CARRY";
   case X86ISD::FSETCC:             return "X86ISD::FSETCC";
-  case X86ISD::FGETSIGNx86:        return "X86ISD::FGETSIGNx86";
   case X86ISD::CMOV:               return "X86ISD::CMOV";
   case X86ISD::BRCOND:             return "X86ISD::BRCOND";
   case X86ISD::RET_FLAG:           return "X86ISD::RET_FLAG";
@@ -23993,12 +24027,20 @@ static bool combineX86ShuffleChain(SDValue Input, SDValue Root,
 
   SDValue Res;
 
-  if (Mask.size() == 1) {
+  unsigned NumMaskElts = Mask.size();
+  if (NumMaskElts == 1) {
     assert(Mask[0] == 0 && "Invalid shuffle index found!");
     DCI.CombineTo(Root.getNode(), DAG.getBitcast(RootVT, Input),
                   /*AddTo*/ true);
     return true;
   }
+
+  unsigned RootSizeInBits = RootVT.getSizeInBits();
+  unsigned MaskEltSizeInBits = RootSizeInBits / NumMaskElts;
+
+  // TODO - handle 128/256-bit wide vector shuffles.
+  if (MaskEltSizeInBits > 64)
+    return false;
 
   // Use the float domain if the operand type is a floating point type.
   bool FloatDomain = VT.isFloatingPoint();
@@ -24029,7 +24071,7 @@ static bool combineX86ShuffleChain(SDValue Input, SDValue Root,
         Shuffle = Lo ? X86ISD::MOVLHPS : X86ISD::MOVHLPS;
         ShuffleVT = MVT::v4f32;
       }
-      if (Depth == 1 && Root->getOpcode() == Shuffle)
+      if (Depth == 1 && Root.getOpcode() == Shuffle)
         return false; // Nothing to do!
       Res = DAG.getBitcast(ShuffleVT, Input);
       DCI.AddToWorklist(Res.getNode());
@@ -24047,7 +24089,7 @@ static bool combineX86ShuffleChain(SDValue Input, SDValue Root,
       bool Lo = Mask.equals({0, 0, 2, 2});
       unsigned Shuffle = Lo ? X86ISD::MOVSLDUP : X86ISD::MOVSHDUP;
       MVT ShuffleVT = MVT::v4f32;
-      if (Depth == 1 && Root->getOpcode() == Shuffle)
+      if (Depth == 1 && Root.getOpcode() == Shuffle)
         return false; // Nothing to do!
       Res = DAG.getBitcast(ShuffleVT, Input);
       DCI.AddToWorklist(Res.getNode());
@@ -24061,7 +24103,7 @@ static bool combineX86ShuffleChain(SDValue Input, SDValue Root,
       bool Lo = Mask.equals({0, 0, 1, 1});
       unsigned Shuffle = Lo ? X86ISD::UNPCKL : X86ISD::UNPCKH;
       MVT ShuffleVT = MVT::v4f32;
-      if (Depth == 1 && Root->getOpcode() == Shuffle)
+      if (Depth == 1 && Root.getOpcode() == Shuffle)
         return false; // Nothing to do!
       Res = DAG.getBitcast(ShuffleVT, Input);
       DCI.AddToWorklist(Res.getNode());
@@ -24084,10 +24126,10 @@ static bool combineX86ShuffleChain(SDValue Input, SDValue Root,
            {8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13, 14, 14, 15, 15}))) {
     bool Lo = Mask[0] == 0;
     unsigned Shuffle = Lo ? X86ISD::UNPCKL : X86ISD::UNPCKH;
-    if (Depth == 1 && Root->getOpcode() == Shuffle)
+    if (Depth == 1 && Root.getOpcode() == Shuffle)
       return false; // Nothing to do!
     MVT ShuffleVT;
-    switch (Mask.size()) {
+    switch (NumMaskElts) {
     case 8:
       ShuffleVT = MVT::v8i16;
       break;
@@ -24097,6 +24139,22 @@ static bool combineX86ShuffleChain(SDValue Input, SDValue Root,
     default:
       llvm_unreachable("Impossible mask size!");
     };
+    Res = DAG.getBitcast(ShuffleVT, Input);
+    DCI.AddToWorklist(Res.getNode());
+    Res = DAG.getNode(Shuffle, DL, ShuffleVT, Res, Res);
+    DCI.AddToWorklist(Res.getNode());
+    DCI.CombineTo(Root.getNode(), DAG.getBitcast(RootVT, Res),
+                  /*AddTo*/ true);
+    return true;
+  }
+
+  // Match a 128-bit integer vector against a VZEXT_MOVL (MOVQ) instruction.
+  if (!FloatDomain && VT.is128BitVector() &&
+      Mask.size() == 2 && Mask[0] == 0 && Mask[1] < 0) {
+    unsigned Shuffle = X86ISD::VZEXT_MOVL;
+    MVT ShuffleVT = MVT::v2i64;
+    if (Depth == 1 && Root.getOpcode() == Shuffle)
+      return false; // Nothing to do!
     Res = DAG.getBitcast(ShuffleVT, Input);
     DCI.AddToWorklist(Res.getNode());
     Res = DAG.getNode(Shuffle, DL, ShuffleVT, Res, Res);
@@ -24127,12 +24185,12 @@ static bool combineX86ShuffleChain(SDValue Input, SDValue Root,
         ShuffleVT = MVT::v8f32;
     }
 
-    if (isSequentialOrUndefOrZeroInRange(Mask, /*Pos*/ 0, /*Size*/ Mask.size(),
+    if (isSequentialOrUndefOrZeroInRange(Mask, /*Pos*/ 0, /*Size*/ NumMaskElts,
                                          /*Low*/ 0) &&
-        Mask.size() <= ShuffleVT.getVectorNumElements()) {
+        NumMaskElts <= ShuffleVT.getVectorNumElements()) {
       unsigned BlendMask = 0;
       unsigned ShuffleSize = ShuffleVT.getVectorNumElements();
-      unsigned MaskRatio = ShuffleSize / Mask.size();
+      unsigned MaskRatio = ShuffleSize / NumMaskElts;
 
       if (Depth == 1 && Root.getOpcode() == X86ISD::BLENDI)
         return false;
@@ -24168,7 +24226,7 @@ static bool combineX86ShuffleChain(SDValue Input, SDValue Root,
        (VT.is512BitVector() && Subtarget.hasBWI()))) {
     SmallVector<SDValue, 16> PSHUFBMask;
     int NumBytes = VT.getSizeInBits() / 8;
-    int Ratio = NumBytes / Mask.size();
+    int Ratio = NumBytes / NumMaskElts;
     for (int i = 0; i < NumBytes; ++i) {
       int M = Mask[i / Ratio];
       if (M == SM_SentinelUndef) {
@@ -24268,6 +24326,7 @@ static bool combineX86ShufflesRecursively(SDValue Op, SDValue Root,
            OpMask.size() % RootMask.size() == 0) ||
           OpMask.size() == RootMask.size()) &&
          "The smaller number of elements must divide the larger.");
+  int MaskWidth = std::max<int>(OpMask.size(), RootMask.size());
   int RootRatio = std::max<int>(1, OpMask.size() / RootMask.size());
   int OpRatio = std::max<int>(1, RootMask.size() / OpMask.size());
   assert(((RootRatio == 1 && OpRatio == 1) ||
@@ -24275,13 +24334,13 @@ static bool combineX86ShufflesRecursively(SDValue Op, SDValue Root,
          "Must not have a ratio for both incoming and op masks!");
 
   SmallVector<int, 16> Mask;
-  Mask.reserve(std::max(OpMask.size(), RootMask.size()));
+  Mask.reserve(MaskWidth);
 
   // Merge this shuffle operation's mask into our accumulated mask. Note that
   // this shuffle's mask will be the first applied to the input, followed by the
   // root mask to get us all the way to the root value arrangement. The reason
   // for this order is that we are recursing up the operation chain.
-  for (int i = 0, e = std::max(OpMask.size(), RootMask.size()); i < e; ++i) {
+  for (int i = 0; i < MaskWidth; ++i) {
     int RootIdx = i / RootRatio;
     if (RootMask[RootIdx] < 0) {
       // This is a zero or undef lane, we're done.
@@ -27263,8 +27322,9 @@ static SDValue combineIntegerAbs(SDNode *N, SelectionDAG &DAG) {
 /// into:
 ///   SETGT(X, -1)
 static SDValue foldXorTruncShiftIntoCmp(SDNode *N, SelectionDAG &DAG) {
-  // This is only worth doing if the output type is i8.
-  if (N->getValueType(0) != MVT::i8)
+  // This is only worth doing if the output type is i8 or i1.
+  EVT ResultType = N->getValueType(0);
+  if (ResultType != MVT::i8 && ResultType != MVT::i1)
     return SDValue();
 
   SDValue N0 = N->getOperand(0);
@@ -27299,8 +27359,13 @@ static SDValue foldXorTruncShiftIntoCmp(SDNode *N, SelectionDAG &DAG) {
   SDLoc DL(N);
   SDValue ShiftOp = Shift.getOperand(0);
   EVT ShiftOpTy = ShiftOp.getValueType();
-  SDValue Cond = DAG.getSetCC(DL, MVT::i8, ShiftOp,
+  const TargetLowering &TLI = DAG.getTargetLoweringInfo();
+  EVT SetCCResultType = TLI.getSetCCResultType(DAG.getDataLayout(),
+                                               *DAG.getContext(), ResultType);
+  SDValue Cond = DAG.getSetCC(DL, SetCCResultType, ShiftOp,
                               DAG.getConstant(-1, DL, ShiftOpTy), ISD::SETGT);
+  if (SetCCResultType != ResultType)
+    Cond = DAG.getNode(ISD::ZERO_EXTEND, DL, ResultType, Cond);
   return Cond;
 }
 
