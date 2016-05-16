@@ -88,6 +88,33 @@ INSTR_PROF_DATA(const uint16_t, Int16ArrayTy, NumValueSites[IPVK_Last+1], \
 #undef INSTR_PROF_DATA
 /* INSTR_PROF_DATA end. */
 
+
+/* This is an internal data structure used by value profiler. It
+ * is defined here to allow serialization code sharing by LLVM
+ * to be used in unit test.
+ *
+ * typedef struct ValueProfNode {
+ *   // InstrProfValueData VData;
+ *   uint64_t Value;
+ *   uint64_t Count;
+ *   struct ValueProfNode *Next;
+ * } ValueProfNode;
+ */
+/* INSTR_PROF_VALUE_NODE start. */
+#ifndef INSTR_PROF_VALUE_NODE
+#define INSTR_PROF_VALUE_NODE(Type, LLVMType, Name, Initializer)
+#else
+#define INSTR_PROF_DATA_DEFINED
+#endif
+INSTR_PROF_VALUE_NODE(uint64_t, llvm::Type::getInt64Ty(Ctx), Value, \
+                      ConstantInt::get(llvm::Type::GetInt64Ty(Ctx), 0))
+INSTR_PROF_VALUE_NODE(uint64_t, llvm::Type::getInt64Ty(Ctx), Count, \
+                      ConstantInt::get(llvm::Type::GetInt64Ty(Ctx), 0))
+INSTR_PROF_VALUE_NODE(PtrToNodeT, llvm::Type::getInt8PtrTy(Ctx), Next, \
+                      ConstantInt::get(llvm::Type::GetInt8PtrTy(Ctx), 0))
+#undef INSTR_PROF_VALUE_NODE
+/* INSTR_PROF_VALUE_NODE end. */
+
 /* INSTR_PROF_RAW_HEADER  start */
 /* Definition of member fields of the raw profile header data structure. */
 #ifndef INSTR_PROF_RAW_HEADER
@@ -295,16 +322,15 @@ typedef struct ValueProfData {
   static std::unique_ptr<ValueProfData>
   serializeFrom(const InstrProfRecord &Record);
   /*!
-   * Check the integrity of the record. Return the error code when
-   * an error is detected, otherwise return instrprof_error::success.
+   * Check the integrity of the record.
    */
-  instrprof_error checkIntegrity();
+  Error checkIntegrity();
   /*!
    * Return a pointer to \c ValueProfileData instance ready to be read.
    * All data in the instance are properly byte swapped. The input
    * data is assumed to be in little endian order.
    */
-  static ErrorOr<std::unique_ptr<ValueProfData>>
+  static Expected<std::unique_ptr<ValueProfData>>
   getValueProfData(const unsigned char *SrcBuffer,
                    const unsigned char *const SrcBufferEnd,
                    support::endianness SrcDataEndianness);
@@ -609,15 +635,6 @@ typedef struct InstrProfValueData {
   /* Number of times the value appears in the training run. */
   uint64_t Count;
 } InstrProfValueData;
-
-/* This is an internal data structure used by value profiler. It
- * is defined here to allow serialization code sharing by LLVM
- * to be used in unit test.
- */
-typedef struct ValueProfNode {
-  InstrProfValueData VData;
-  struct ValueProfNode *Next;
-} ValueProfNode;
 
 #endif /* INSTR_PROF_DATA_INC */
 
