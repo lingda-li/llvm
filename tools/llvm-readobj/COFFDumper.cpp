@@ -24,11 +24,14 @@
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/DebugInfo/CodeView/CodeView.h"
 #include "llvm/DebugInfo/CodeView/Line.h"
+#include "llvm/DebugInfo/CodeView/RecordSerialization.h"
+#include "llvm/DebugInfo/CodeView/MemoryTypeTableBuilder.h"
 #include "llvm/DebugInfo/CodeView/SymbolRecord.h"
 #include "llvm/DebugInfo/CodeView/TypeDumper.h"
 #include "llvm/DebugInfo/CodeView/TypeIndex.h"
 #include "llvm/DebugInfo/CodeView/TypeRecord.h"
 #include "llvm/DebugInfo/CodeView/TypeStream.h"
+#include "llvm/DebugInfo/CodeView/TypeStreamMerger.h"
 #include "llvm/Object/COFF.h"
 #include "llvm/Object/ObjectFile.h"
 #include "llvm/Support/COFF.h"
@@ -70,6 +73,8 @@ public:
   void printCOFFDirectives() override;
   void printCOFFBaseReloc() override;
   void printCodeViewDebugInfo() override;
+  void
+  mergeCodeViewTypes(llvm::codeview::MemoryTypeTableBuilder &CVTypes) override;
   void printStackMap() const override;
 private:
   void printSymbol(const SymbolRef &Sym);
@@ -770,8 +775,8 @@ void COFFDumper::initializeFileAndStringTables(StringRef Data) {
     // The section consists of a number of subsection in the following format:
     // |SubSectionType|SubSectionSize|Contents...|
     uint32_t SubType, SubSectionSize;
-    error(consumeUInt32(Data, SubType));
-    error(consumeUInt32(Data, SubSectionSize));
+    error(consume(Data, SubType));
+    error(consume(Data, SubSectionSize));
     if (SubSectionSize > Data.size())
       return error(object_error::parse_failed);
     switch (ModuleSubstreamKind(SubType)) {
@@ -802,7 +807,7 @@ void COFFDumper::printCodeViewSymbolSection(StringRef SectionName,
   W.printNumber("Section", SectionName, Obj->getSectionID(Section));
 
   uint32_t Magic;
-  error(consumeUInt32(Data, Magic));
+  error(consume(Data, Magic));
   W.printHex("Magic", Magic);
   if (Magic != COFF::DEBUG_SECTION_MAGIC)
     return error(object_error::parse_failed);
@@ -813,8 +818,8 @@ void COFFDumper::printCodeViewSymbolSection(StringRef SectionName,
     // The section consists of a number of subsection in the following format:
     // |SubSectionType|SubSectionSize|Contents...|
     uint32_t SubType, SubSectionSize;
-    error(consumeUInt32(Data, SubType));
-    error(consumeUInt32(Data, SubSectionSize));
+    error(consume(Data, SubType));
+    error(consume(Data, SubSectionSize));
 
     ListScope S(W, "Subsection");
     W.printEnum("SubSectionType", SubType, makeArrayRef(SubSectionTypes));
@@ -1211,7 +1216,7 @@ void COFFDumper::printCodeViewSymbolsSubsection(StringRef Subsection,
     case S_CALLEES: {
       ListScope S(W, Kind == S_CALLEES ? "Callees" : "Callers");
       uint32_t Count;
-      error(consumeUInt32(SymData, Count));
+      error(consume(SymData, Count));
       for (uint32_t I = 0; I < Count; ++I) {
         const TypeIndex *FuncID;
         error(consumeObject(SymData, FuncID));
@@ -1500,7 +1505,7 @@ void COFFDumper::printCodeViewSymbolsSubsection(StringRef Subsection,
       error(consumeObject(SymData, Constant));
       printTypeIndex("Type", Constant->Type);
       APSInt Value;
-      if (!decodeNumericLeaf(SymData, Value))
+      if (consume(SymData, Value))
         error(object_error::parse_failed);
       W.printNumber("Value", Value);
       StringRef Name = SymData.split('\0').first;
@@ -1551,7 +1556,7 @@ void COFFDumper::printCodeViewFileChecksums(StringRef Subsection) {
 void COFFDumper::printCodeViewInlineeLines(StringRef Subsection) {
   StringRef Data = Subsection;
   uint32_t Signature;
-  error(consumeUInt32(Data, Signature));
+  error(consume(Data, Signature));
   bool HasExtraFiles = Signature == unsigned(InlineeLinesSignature::ExtraFiles);
 
   while (!Data.empty()) {
@@ -1564,12 +1569,12 @@ void COFFDumper::printCodeViewInlineeLines(StringRef Subsection) {
 
     if (HasExtraFiles) {
       uint32_t ExtraFileCount;
-      error(consumeUInt32(Data, ExtraFileCount));
+      error(consume(Data, ExtraFileCount));
       W.printNumber("ExtraFileCount", ExtraFileCount);
       ListScope ExtraFiles(W, "ExtraFiles");
       for (unsigned I = 0; I < ExtraFileCount; ++I) {
         uint32_t FileID;
-        error(consumeUInt32(Data, FileID));
+        error(consume(Data, FileID));
         printFileNameForOffset("FileID", FileID);
       }
     }
@@ -1606,7 +1611,7 @@ StringRef COFFDumper::getFileNameForFileOffset(uint32_t FileOffset) {
   // The string table offset comes first before the file checksum.
   StringRef Data = CVFileChecksumTable.drop_front(FileOffset);
   uint32_t StringOffset;
-  error(consumeUInt32(Data, StringOffset));
+  error(consume(Data, StringOffset));
 
   // Check if the string table offset is valid.
   if (StringOffset >= CVStringTable.size())
@@ -1620,6 +1625,25 @@ void COFFDumper::printFileNameForOffset(StringRef Label, uint32_t FileOffset) {
   W.printHex(Label, getFileNameForFileOffset(FileOffset), FileOffset);
 }
 
+void COFFDumper::mergeCodeViewTypes(MemoryTypeTableBuilder &CVTypes) {
+  for (const SectionRef &S : Obj->sections()) {
+    StringRef SectionName;
+    error(S.getName(SectionName));
+    if (SectionName == ".debug$T") {
+      StringRef Data;
+      error(S.getContents(Data));
+      unsigned Magic = *reinterpret_cast<const ulittle32_t *>(Data.data());
+      if (Magic != 4)
+        error(object_error::parse_failed);
+      Data = Data.drop_front(4);
+      ArrayRef<uint8_t> Bytes(reinterpret_cast<const uint8_t *>(Data.data()),
+                              Data.size());
+      if (!mergeTypeStreams(CVTypes, Bytes))
+        return error(object_error::parse_failed);
+    }
+  }
+}
+
 void COFFDumper::printCodeViewTypeSection(StringRef SectionName,
                                           const SectionRef &Section) {
   ListScope D(W, "CodeViewTypes");
@@ -1631,7 +1655,7 @@ void COFFDumper::printCodeViewTypeSection(StringRef SectionName,
     W.printBinaryBlock("Data", Data);
 
   uint32_t Magic;
-  error(consumeUInt32(Data, Magic));
+  error(consume(Data, Magic));
   W.printHex("Magic", Magic);
   if (Magic != COFF::DEBUG_SECTION_MAGIC)
     return error(object_error::parse_failed);
@@ -2074,4 +2098,24 @@ void COFFDumper::printStackMap() const {
   else
     prettyPrintStackMap(llvm::outs(),
                         StackMapV1Parser<support::big>(StackMapContentsArray));
+}
+
+void llvm::dumpCodeViewMergedTypes(
+    ScopedPrinter &Writer, llvm::codeview::MemoryTypeTableBuilder &CVTypes) {
+  // Flatten it first, then run our dumper on it.
+  ListScope S(Writer, "MergedTypeStream");
+  SmallString<0> Buf;
+  CVTypes.ForEachRecord([&](TypeIndex TI, MemoryTypeTableBuilder::Record *R) {
+    // The record data doesn't include the 16 bit size.
+    Buf.push_back(R->size() & 0xff);
+    Buf.push_back((R->size() >> 8) & 0xff);
+    Buf.append(R->data(), R->data() + R->size());
+  });
+  CVTypeDumper CVTD(Writer, opts::CodeViewSubsectionBytes);
+  ArrayRef<uint8_t> BinaryData(reinterpret_cast<const uint8_t *>(Buf.data()),
+                               Buf.size());
+  if (!CVTD.dump(BinaryData)) {
+    Writer.flush();
+    error(object_error::parse_failed);
+  }
 }
