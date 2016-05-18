@@ -53,7 +53,7 @@ struct PublicsStream::HeaderInfo {
   ulittle16_t ISectThunkTable;
   char Padding[2];
   ulittle32_t OffThunkTable;
-  ulittle32_t NumSects;
+  ulittle32_t NumSections;
 };
 
 
@@ -73,6 +73,15 @@ struct PublicsStream::HRFile {
   ulittle32_t Off;
   ulittle32_t CRef;
 };
+
+// This struct is defined as "SO" in langapi/include/pdb.h.
+namespace {
+struct SectionOffset {
+  ulittle32_t Off;
+  ulittle16_t Isect;
+  char Padding[2];
+};
+}
 
 PublicsStream::PublicsStream(PDBFile &File, uint32_t StreamNum)
     : StreamNum(StreamNum), Stream(StreamNum, File) {}
@@ -123,10 +132,45 @@ Error PublicsStream::reload() {
   for (uint8_t B : Bitmap)
     NumBuckets += countPopulation(B);
 
-  // Buckets follow.
-  if (Reader.bytesRemaining() < NumBuckets * sizeof(uint32_t))
+  // We don't yet understand the following data structures completely,
+  // but we at least know the types and sizes. Here we are trying
+  // to read the stream till end so that we at least can detect
+  // corrupted streams.
+
+  // Hash buckets follow.
+  std::vector<ulittle32_t> TempHashBuckets(NumBuckets);
+  if (auto EC = Reader.readArray<ulittle32_t>(TempHashBuckets))
     return make_error<RawError>(raw_error_code::corrupt_file,
                                 "Hash buckets corrupted.");
+  HashBuckets.resize(NumBuckets);
+  std::copy(TempHashBuckets.begin(), TempHashBuckets.end(),
+            HashBuckets.begin());
 
+  // Something called "address map" follows.
+  std::vector<ulittle32_t> TempAddressMap(Header->AddrMap / sizeof(uint32_t));
+  if (auto EC = Reader.readArray<ulittle32_t>(TempAddressMap))
+    return make_error<RawError>(raw_error_code::corrupt_file,
+                                "Could not read an address map.");
+  AddressMap.resize(Header->AddrMap / sizeof(uint32_t));
+  std::copy(TempAddressMap.begin(), TempAddressMap.end(), AddressMap.begin());
+
+  // Something called "thunk map" follows.
+  std::vector<ulittle32_t> TempThunkMap(Header->NumThunks);
+  ThunkMap.resize(Header->NumThunks);
+  if (auto EC = Reader.readArray<ulittle32_t>(TempThunkMap))
+    return make_error<RawError>(raw_error_code::corrupt_file,
+                                "Could not read a thunk map.");
+  ThunkMap.resize(Header->NumThunks);
+  std::copy(TempThunkMap.begin(), TempThunkMap.end(), ThunkMap.begin());
+
+  // Something called "section map" follows.
+  std::vector<SectionOffset> SectionMap(Header->NumSections);
+  if (auto EC = Reader.readArray<SectionOffset>(SectionMap))
+    return make_error<RawError>(raw_error_code::corrupt_file,
+                                "Could not read a section map.");
+
+  if (Reader.bytesRemaining() > 0)
+    return make_error<RawError>(raw_error_code::corrupt_file,
+                                "Corrupted publics stream.");
   return Error::success();
 }
