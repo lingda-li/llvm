@@ -1,15 +1,11 @@
 // RUN: llvm-mc -filetype=obj -compress-debug-sections -triple x86_64-pc-linux-gnu < %s -o %t
 // RUN: llvm-objdump -s %t | FileCheck %s
-// RUN: llvm-dwarfdump -debug-dump=info %t | FileCheck --check-prefix=INFO %s
+// RUN: llvm-dwarfdump -debug-dump=str %t | FileCheck --check-prefix=STR %s
 // RUN: llvm-mc -filetype=obj -compress-debug-sections -triple i386-pc-linux-gnu < %s \
 // RUN:     | llvm-readobj -symbols - | FileCheck --check-prefix=386-SYMBOLS %s
+// RUN: llvm-readobj -sections %t | FileCheck --check-prefix=ZLIB %s
 
 // REQUIRES: zlib
-
-// CHECK: Contents of section .zdebug_line:
-// Check for the 'ZLIB' file magic at the start of the section only
-// CHECK-NEXT: ZLIB
-// CHECK-NOT: ZLIB
 
 // Don't compress small sections, such as this simple debug_abbrev example
 // CHECK: Contents of section .debug_abbrev:
@@ -18,19 +14,29 @@
 
 // CHECK: Contents of section .debug_info:
 
+// Check that debug_line section was not renamed, so it is
+// zlib-style, not zlib-gnu one. Check that SHF_COMPRESSED was set.
+// ZLIB:      Section {
+// ZLIB:        Index:
+// ZLIB:        Name: .debug_str
+// ZLIB-NEXT:   Type: SHT_PROGBITS
+// ZLIB-NEXT:   Flags [
+// ZLIB-NEXT:     SHF_COMPRESSED
+
 // FIXME: Handle compressing alignment fragments to support compressing debug_frame
 // CHECK: Contents of section .debug_frame:
 // CHECK-NOT: ZLIB
 // CHECK: Contents of
 
-// Decompress one valid dwarf section just to check that this roundtrips
-// INFO: 0x00000000: Compile Unit: length = 0x0000000c version = 0x0004 abbr_offset = 0x0000 addr_size = 0x08 (next unit at 0x00000010)
+// Decompress one valid dwarf section just to check that this roundtrips,
+// we use .zdebug_str section for that
+// STR: perfectly compressable data sample *****************************************
 
 // In x86 32 bit named symbols are used for temporary symbols in merge
 // sections, so make sure we handle symbols inside compressed sections
 // 386-SYMBOLS: Name: .Linfo_string0
 // 386-SYMBOLS-NOT: }
-// 386-SYMBOLS: Section: .zdebug_str
+// 386-SYMBOLS: Section: .debug_str
 
 	.section	.debug_line,"",@progbits
 
@@ -74,6 +80,9 @@ foo:
 	.cfi_endproc
 	.cfi_sections .debug_frame
 
+# Below is the section we will use to check that after compression with llvm-mc,
+# llvm-dwarfdump tool will be able to decompress data back and dump it. Data sample
+# should be compressable enough, so it is filled with some amount of equal symbols at the end
 	.section        .debug_str,"MS",@progbits,1
 .Linfo_string0:
-        .asciz  "compress this                                    "
+        .asciz  "perfectly compressable data sample *****************************************"
