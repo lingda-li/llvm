@@ -14,28 +14,36 @@
 #ifndef LLVM_EXECUTIONENGINE_ORC_KALEIDOSCOPEJIT_H
 #define LLVM_EXECUTIONENGINE_ORC_KALEIDOSCOPEJIT_H
 
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ExecutionEngine/ExecutionEngine.h"
-#include "llvm/ExecutionEngine/RTDyldMemoryManager.h"
+#include "llvm/ExecutionEngine/RuntimeDyld.h"
+#include "llvm/ExecutionEngine/SectionMemoryManager.h"
 #include "llvm/ExecutionEngine/Orc/CompileUtils.h"
+#include "llvm/ExecutionEngine/Orc/JITSymbol.h"
 #include "llvm/ExecutionEngine/Orc/IRCompileLayer.h"
 #include "llvm/ExecutionEngine/Orc/LambdaResolver.h"
 #include "llvm/ExecutionEngine/Orc/ObjectLinkingLayer.h"
+#include "llvm/IR/DataLayout.h"
 #include "llvm/IR/Mangler.h"
 #include "llvm/Support/DynamicLibrary.h"
+#include "llvm/Support/raw_ostream.h"
+#include "llvm/Target/TargetMachine.h"
+#include <algorithm>
+#include <memory>
+#include <string>
+#include <vector>
 
 namespace llvm {
 namespace orc {
 
 class KaleidoscopeJIT {
 private:
-
   std::unique_ptr<TargetMachine> TM;
   const DataLayout DL;
   ObjectLinkingLayer<> ObjectLayer;
   IRCompileLayer<decltype(ObjectLayer)> CompileLayer;
 
 public:
-
   typedef decltype(CompileLayer)::ModuleSetHandleT ModuleHandle;
 
   KaleidoscopeJIT()
@@ -47,18 +55,29 @@ public:
   TargetMachine &getTargetMachine() { return *TM; }
 
   ModuleHandle addModule(std::unique_ptr<Module> M) {
-    // We need a memory manager to allocate memory and resolve symbols for this
-    // new module. Create one that resolves symbols by looking back into the
-    // JIT.
+    // Build our symbol resolver:
+    // Lambda 1: Look back into the JIT itself to find symbols that are part of
+    //           the same "logical dylib".
+    // Lambda 2: Search for external symbols in the host process.
     auto Resolver = createLambdaResolver(
         [&](const std::string &Name) {
           if (auto Sym = CompileLayer.findSymbol(Name, false))
             return RuntimeDyld::SymbolInfo(Sym.getAddress(), Sym.getFlags());
           return RuntimeDyld::SymbolInfo(nullptr);
         },
-        [](const std::string &S) { return nullptr; });
+        [](const std::string &Name) {
+          if (auto SymAddr =
+                RTDyldMemoryManager::getSymbolAddressInProcess(Name))
+            return RuntimeDyld::SymbolInfo(SymAddr, JITSymbolFlags::Exported);
+          return RuntimeDyld::SymbolInfo(nullptr);
+        });
+
+    // Build a singlton module set to hold our module.
     std::vector<std::unique_ptr<Module>> Ms;
     Ms.push_back(std::move(M));
+
+    // Add the set to the JIT with the resolver we created above and a newly
+    // created SectionMemoryManager.
     return CompileLayer.addModuleSet(std::move(Ms),
                                      make_unique<SectionMemoryManager>(),
                                      std::move(Resolver));
@@ -77,7 +96,7 @@ public:
 
 };
 
-} // End namespace orc.
-} // End namespace llvm
+} // end namespace orc
+} // end namespace llvm
 
 #endif // LLVM_EXECUTIONENGINE_ORC_KALEIDOSCOPEJIT_H

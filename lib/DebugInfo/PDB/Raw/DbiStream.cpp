@@ -9,13 +9,13 @@
 
 #include "llvm/DebugInfo/PDB/Raw/DbiStream.h"
 
+#include "llvm/DebugInfo/CodeView/StreamReader.h"
 #include "llvm/DebugInfo/PDB/Raw/InfoStream.h"
 #include "llvm/DebugInfo/PDB/Raw/ModInfo.h"
 #include "llvm/DebugInfo/PDB/Raw/NameHashTable.h"
 #include "llvm/DebugInfo/PDB/Raw/PDBFile.h"
 #include "llvm/DebugInfo/PDB/Raw/RawConstants.h"
 #include "llvm/DebugInfo/PDB/Raw/RawError.h"
-#include "llvm/DebugInfo/PDB/Raw/StreamReader.h"
 
 using namespace llvm;
 using namespace llvm::pdb;
@@ -80,7 +80,7 @@ DbiStream::DbiStream(PDBFile &File) : Pdb(File), Stream(StreamDBI, File) {
 DbiStream::~DbiStream() {}
 
 Error DbiStream::reload() {
-  StreamReader Reader(Stream);
+  codeview::StreamReader Reader(Stream);
 
   Header.reset(new HeaderInfo());
 
@@ -170,7 +170,7 @@ Error DbiStream::reload() {
     return make_error<RawError>(raw_error_code::corrupt_file,
                                 "Found unexpected bytes in DBI Stream.");
 
-  StreamReader ECReader(ECSubstream);
+  codeview::StreamReader ECReader(ECSubstream);
   if (auto EC = ECNames.load(ECReader))
     return EC;
 
@@ -186,6 +186,10 @@ uint32_t DbiStream::getAge() const { return Header->Age; }
 
 uint16_t DbiStream::getPublicSymbolStreamIndex() const {
   return Header->PublicSymbolStreamIndex;
+}
+
+uint16_t DbiStream::getGlobalSymbolStreamIndex() const {
+  return Header->GlobalSymbolStreamIndex;
 }
 
 bool DbiStream::isIncrementallyLinked() const {
@@ -297,4 +301,16 @@ Error DbiStream::initializeFileInfo() {
   }
 
   return Error::success();
+}
+
+uint32_t DbiStream::getDebugStreamIndex(DbgHeaderType Type) const {
+  ArrayRef<uint8_t> DbgData;
+  if (auto EC = DbgHeader.getArrayRef(0, DbgData, DbgHeader.getLength())) {
+    consumeError(std::move(EC));
+    return uint32_t(-1);
+  }
+  ArrayRef<ulittle16_t> DebugStreams(
+      reinterpret_cast<const ulittle16_t *>(DbgData.data()),
+      DbgData.size() / sizeof(ulittle16_t));
+  return DebugStreams[static_cast<uint16_t>(Type)];
 }

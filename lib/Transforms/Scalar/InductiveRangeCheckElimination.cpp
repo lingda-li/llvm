@@ -125,9 +125,10 @@ class InductiveRangeCheck {
                                             ScalarEvolution &SE, Value *&Index,
                                             Value *&Length);
 
-  static InductiveRangeCheck::RangeCheckKind
-  parseRangeCheck(Loop *L, ScalarEvolution &SE, Value *Condition,
-                  const SCEV *&Index, Value *&UpperLimit);
+  static void
+  extractRangeChecksFromCond(Loop *L, ScalarEvolution &SE, Use &ConditionUse,
+                             SmallVectorImpl<InductiveRangeCheck> &Checks,
+                             SmallPtrSetImpl<Value *> &Visited);
 
   InductiveRangeCheck()
       : Offset(nullptr), Scale(nullptr), Length(nullptr),
@@ -190,10 +191,15 @@ public:
   Optional<Range> computeSafeIterationSpace(ScalarEvolution &SE,
                                             const SCEVAddRecExpr *IndVar) const;
 
-  /// Create an inductive range check out of BI if possible, else return None.
-  static Optional<InductiveRangeCheck> create(BranchInst *BI, Loop *L,
-                                              ScalarEvolution &SE,
-                                              BranchProbabilityInfo &BPI);
+  /// Parse out a set of inductive range checks from \p BI and append them to \p
+  /// Checks.
+  ///
+  /// NB! There may be conditions feeding into \p BI that aren't inductive range
+  /// checks, and hence don't end up in \p Checks.
+  static void
+  extractRangeChecksFromBranch(BranchInst *BI, Loop *L, ScalarEvolution &SE,
+                               BranchProbabilityInfo &BPI,
+                               SmallVectorImpl<InductiveRangeCheck> &Checks);
 };
 
 class InductiveRangeCheckElimination : public LoopPass {
@@ -313,104 +319,89 @@ InductiveRangeCheck::parseRangeCheckICmp(Loop *L, ICmpInst *ICI,
   llvm_unreachable("default clause returns!");
 }
 
-/// Parses an arbitrary condition into a range check.  `Length` is set only if
-/// the range check is recognized to be `RANGE_CHECK_UPPER` or stronger.
-InductiveRangeCheck::RangeCheckKind
-InductiveRangeCheck::parseRangeCheck(Loop *L, ScalarEvolution &SE,
-                                     Value *Condition, const SCEV *&Index,
-                                     Value *&Length) {
+void InductiveRangeCheck::extractRangeChecksFromCond(
+    Loop *L, ScalarEvolution &SE, Use &ConditionUse,
+    SmallVectorImpl<InductiveRangeCheck> &Checks,
+    SmallPtrSetImpl<Value *> &Visited) {
   using namespace llvm::PatternMatch;
 
-  Value *A = nullptr;
-  Value *B = nullptr;
+  Value *Condition = ConditionUse.get();
+  if (!Visited.insert(Condition).second)
+    return;
 
-  if (match(Condition, m_And(m_Value(A), m_Value(B)))) {
-    Value *IndexA = nullptr, *IndexB = nullptr;
-    Value *LengthA = nullptr, *LengthB = nullptr;
-    ICmpInst *ICmpA = dyn_cast<ICmpInst>(A), *ICmpB = dyn_cast<ICmpInst>(B);
+  if (match(Condition, m_And(m_Value(), m_Value()))) {
+    SmallVector<InductiveRangeCheck, 8> SubChecks;
+    extractRangeChecksFromCond(L, SE, cast<User>(Condition)->getOperandUse(0),
+                               SubChecks, Visited);
+    extractRangeChecksFromCond(L, SE, cast<User>(Condition)->getOperandUse(1),
+                               SubChecks, Visited);
 
-    if (!ICmpA || !ICmpB)
-      return InductiveRangeCheck::RANGE_CHECK_UNKNOWN;
+    if (SubChecks.size() == 2) {
+      // Handle a special case where we know how to merge two checks separately
+      // checking the upper and lower bounds into a full range check.
+      const auto &RChkA = SubChecks[0];
+      const auto &RChkB = SubChecks[1];
+      if ((RChkA.Length == RChkB.Length || !RChkA.Length || !RChkB.Length) &&
+          RChkA.Offset == RChkB.Offset && RChkA.Scale == RChkB.Scale) {
 
-    auto RCKindA = parseRangeCheckICmp(L, ICmpA, SE, IndexA, LengthA);
-    auto RCKindB = parseRangeCheckICmp(L, ICmpB, SE, IndexB, LengthB);
+        // If RChkA.Kind == RChkB.Kind then we just found two identical checks.
+        // But if one of them is a RANGE_CHECK_LOWER and the other is a
+        // RANGE_CHECK_UPPER (only possibility if they're different) then
+        // together they form a RANGE_CHECK_BOTH.
+        SubChecks[0].Kind =
+            (InductiveRangeCheck::RangeCheckKind)(RChkA.Kind | RChkB.Kind);
+        SubChecks[0].Length = RChkA.Length ? RChkA.Length : RChkB.Length;
+        SubChecks[0].CheckUse = &ConditionUse;
 
-    if (RCKindA == InductiveRangeCheck::RANGE_CHECK_UNKNOWN ||
-        RCKindB == InductiveRangeCheck::RANGE_CHECK_UNKNOWN)
-      return InductiveRangeCheck::RANGE_CHECK_UNKNOWN;
+        // We updated one of the checks in place, now erase the other.
+        SubChecks.pop_back();
+      }
+    }
 
-    if (IndexA != IndexB)
-      return InductiveRangeCheck::RANGE_CHECK_UNKNOWN;
-
-    if (LengthA != nullptr && LengthB != nullptr && LengthA != LengthB)
-      return InductiveRangeCheck::RANGE_CHECK_UNKNOWN;
-
-    Index = SE.getSCEV(IndexA);
-    if (isa<SCEVCouldNotCompute>(Index))
-      return InductiveRangeCheck::RANGE_CHECK_UNKNOWN;
-
-    Length = LengthA == nullptr ? LengthB : LengthA;
-
-    return (InductiveRangeCheck::RangeCheckKind)(RCKindA | RCKindB);
+    Checks.insert(Checks.end(), SubChecks.begin(), SubChecks.end());
+    return;
   }
 
-  if (ICmpInst *ICI = dyn_cast<ICmpInst>(Condition)) {
-    Value *IndexVal = nullptr;
+  ICmpInst *ICI = dyn_cast<ICmpInst>(Condition);
+  if (!ICI)
+    return;
 
-    auto RCKind = parseRangeCheckICmp(L, ICI, SE, IndexVal, Length);
-
-    if (RCKind == InductiveRangeCheck::RANGE_CHECK_UNKNOWN)
-      return InductiveRangeCheck::RANGE_CHECK_UNKNOWN;
-
-    Index = SE.getSCEV(IndexVal);
-    if (isa<SCEVCouldNotCompute>(Index))
-      return InductiveRangeCheck::RANGE_CHECK_UNKNOWN;
-
-    return RCKind;
-  }
-
-  return InductiveRangeCheck::RANGE_CHECK_UNKNOWN;
-}
-
-Optional<InductiveRangeCheck>
-InductiveRangeCheck::create(BranchInst *BI, Loop *L, ScalarEvolution &SE,
-                            BranchProbabilityInfo &BPI) {
-
-  if (BI->isUnconditional() || BI->getParent() == L->getLoopLatch())
-    return None;
-
-  BranchProbability LikelyTaken(15, 16);
-
-  if (BPI.getEdgeProbability(BI->getParent(), (unsigned) 0) < LikelyTaken)
-    return None;
-
-  Value *Length = nullptr;
-  const SCEV *IndexSCEV = nullptr;
-
-  auto RCKind = InductiveRangeCheck::parseRangeCheck(L, SE, BI->getCondition(),
-                                                     IndexSCEV, Length);
-
+  Value *Length = nullptr, *Index;
+  auto RCKind = parseRangeCheckICmp(L, ICI, SE, Index, Length);
   if (RCKind == InductiveRangeCheck::RANGE_CHECK_UNKNOWN)
-    return None;
+    return;
 
-  assert(IndexSCEV && "contract with SplitRangeCheckCondition!");
-  assert((!(RCKind & InductiveRangeCheck::RANGE_CHECK_UPPER) || Length) &&
-         "contract with SplitRangeCheckCondition!");
-
-  const SCEVAddRecExpr *IndexAddRec = dyn_cast<SCEVAddRecExpr>(IndexSCEV);
+  const auto *IndexAddRec = dyn_cast<SCEVAddRecExpr>(SE.getSCEV(Index));
   bool IsAffineIndex =
       IndexAddRec && (IndexAddRec->getLoop() == L) && IndexAddRec->isAffine();
 
   if (!IsAffineIndex)
-    return None;
+    return;
 
   InductiveRangeCheck IRC;
   IRC.Length = Length;
   IRC.Offset = IndexAddRec->getStart();
   IRC.Scale = IndexAddRec->getStepRecurrence(SE);
-  IRC.CheckUse = &BI->getOperandUse(0);
+  IRC.CheckUse = &ConditionUse;
   IRC.Kind = RCKind;
-  return IRC;
+  Checks.push_back(IRC);
+}
+
+void InductiveRangeCheck::extractRangeChecksFromBranch(
+    BranchInst *BI, Loop *L, ScalarEvolution &SE, BranchProbabilityInfo &BPI,
+    SmallVectorImpl<InductiveRangeCheck> &Checks) {
+
+  if (BI->isUnconditional() || BI->getParent() == L->getLoopLatch())
+    return;
+
+  BranchProbability LikelyTaken(15, 16);
+
+  if (BPI.getEdgeProbability(BI->getParent(), (unsigned)0) < LikelyTaken)
+    return;
+
+  SmallPtrSet<Value *, 8> Visited;
+  InductiveRangeCheck::extractRangeChecksFromCond(L, SE, BI->getOperandUse(0),
+                                                  Checks, Visited);
 }
 
 namespace {
@@ -1397,8 +1388,8 @@ bool InductiveRangeCheckElimination::runOnLoop(Loop *L, LPPassManager &LPM) {
 
   for (auto BBI : L->getBlocks())
     if (BranchInst *TBI = dyn_cast<BranchInst>(BBI->getTerminator()))
-      if (auto MaybeIRC = InductiveRangeCheck::create(TBI, L, SE, BPI))
-        RangeChecks.push_back(*MaybeIRC);
+      InductiveRangeCheck::extractRangeChecksFromBranch(TBI, L, SE, BPI,
+                                                        RangeChecks);
 
   if (RangeChecks.empty())
     return false;
