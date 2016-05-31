@@ -12,7 +12,6 @@
 #include "llvm/DebugInfo/CodeView/CVTypeVisitor.h"
 #include "llvm/DebugInfo/CodeView/TypeIndex.h"
 #include "llvm/DebugInfo/CodeView/TypeRecord.h"
-#include "llvm/DebugInfo/CodeView/TypeStream.h"
 #include "llvm/Support/ScopedPrinter.h"
 
 using namespace llvm;
@@ -473,7 +472,8 @@ void CVTypeDumperImpl::visitPointer(TypeLeafKind Leaf, PointerRecord &Ptr) {
     else if (Ptr.getMode() == PointerMode::Pointer)
       TypeName.append("*");
 
-    Name = CVTD.saveName(TypeName);
+    if (!TypeName.empty())
+      Name = CVTD.saveName(TypeName);
   }
 }
 
@@ -683,10 +683,10 @@ bool CVTypeDumper::dump(const CVRecord<TypeLeafKind> &Record) {
   return !Dumper.hadError();
 }
 
-bool CVTypeDumper::dump(ArrayRef<uint8_t> Data) {
+bool CVTypeDumper::dump(const CVTypeArray &Types) {
   assert(W && "printer should not be null");
   CVTypeDumperImpl Dumper(*this, *W, PrintRecordBytes);
-  Dumper.visitTypeStream(Data);
+  Dumper.visitTypeStream(Types);
   return !Dumper.hadError();
 }
 
