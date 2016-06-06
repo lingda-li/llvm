@@ -218,6 +218,7 @@ static bool UpgradeIntrinsicFunction1(Function *F, Function *&NewFn) {
         Name.startswith("x86.avx512.mask.load.q.") ||
         Name == "x86.sse42.crc32.64.8" ||
         Name.startswith("x86.avx.vbroadcast.s") ||
+        Name.startswith("x86.avx512.mask.palignr.") ||
         Name.startswith("x86.sse2.psll.dq") ||
         Name.startswith("x86.sse2.psrl.dq") ||
         Name.startswith("x86.avx2.psll.dq") ||
@@ -282,6 +283,27 @@ static bool UpgradeIntrinsicFunction1(Function *F, Function *&NewFn) {
       NewFn = F;
       return true;
     }
+    // Upgrade any XOP PERMIL2 index operand still using a float/double vector.
+    if (Name.startswith("x86.xop.vpermil2")) {
+      auto Params = F->getFunctionType()->params();
+      auto Idx = Params[2];
+      if (Idx->getScalarType()->isFloatingPointTy()) {
+        F->setName(Name + ".old");
+        unsigned IdxSize = Idx->getPrimitiveSizeInBits();
+        unsigned EltSize = Idx->getScalarSizeInBits();
+        Intrinsic::ID Permil2ID;
+        if (EltSize == 64 && IdxSize == 128)
+          Permil2ID = Intrinsic::x86_xop_vpermil2pd;
+        else if (EltSize == 32 && IdxSize == 128)
+          Permil2ID = Intrinsic::x86_xop_vpermil2ps;
+        else if (EltSize == 64 && IdxSize == 256)
+          Permil2ID = Intrinsic::x86_xop_vpermil2pd_256;
+        else
+          Permil2ID = Intrinsic::x86_xop_vpermil2ps_256;
+        NewFn = Intrinsic::getDeclaration(F->getParent(), Permil2ID);
+        return true;
+      }
+    }
     break;
   }
   }
@@ -343,6 +365,53 @@ static Value *UpgradeX86PSLLDQIntrinsics(IRBuilder<> &Builder, LLVMContext &C,
 
   // Bitcast back to a 64-bit element type.
   return Builder.CreateBitCast(Res, ResultTy, "cast");
+}
+
+static Value *UpgradeX86PALIGNRIntrinsics(IRBuilder<> &Builder, LLVMContext &C,
+                                          Value *Op0, Value *Op1, Value *Shift,
+                                          Value *Passthru, Value *Mask) {
+  unsigned ShiftVal = cast<llvm::ConstantInt>(Shift)->getZExtValue();
+
+  unsigned NumElts = Op0->getType()->getVectorNumElements();
+  assert(NumElts % 16 == 0);
+
+  // If palignr is shifting the pair of vectors more than the size of two
+  // lanes, emit zero.
+  if (ShiftVal >= 32)
+    return llvm::Constant::getNullValue(Op0->getType());
+
+  // If palignr is shifting the pair of input vectors more than one lane,
+  // but less than two lanes, convert to shifting in zeroes.
+  if (ShiftVal > 16) {
+    ShiftVal -= 16;
+    Op1 = Op0;
+    Op0 = llvm::Constant::getNullValue(Op0->getType());
+  }
+
+  int Indices[64];
+  // 256-bit palignr operates on 128-bit lanes so we need to handle that
+  for (unsigned l = 0; l != NumElts; l += 16) {
+    for (unsigned i = 0; i != 16; ++i) {
+      unsigned Idx = ShiftVal + i;
+      if (Idx >= 16)
+        Idx += NumElts - 16; // End of lane, switch operand.
+      Indices[l + i] = Idx + l;
+    }
+  }
+
+  Value *Align = Builder.CreateShuffleVector(Op1, Op0,
+                                             makeArrayRef(Indices, NumElts),
+                                             "palignr");
+
+  // If the mask is all ones just emit the align operation.
+  if (const auto *C = dyn_cast<Constant>(Mask))
+    if (C->isAllOnesValue())
+      return Align;
+
+  llvm::VectorType *MaskTy = llvm::VectorType::get(Builder.getInt1Ty(),
+                                                   NumElts);
+  Mask = Builder.CreateBitCast(Mask, MaskTy, "cast");
+  return Builder.CreateSelect(Mask, Align, Passthru);
 }
 
 // Handles upgrading SSE2 and AVX2 PSRLDQ intrinsics by converting them
@@ -704,6 +773,12 @@ void llvm::UpgradeIntrinsicCall(CallInst *CI, Function *NewFn) {
       Type *MaskTy = VectorType::get(Type::getInt32Ty(C), NumElts);
       Rep = Builder.CreateShuffleVector(Op, UndefValue::get(Op->getType()),
                                         Constant::getNullValue(MaskTy));
+    } else if (Name.startswith("llvm.x86.avx512.mask.palignr.")) {
+      Rep = UpgradeX86PALIGNRIntrinsics(Builder, C, CI->getArgOperand(0),
+                                        CI->getArgOperand(1),
+                                        CI->getArgOperand(2),
+                                        CI->getArgOperand(3),
+                                        CI->getArgOperand(4));
     } else if (Name == "llvm.x86.sse2.psll.dq" ||
                Name == "llvm.x86.avx2.psll.dq") {
       // 128/256-bit shift left specified in bits.
@@ -910,6 +985,20 @@ void llvm::UpgradeIntrinsicCall(CallInst *CI, Function *NewFn) {
         Builder.CreateCall(NewFn, {CI->getArgOperand(1)}, Name));
     CI->eraseFromParent();
     return;
+
+  case Intrinsic::x86_xop_vpermil2pd:
+  case Intrinsic::x86_xop_vpermil2ps:
+  case Intrinsic::x86_xop_vpermil2pd_256:
+  case Intrinsic::x86_xop_vpermil2ps_256: {
+    SmallVector<Value *, 4> Args(CI->arg_operands().begin(),
+                                 CI->arg_operands().end());
+    VectorType *FltIdxTy = cast<VectorType>(Args[2]->getType());
+    VectorType *IntIdxTy = VectorType::getInteger(FltIdxTy);
+    Args[2] = Builder.CreateBitCast(Args[2], IntIdxTy);
+    CI->replaceAllUsesWith(Builder.CreateCall(NewFn, Args, Name));
+    CI->eraseFromParent();
+    return;
+  }
 
   case Intrinsic::x86_sse41_ptestc:
   case Intrinsic::x86_sse41_ptestz:
