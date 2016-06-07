@@ -35,6 +35,8 @@ public:
   Error dumpSectionHeaders() override;
   Error dumpFpoStream() override;
 
+  void flush() override;
+
 private:
   PDBFile &File;
   ScopedPrinter P;

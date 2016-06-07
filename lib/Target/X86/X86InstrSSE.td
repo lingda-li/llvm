@@ -7245,13 +7245,14 @@ let Predicates = [UseSSE41] in {
             (BLENDVPDrr0 VR128:$src2, VR128:$src1)>;
 }
 
+let AddedComplexity = 400 in { // Prefer non-temporal versions
 let SchedRW = [WriteLoad] in {
-let Predicates = [HasAVX] in
+let Predicates = [HasAVX, NoVLX] in
 def VMOVNTDQArm : SS48I<0x2A, MRMSrcMem, (outs VR128:$dst), (ins i128mem:$src),
                        "vmovntdqa\t{$src, $dst|$dst, $src}",
                        [(set VR128:$dst, (int_x86_sse41_movntdqa addr:$src))]>,
                        VEX;
-let Predicates = [HasAVX2] in
+let Predicates = [HasAVX2, NoVLX] in
 def VMOVNTDQAYrm : SS48I<0x2A, MRMSrcMem, (outs VR256:$dst), (ins i256mem:$src),
                          "vmovntdqa\t{$src, $dst|$dst, $src}",
                          [(set VR256:$dst, (int_x86_avx2_movntdqa addr:$src))]>,
@@ -7260,6 +7261,35 @@ def MOVNTDQArm : SS48I<0x2A, MRMSrcMem, (outs VR128:$dst), (ins i128mem:$src),
                        "movntdqa\t{$src, $dst|$dst, $src}",
                        [(set VR128:$dst, (int_x86_sse41_movntdqa addr:$src))]>;
 } // SchedRW
+
+let Predicates = [HasAVX2, NoVLX] in {
+  def : Pat<(v8f32 (alignednontemporalload addr:$src)),
+            (VMOVNTDQAYrm addr:$src)>;
+  def : Pat<(v4f64 (alignednontemporalload addr:$src)),
+            (VMOVNTDQAYrm addr:$src)>;
+  def : Pat<(v4i64 (alignednontemporalload addr:$src)),
+            (VMOVNTDQAYrm addr:$src)>;
+}
+
+let Predicates = [HasAVX, NoVLX] in {
+  def : Pat<(v4f32 (alignednontemporalload addr:$src)),
+            (VMOVNTDQArm addr:$src)>;
+  def : Pat<(v2f64 (alignednontemporalload addr:$src)),
+            (VMOVNTDQArm addr:$src)>;
+  def : Pat<(v2i64 (alignednontemporalload addr:$src)),
+            (VMOVNTDQArm addr:$src)>;
+}
+
+let Predicates = [UseSSE41] in {
+  def : Pat<(v4f32 (alignednontemporalload addr:$src)),
+            (MOVNTDQArm addr:$src)>;
+  def : Pat<(v2f64 (alignednontemporalload addr:$src)),
+            (MOVNTDQArm addr:$src)>;
+  def : Pat<(v2i64 (alignednontemporalload addr:$src)),
+            (MOVNTDQArm addr:$src)>;
+}
+
+} // AddedComplexity
 
 //===----------------------------------------------------------------------===//
 // SSE4.2 - Compare Instructions
@@ -8741,7 +8771,7 @@ multiclass avx2_gather<bits<8> opc, string OpcodeStr, RegisterClass RC256,
             []>, VEX_4VOp3, VEX_L;
 }
 
-let mayLoad = 1, Constraints
+let mayLoad = 1, hasSideEffects = 0, Constraints
   = "@earlyclobber $dst,@earlyclobber $mask_wb, $src1 = $dst, $mask = $mask_wb"
   in {
   defm VPGATHERDQ : avx2_gather<0x90, "vpgatherdq", VR256, vx128mem, vx256mem>, VEX_W;
