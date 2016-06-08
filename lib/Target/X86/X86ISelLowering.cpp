@@ -1974,8 +1974,39 @@ Value *X86TargetLowering::getIRStackGuard(IRBuilder<> &IRB) const {
 }
 
 void X86TargetLowering::insertSSPDeclarations(Module &M) const {
-  if (!Subtarget.isTargetGlibc())
-    TargetLowering::insertSSPDeclarations(M);
+  // MSVC CRT provides functionalities for stack protection.
+  if (Subtarget.getTargetTriple().isOSMSVCRT()) {
+    // MSVC CRT has a global variable holding security cookie.
+    M.getOrInsertGlobal("__security_cookie",
+                        Type::getInt8PtrTy(M.getContext()));
+
+    // MSVC CRT has a function to validate security cookie.
+    auto *SecurityCheckCookie = cast<Function>(
+        M.getOrInsertFunction("__security_check_cookie",
+                              Type::getVoidTy(M.getContext()),
+                              Type::getInt8PtrTy(M.getContext()), nullptr));
+    SecurityCheckCookie->setCallingConv(CallingConv::X86_FastCall);
+    SecurityCheckCookie->addAttribute(1, Attribute::AttrKind::InReg);
+    return;
+  }
+  // glibc has a special slot for the stack guard.
+  if (Subtarget.isTargetGlibc())
+    return;
+  TargetLowering::insertSSPDeclarations(M);
+}
+
+Value *X86TargetLowering::getSDagStackGuard(const Module &M) const {
+  // MSVC CRT has a global variable holding security cookie.
+  if (Subtarget.getTargetTriple().isOSMSVCRT())
+    return M.getGlobalVariable("__security_cookie");
+  return TargetLowering::getSDagStackGuard(M);
+}
+
+Value *X86TargetLowering::getSSPStackGuardCheck(const Module &M) const {
+  // MSVC CRT has a function to validate security cookie.
+  if (Subtarget.getTargetTriple().isOSMSVCRT())
+    return M.getFunction("__security_check_cookie");
+  return TargetLowering::getSSPStackGuardCheck(M);
 }
 
 Value *X86TargetLowering::getSafeStackPointerLocation(IRBuilder<> &IRB) const {
@@ -4733,7 +4764,7 @@ static bool getTargetShuffleMaskIndices(SDValue MaskNode,
     if (VT.getScalarSizeInBits() != MaskEltSizeInBits)
       return false;
     if (auto *CN = dyn_cast<ConstantSDNode>(MaskNode.getOperand(0))) {
-      APInt MaskElement = CN->getAPIntValue();
+      const APInt &MaskElement = CN->getAPIntValue();
       for (unsigned i = 0, e = VT.getVectorNumElements(); i != e; ++i) {
         APInt RawElt = MaskElement.getLoBits(MaskEltSizeInBits);
         RawMask.push_back(RawElt.getZExtValue());
@@ -26897,7 +26928,7 @@ static SDValue combineShiftLeft(SDNode *N, SelectionDAG &DAG) {
       N0.getOperand(1).getOpcode() == ISD::Constant) {
     SDValue N00 = N0.getOperand(0);
     APInt Mask = cast<ConstantSDNode>(N0.getOperand(1))->getAPIntValue();
-    APInt ShAmt = N1C->getAPIntValue();
+    const APInt &ShAmt = N1C->getAPIntValue();
     Mask = Mask.shl(ShAmt);
     bool MaskOK = false;
     // We can handle cases concerning bit-widening nodes containing setcc_c if
@@ -27013,7 +27044,7 @@ static SDValue performShiftToAllZeros(SDNode *N, SelectionDAG &DAG,
   SDLoc DL(N);
   if (auto *AmtBV = dyn_cast<BuildVectorSDNode>(Amt))
     if (auto *AmtSplat = AmtBV->getConstantSplatNode()) {
-      APInt ShiftAmt = AmtSplat->getAPIntValue();
+      const APInt &ShiftAmt = AmtSplat->getAPIntValue();
       unsigned MaxAmount =
         VT.getSimpleVT().getVectorElementType().getSizeInBits();
 
@@ -30299,7 +30330,7 @@ static bool clobbersFlagRegisters(const SmallVector<StringRef, 4> &AsmPieces) {
 bool X86TargetLowering::ExpandInlineAsm(CallInst *CI) const {
   InlineAsm *IA = cast<InlineAsm>(CI->getCalledValue());
 
-  std::string AsmStr = IA->getAsmString();
+  const std::string &AsmStr = IA->getAsmString();
 
   IntegerType *Ty = dyn_cast<IntegerType>(CI->getType());
   if (!Ty || Ty->getBitWidth() % 16 != 0)

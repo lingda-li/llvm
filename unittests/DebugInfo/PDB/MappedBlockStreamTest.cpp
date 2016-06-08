@@ -61,21 +61,28 @@ public:
       return ArrayRef<support::ulittle32_t>();
     return Blocks;
   }
-  virtual StringRef getBlockData(uint32_t BlockIndex,
-                                 uint32_t NumBytes) const override {
-    return StringRef(&Data[BlockIndex], NumBytes);
+  virtual ArrayRef<uint8_t> getBlockData(uint32_t BlockIndex,
+                                         uint32_t NumBytes) const override {
+    return ArrayRef<uint8_t>(&Data[BlockIndex], NumBytes);
   }
 
 private:
   std::vector<support::ulittle32_t> Blocks;
-  std::vector<char> Data;
+  std::vector<uint8_t> Data;
+};
+
+class MappedBlockStreamImpl : public MappedBlockStream {
+public:
+  MappedBlockStreamImpl(std::unique_ptr<IPDBStreamData> Data,
+                        const IPDBFile &File)
+      : MappedBlockStream(std::move(Data), File) {}
 };
 
 // Tests that a read which is entirely contained within a single block works
 // and does not allocate.
 TEST(MappedBlockStreamTest, ReadBeyondEndOfStreamRef) {
   DiscontiguousFile F;
-  MappedBlockStream S(llvm::make_unique<IndexedStreamData>(0, F), F);
+  MappedBlockStreamImpl S(llvm::make_unique<IndexedStreamData>(0, F), F);
   StreamReader R(S);
   StreamRef SR;
   EXPECT_NO_ERROR(R.readStreamRef(SR, 0U));
@@ -89,7 +96,7 @@ TEST(MappedBlockStreamTest, ReadBeyondEndOfStreamRef) {
 // does not fail due to the length of the output buffer.
 TEST(MappedBlockStreamTest, ReadOntoNonEmptyBuffer) {
   DiscontiguousFile F;
-  MappedBlockStream S(llvm::make_unique<IndexedStreamData>(0, F), F);
+  MappedBlockStreamImpl S(llvm::make_unique<IndexedStreamData>(0, F), F);
   StreamReader R(S);
   StringRef Str = "ZYXWVUTSRQPONMLKJIHGFEDCBA";
   EXPECT_NO_ERROR(R.readFixedString(Str, 1));
@@ -102,7 +109,7 @@ TEST(MappedBlockStreamTest, ReadOntoNonEmptyBuffer) {
 // not allocate memory.
 TEST(MappedBlockStreamTest, ZeroCopyReadContiguousBreak) {
   DiscontiguousFile F;
-  MappedBlockStream S(llvm::make_unique<IndexedStreamData>(0, F), F);
+  MappedBlockStreamImpl S(llvm::make_unique<IndexedStreamData>(0, F), F);
   StreamReader R(S);
   StringRef Str;
   EXPECT_NO_ERROR(R.readFixedString(Str, 2));
@@ -120,7 +127,7 @@ TEST(MappedBlockStreamTest, ZeroCopyReadContiguousBreak) {
 // requested.
 TEST(MappedBlockStreamTest, CopyReadNonContiguousBreak) {
   DiscontiguousFile F;
-  MappedBlockStream S(llvm::make_unique<IndexedStreamData>(0, F), F);
+  MappedBlockStreamImpl S(llvm::make_unique<IndexedStreamData>(0, F), F);
   StreamReader R(S);
   StringRef Str;
   EXPECT_NO_ERROR(R.readFixedString(Str, 10));
@@ -132,7 +139,7 @@ TEST(MappedBlockStreamTest, CopyReadNonContiguousBreak) {
 // fails and allocates no memory.
 TEST(MappedBlockStreamTest, InvalidReadSizeNoBreak) {
   DiscontiguousFile F;
-  MappedBlockStream S(llvm::make_unique<IndexedStreamData>(0, F), F);
+  MappedBlockStreamImpl S(llvm::make_unique<IndexedStreamData>(0, F), F);
   StreamReader R(S);
   StringRef Str;
 
@@ -145,7 +152,7 @@ TEST(MappedBlockStreamTest, InvalidReadSizeNoBreak) {
 // fails and allocates no memory.
 TEST(MappedBlockStreamTest, InvalidReadSizeContiguousBreak) {
   DiscontiguousFile F;
-  MappedBlockStream S(llvm::make_unique<IndexedStreamData>(0, F), F);
+  MappedBlockStreamImpl S(llvm::make_unique<IndexedStreamData>(0, F), F);
   StreamReader R(S);
   StringRef Str;
 
@@ -158,7 +165,7 @@ TEST(MappedBlockStreamTest, InvalidReadSizeContiguousBreak) {
 // boundary fails and allocates no memory.
 TEST(MappedBlockStreamTest, InvalidReadSizeNonContiguousBreak) {
   DiscontiguousFile F;
-  MappedBlockStream S(llvm::make_unique<IndexedStreamData>(0, F), F);
+  MappedBlockStreamImpl S(llvm::make_unique<IndexedStreamData>(0, F), F);
   StreamReader R(S);
   StringRef Str;
 
@@ -170,7 +177,7 @@ TEST(MappedBlockStreamTest, InvalidReadSizeNonContiguousBreak) {
 // beyond the end of a StreamRef fails.
 TEST(MappedBlockStreamTest, ZeroCopyReadNoBreak) {
   DiscontiguousFile F;
-  MappedBlockStream S(llvm::make_unique<IndexedStreamData>(0, F), F);
+  MappedBlockStreamImpl S(llvm::make_unique<IndexedStreamData>(0, F), F);
   StreamReader R(S);
   StringRef Str;
   EXPECT_NO_ERROR(R.readFixedString(Str, 1));

@@ -31,7 +31,7 @@ class TpiStream {
   struct HeaderInfo;
 
 public:
-  TpiStream(const PDBFile &File, uint32_t StreamIdx);
+  TpiStream(const PDBFile &File, std::unique_ptr<MappedBlockStream> Stream);
   ~TpiStream();
   Error reload();
 
@@ -43,6 +43,8 @@ public:
   uint16_t getTypeHashStreamIndex() const;
   uint16_t getTypeHashStreamAuxIndex() const;
 
+  uint32_t getHashKeySize() const;
+  uint32_t NumHashBuckets() const;
   codeview::FixedStreamArray<support::ulittle32_t> getHashValues() const;
   codeview::FixedStreamArray<TypeIndexOffset> getTypeIndexOffsets() const;
   codeview::FixedStreamArray<TypeIndexOffset> getHashAdjustments() const;
@@ -51,7 +53,7 @@ public:
 
 private:
   const PDBFile &Pdb;
-  MappedBlockStream Stream;
+  std::unique_ptr<MappedBlockStream> Stream;
   HashFunctionType HashFunction;
 
   codeview::CVTypeArray TypeRecords;

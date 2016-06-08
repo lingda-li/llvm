@@ -62,15 +62,14 @@ struct TpiStream::HeaderInfo {
   EmbeddedBuf HashAdjBuffer;
 };
 
-TpiStream::TpiStream(const PDBFile &File, uint32_t StreamIdx)
-    : Pdb(File),
-      Stream(llvm::make_unique<IndexedStreamData>(StreamIdx, File), File),
-      HashFunction(nullptr) {}
+TpiStream::TpiStream(const PDBFile &File,
+                     std::unique_ptr<MappedBlockStream> Stream)
+    : Pdb(File), Stream(std::move(Stream)), HashFunction(nullptr) {}
 
 TpiStream::~TpiStream() {}
 
 Error TpiStream::reload() {
-  codeview::StreamReader Reader(Stream);
+  codeview::StreamReader Reader(*Stream);
 
   if (Reader.bytesRemaining() < sizeof(HeaderInfo))
     return make_error<RawError>(raw_error_code::corrupt_file,
@@ -104,9 +103,15 @@ Error TpiStream::reload() {
     return EC;
 
   // Hash indices, hash values, etc come from the hash stream.
-  HashStream.reset(new MappedBlockStream(
-      llvm::make_unique<IndexedStreamData>(Header->HashStreamIndex, Pdb), Pdb));
-  codeview::StreamReader HSR(*HashStream);
+  if (Header->HashStreamIndex >= Pdb.getNumStreams())
+    return make_error<RawError>(raw_error_code::corrupt_file,
+                                "Invalid TPI hash stream index.");
+
+  auto HS =
+      MappedBlockStream::createIndexedStream(Header->HashStreamIndex, Pdb);
+  if (!HS)
+    return HS.takeError();
+  codeview::StreamReader HSR(**HS);
 
   uint32_t NumHashValues = Header->HashValueBuffer.Length / sizeof(ulittle32_t);
   if (NumHashValues != NumTypeRecords())
@@ -129,6 +134,7 @@ Error TpiStream::reload() {
   if (auto EC = HSR.readArray(HashAdjustments, NumHashAdjustments))
     return EC;
 
+  HashStream = std::move(*HS);
   return Error::success();
 }
 
@@ -152,6 +158,9 @@ uint16_t TpiStream::getTypeHashStreamIndex() const {
 uint16_t TpiStream::getTypeHashStreamAuxIndex() const {
   return Header->HashAuxStreamIndex;
 }
+
+uint32_t TpiStream::NumHashBuckets() const { return Header->NumHashBuckets; }
+uint32_t TpiStream::getHashKeySize() const { return Header->HashKeySize; }
 
 codeview::FixedStreamArray<support::ulittle32_t>
 TpiStream::getHashValues() const {
