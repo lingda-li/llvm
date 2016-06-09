@@ -4906,27 +4906,25 @@ bool ScalarEvolution::isAddRecNeverPoison(const Instruction *I, const Loop *L) {
     }
   }
 
-  if (!LatchControlDependentOnPoison)
-    return false;
+  return LatchControlDependentOnPoison && loopHasNoAbnormalExits(L);
+}
 
-  // Now check if loop has abonormal exits (or not), and cache the information.
-
-  auto Itr = LoopHasAbnormalExit.find(L);
-  if (Itr == LoopHasAbnormalExit.end()) {
-    bool HasAbnormalExit = false;
-    for (auto *BB : L->getBlocks()) {
-      HasAbnormalExit = any_of(*BB, [](Instruction &I) {
-        return !isGuaranteedToTransferExecutionToSuccessor(&I);
+bool ScalarEvolution::loopHasNoAbnormalExits(const Loop *L) {
+  auto Itr = LoopHasNoAbnormalExits.find(L);
+  if (Itr == LoopHasNoAbnormalExits.end()) {
+    auto NoAbnormalExitInBB = [&](BasicBlock *BB) {
+      return all_of(*BB, [](Instruction &I) {
+        return isGuaranteedToTransferExecutionToSuccessor(&I);
       });
-      if (HasAbnormalExit)
-        break;
-    }
-    auto InsertPair = LoopHasAbnormalExit.insert({L, HasAbnormalExit});
+    };
+
+    auto InsertPair = LoopHasNoAbnormalExits.insert(
+        {L, all_of(L->getBlocks(), NoAbnormalExitInBB)});
     assert(InsertPair.second && "We just checked!");
     Itr = InsertPair.first;
   }
 
-  return !Itr->second;
+  return Itr->second;
 }
 
 const SCEV *ScalarEvolution::createSCEV(Value *V) {
@@ -5490,7 +5488,7 @@ void ScalarEvolution::forgetLoop(const Loop *L) {
   for (Loop::iterator I = L->begin(), E = L->end(); I != E; ++I)
     forgetLoop(*I);
 
-  LoopHasAbnormalExit.erase(L);
+  LoopHasNoAbnormalExits.erase(L);
 }
 
 void ScalarEvolution::forgetValue(Value *V) {
@@ -7200,7 +7198,8 @@ ScalarEvolution::howFarToZero(const SCEV *V, const Loop *L, bool ControlsExit,
   // compute the backedge count.  In this case, the step may not divide the
   // distance, but we don't care because if the condition is "missed" the loop
   // will have undefined behavior due to wrapping.
-  if (ControlsExit && AddRec->hasNoSelfWrap()) {
+  if (ControlsExit && AddRec->hasNoSelfWrap() &&
+      loopHasNoAbnormalExits(AddRec->getLoop())) {
     const SCEV *Exact =
         getUDivExpr(Distance, CountDown ? getNegativeSCEV(Step) : Step);
     return ExitLimit(Exact, Exact, P);

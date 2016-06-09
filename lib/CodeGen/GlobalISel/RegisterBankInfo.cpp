@@ -538,11 +538,24 @@ RegisterBankInfo::OperandsMapper::getVRegsMem(unsigned OpIdx) {
       NewVRegs.push_back(0);
   }
   SmallVectorImpl<unsigned>::iterator End =
-      NewVRegs.size() <= StartIdx + NumPartialVal + 1
-          ? NewVRegs.end()
-          : &NewVRegs[StartIdx + NumPartialVal + 1];
+      getNewVRegsEnd(StartIdx, NumPartialVal);
 
   return make_range(&NewVRegs[StartIdx], End);
+}
+
+SmallVectorImpl<unsigned>::const_iterator
+RegisterBankInfo::OperandsMapper::getNewVRegsEnd(unsigned StartIdx,
+                                                 unsigned NumVal) const {
+  return const_cast<OperandsMapper *>(this)->getNewVRegsEnd(StartIdx, NumVal);
+}
+SmallVectorImpl<unsigned>::iterator
+RegisterBankInfo::OperandsMapper::getNewVRegsEnd(unsigned StartIdx,
+                                                 unsigned NumVal) {
+  assert((NewVRegs.size() == StartIdx + NumVal ||
+          NewVRegs.size() > StartIdx + NumVal) &&
+         "NewVRegs too small to contain all the partial mapping");
+  return NewVRegs.size() <= StartIdx + NumVal ? NewVRegs.end()
+                                              : &NewVRegs[StartIdx + NumVal];
 }
 
 void RegisterBankInfo::OperandsMapper::createVRegs(unsigned OpIdx) {
@@ -576,7 +589,9 @@ void RegisterBankInfo::OperandsMapper::setVRegs(unsigned OpIdx,
 }
 
 iterator_range<SmallVectorImpl<unsigned>::const_iterator>
-RegisterBankInfo::OperandsMapper::getVRegs(unsigned OpIdx) const {
+RegisterBankInfo::OperandsMapper::getVRegs(unsigned OpIdx,
+                                           bool ForDebug) const {
+  (void)ForDebug;
   assert(OpIdx < getMI().getNumOperands() && "Out-of-bound access");
   int StartIdx = OpToNewVRegIdx[OpIdx];
 
@@ -586,14 +601,63 @@ RegisterBankInfo::OperandsMapper::getVRegs(unsigned OpIdx) const {
   unsigned PartMapSize =
       getInstrMapping().getOperandMapping(OpIdx).BreakDown.size();
   SmallVectorImpl<unsigned>::const_iterator End =
-      NewVRegs.size() <= StartIdx + PartMapSize + 1
-          ? NewVRegs.end()
-          : &NewVRegs[StartIdx + PartMapSize + 1];
+      getNewVRegsEnd(StartIdx, PartMapSize);
   iterator_range<SmallVectorImpl<unsigned>::const_iterator> Res =
       make_range(&NewVRegs[StartIdx], End);
 #ifndef NDEBUG
   for (unsigned VReg : Res)
-    assert(VReg && "Some registers are uninitialized");
+    assert((VReg || ForDebug) && "Some registers are uninitialized");
 #endif
   return Res;
+}
+
+void RegisterBankInfo::OperandsMapper::dump() const {
+  print(dbgs(), true);
+  dbgs() << '\n';
+}
+
+void RegisterBankInfo::OperandsMapper::print(raw_ostream &OS,
+                                             bool ForDebug) const {
+  unsigned NumOpds = getMI().getNumOperands();
+  if (ForDebug) {
+    OS << "Mapping for " << getMI() << "\nwith " << getInstrMapping() << '\n';
+    // Print out the internal state of the index table.
+    OS << "Populated indices (CellNumber, IndexInNewVRegs): ";
+    bool IsFirst = true;
+    for (unsigned Idx = 0; Idx != NumOpds; ++Idx) {
+      if (OpToNewVRegIdx[Idx] != DontKnowIdx) {
+        if (!IsFirst)
+          OS << ", ";
+        OS << '(' << Idx << ", " << OpToNewVRegIdx[Idx] << ')';
+        IsFirst = false;
+      }
+    }
+    OS << '\n';
+  } else
+    OS << "Mapping ID: " << getInstrMapping().getID() << ' ';
+
+  OS << "Operand Mapping: ";
+  // If we have a function, we can pretty print the name of the registers.
+  // Otherwise we will print the raw numbers.
+  const TargetRegisterInfo *TRI =
+      getMI().getParent() && getMI().getParent()->getParent()
+          ? getMI().getParent()->getParent()->getSubtarget().getRegisterInfo()
+          : nullptr;
+  bool IsFirst = true;
+  for (unsigned Idx = 0; Idx != NumOpds; ++Idx) {
+    if (OpToNewVRegIdx[Idx] == DontKnowIdx)
+      continue;
+    if (!IsFirst)
+      OS << ", ";
+    IsFirst = false;
+    OS << '(' << PrintReg(getMI().getOperand(Idx).getReg(), TRI) << ", [";
+    bool IsFirstNewVReg = true;
+    for (unsigned VReg : getVRegs(Idx)) {
+      if (!IsFirstNewVReg)
+        OS << ", ";
+      IsFirstNewVReg = false;
+      OS << PrintReg(VReg, TRI);
+    }
+    OS << "])";
+  }
 }

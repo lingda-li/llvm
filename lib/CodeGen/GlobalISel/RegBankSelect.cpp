@@ -502,6 +502,7 @@ void RegBankSelect::applyMapping(
     }
   }
   // Second, rewrite the instruction.
+  DEBUG(dbgs() << "Actual mapping of the operands: " << OpdMapper << '\n');
   RBI->applyMapping(OpdMapper);
 }
 
@@ -529,9 +530,9 @@ void RegBankSelect::assignInstr(MachineInstr &MI) {
 
   DEBUG(dbgs() << "Mapping: " << BestMapping << '\n');
 
+  // After this call, MI may not be valid anymore.
+  // Do not use it.
   applyMapping(MI, BestMapping, RepairPts);
-
-  DEBUG(dbgs() << "Assigned: " << MI);
 }
 
 bool RegBankSelect::runOnMachineFunction(MachineFunction &MF) {
