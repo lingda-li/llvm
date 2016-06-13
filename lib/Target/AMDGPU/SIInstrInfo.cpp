@@ -339,11 +339,10 @@ bool SIInstrInfo::shouldClusterMemOps(MachineInstr *FirstLdSt,
   return (NumLoads * DstRC->getSize()) <= LoadClusterThreshold;
 }
 
-void
-SIInstrInfo::copyPhysReg(MachineBasicBlock &MBB,
-                         MachineBasicBlock::iterator MI, DebugLoc DL,
-                         unsigned DestReg, unsigned SrcReg,
-                         bool KillSrc) const {
+void SIInstrInfo::copyPhysReg(MachineBasicBlock &MBB,
+                              MachineBasicBlock::iterator MI,
+                              const DebugLoc &DL, unsigned DestReg,
+                              unsigned SrcReg, bool KillSrc) const {
 
   // If we are trying to copy to or from SCC, there is a bug somewhere else in
   // the backend.  While it may be theoretically possible to do this, it should
@@ -875,19 +874,19 @@ bool SIInstrInfo::expandPostRAPseudo(MachineBasicBlock::iterator MI) const {
     if (SrcOp.isImm()) {
       APInt Imm(64, SrcOp.getImm());
       BuildMI(MBB, MI, DL, get(AMDGPU::V_MOV_B32_e32), DstLo)
-              .addImm(Imm.getLoBits(32).getZExtValue())
-              .addReg(Dst, RegState::Implicit);
+        .addImm(Imm.getLoBits(32).getZExtValue())
+        .addReg(Dst, RegState::Implicit | RegState::Define);
       BuildMI(MBB, MI, DL, get(AMDGPU::V_MOV_B32_e32), DstHi)
-              .addImm(Imm.getHiBits(32).getZExtValue())
-              .addReg(Dst, RegState::Implicit);
+        .addImm(Imm.getHiBits(32).getZExtValue())
+        .addReg(Dst, RegState::Implicit | RegState::Define);
     } else {
       assert(SrcOp.isReg());
       BuildMI(MBB, MI, DL, get(AMDGPU::V_MOV_B32_e32), DstLo)
-              .addReg(RI.getSubReg(SrcOp.getReg(), AMDGPU::sub0))
-              .addReg(Dst, RegState::Implicit);
+        .addReg(RI.getSubReg(SrcOp.getReg(), AMDGPU::sub0))
+        .addReg(Dst, RegState::Implicit | RegState::Define);
       BuildMI(MBB, MI, DL, get(AMDGPU::V_MOV_B32_e32), DstHi)
-              .addReg(RI.getSubReg(SrcOp.getReg(), AMDGPU::sub1))
-              .addReg(Dst, RegState::Implicit);
+        .addReg(RI.getSubReg(SrcOp.getReg(), AMDGPU::sub1))
+        .addReg(Dst, RegState::Implicit | RegState::Define);
     }
     MI->eraseFromParent();
     break;
@@ -902,13 +901,15 @@ bool SIInstrInfo::expandPostRAPseudo(MachineBasicBlock::iterator MI) const {
     const MachineOperand &SrcCond = MI->getOperand(3);
 
     BuildMI(MBB, MI, DL, get(AMDGPU::V_CNDMASK_B32_e64), DstLo)
-        .addReg(RI.getSubReg(Src0, AMDGPU::sub0))
-        .addReg(RI.getSubReg(Src1, AMDGPU::sub0))
-        .addOperand(SrcCond);
+      .addReg(RI.getSubReg(Src0, AMDGPU::sub0))
+      .addReg(RI.getSubReg(Src1, AMDGPU::sub0))
+      .addReg(SrcCond.getReg())
+      .addReg(Dst, RegState::Implicit | RegState::Define);
     BuildMI(MBB, MI, DL, get(AMDGPU::V_CNDMASK_B32_e64), DstHi)
-        .addReg(RI.getSubReg(Src0, AMDGPU::sub1))
-        .addReg(RI.getSubReg(Src1, AMDGPU::sub1))
-        .addOperand(SrcCond);
+      .addReg(RI.getSubReg(Src0, AMDGPU::sub1))
+      .addReg(RI.getSubReg(Src1, AMDGPU::sub1))
+      .addReg(SrcCond.getReg(), getKillRegState(SrcCond.isKill()))
+      .addReg(Dst, RegState::Implicit | RegState::Define);
     MI->eraseFromParent();
     break;
   }
@@ -1173,7 +1174,7 @@ unsigned SIInstrInfo::InsertBranch(MachineBasicBlock &MBB,
                                    MachineBasicBlock *TBB,
                                    MachineBasicBlock *FBB,
                                    ArrayRef<MachineOperand> Cond,
-                                   DebugLoc DL) const {
+                                   const DebugLoc &DL) const {
 
   if (!FBB && Cond.empty()) {
     BuildMI(&MBB, DL, get(AMDGPU::S_BRANCH))
@@ -3094,7 +3095,9 @@ uint64_t SIInstrInfo::getScratchRsrcWords23() const {
 
   uint64_t EltSizeValue = Log2_32(ST.getMaxPrivateElementSize()) - 1;
 
-  Rsrc23 |= (EltSizeValue << AMDGPU::RSRC_ELEMENT_SIZE_SHIFT);
+  Rsrc23 |= (EltSizeValue << AMDGPU::RSRC_ELEMENT_SIZE_SHIFT) |
+            // IndexStride = 64
+            (UINT64_C(3) << AMDGPU::RSRC_INDEX_STRIDE_SHIFT);
 
   // If TID_ENABLE is set, DATA_FORMAT specifies stride bits [14:17].
   // Clear them unless we want a huge stride.
