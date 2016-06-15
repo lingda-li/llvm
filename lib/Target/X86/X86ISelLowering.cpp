@@ -3927,26 +3927,6 @@ bool X86::isCalleePop(CallingConv::ID CallingConv,
   }
 }
 
-/// \brief Return true if the condition is an unsigned comparison operation.
-static bool isX86CCUnsigned(unsigned X86CC) {
-  switch (X86CC) {
-  default:
-    llvm_unreachable("Invalid integer condition!");
-  case X86::COND_E:
-  case X86::COND_NE:
-  case X86::COND_B:
-  case X86::COND_A:
-  case X86::COND_BE:
-  case X86::COND_AE:
-    return true;
-  case X86::COND_G:
-  case X86::COND_GE:
-  case X86::COND_L:
-  case X86::COND_LE:
-    return false;
-  }
-}
-
 static X86::CondCode TranslateIntegerX86CC(ISD::CondCode SetCCOpcode) {
   switch (SetCCOpcode) {
   default: llvm_unreachable("Invalid integer condition!");
@@ -14766,18 +14746,6 @@ SDValue X86TargetLowering::EmitCmp(SDValue Op0, SDValue Op1, unsigned X86CC,
 
   if ((Op0.getValueType() == MVT::i8 || Op0.getValueType() == MVT::i16 ||
        Op0.getValueType() == MVT::i32 || Op0.getValueType() == MVT::i64)) {
-    // Do the comparison at i32 if it's smaller, besides the Atom case.
-    // This avoids subregister aliasing issues. Keep the smaller reference
-    // if we're optimizing for size, however, as that'll allow better folding
-    // of memory operations.
-    if (Op0.getValueType() != MVT::i32 && Op0.getValueType() != MVT::i64 &&
-        !DAG.getMachineFunction().getFunction()->optForMinSize() &&
-        !Subtarget.isAtom()) {
-      unsigned ExtendOp =
-          isX86CCUnsigned(X86CC) ? ISD::ZERO_EXTEND : ISD::SIGN_EXTEND;
-      Op0 = DAG.getNode(ExtendOp, dl, MVT::i32, Op0);
-      Op1 = DAG.getNode(ExtendOp, dl, MVT::i32, Op1);
-    }
     // Use SUB instead of CMP to enable CSE between SUB and CMP.
     SDVTList VTs = DAG.getVTList(Op0.getValueType(), MVT::i32);
     SDValue Sub = DAG.getNode(X86ISD::SUB, dl, VTs,
@@ -30445,7 +30413,7 @@ static SDValue combineLockSub(SDNode *N, SelectionDAG &DAG,
 }
 
 // TEST (AND a, b) ,(AND a, b) -> TEST a, b
-static SDValue PerformTESTM(SDNode *N, SelectionDAG &DAG) {
+static SDValue combineTestM(SDNode *N, SelectionDAG &DAG) {
   SDValue Op0 = N->getOperand(0);
   SDValue Op1 = N->getOperand(1);
 
@@ -30538,7 +30506,7 @@ SDValue X86TargetLowering::PerformDAGCombine(SDNode *N,
   case ISD::MGATHER:
   case ISD::MSCATTER:       return combineGatherScatter(N, DAG);
   case X86ISD::LSUB:        return combineLockSub(N, DAG, Subtarget);
-  case X86ISD::TESTM:       return PerformTESTM(N, DAG);
+  case X86ISD::TESTM:       return combineTestM(N, DAG);
   }
 
   return SDValue();
