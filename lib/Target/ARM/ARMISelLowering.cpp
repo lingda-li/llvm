@@ -1798,11 +1798,16 @@ ARMTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
 
   const TargetMachine &TM = getTargetMachine();
   Reloc::Model RM = TM.getRelocationModel();
+  const Triple &TargetTriple = TM.getTargetTriple();
+  const Module *Mod = MF.getFunction()->getParent();
   const GlobalValue *GV = nullptr;
   if (GlobalAddressSDNode *G = dyn_cast<GlobalAddressSDNode>(Callee))
     GV = G->getGlobal();
+  bool isStub =
+    !shouldAssumeDSOLocal(RM, TargetTriple, *Mod, GV) &&
+    Subtarget->isTargetMachO();
 
-  bool isARMFunc = false;
+  bool isARMFunc = !Subtarget->isThumb() || (isStub && !Subtarget->isMClass());
   bool isLocalARMFunc = false;
   ARMFunctionInfo *AFI = MF.getInfo<ARMFunctionInfo>();
   auto PtrVt = getPointerTy(DAG.getDataLayout());
@@ -1846,12 +1851,7 @@ ARMTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
   } else if (isa<GlobalAddressSDNode>(Callee)) {
     isDirect = true;
     bool isDef = GV->isStrongDefinitionForLinker();
-    const Triple &TargetTriple = TM.getTargetTriple();
-    bool isStub =
-        !shouldAssumeDSOLocal(RM, TargetTriple, *GV->getParent(), GV) &&
-        Subtarget->isTargetMachO();
 
-    isARMFunc = !Subtarget->isThumb() || (isStub && !Subtarget->isMClass());
     // ARM call to a local ARM function is predicable.
     isLocalARMFunc = !Subtarget->isThumb() && (isDef || !ARMInterworking);
     // tBX takes a register source operand.
@@ -1878,18 +1878,10 @@ ARMTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
                         MachinePointerInfo::getGOT(DAG.getMachineFunction()),
                         false, false, false, 0);
     } else {
-      // On ELF targets for PIC code, direct calls should go through the PLT
-      unsigned OpFlags = 0;
-      if (Subtarget->isTargetELF() &&
-          getTargetMachine().getRelocationModel() == Reloc::PIC_)
-        OpFlags = ARMII::MO_PLT;
-      Callee = DAG.getTargetGlobalAddress(GV, dl, PtrVt, 0, OpFlags);
+      Callee = DAG.getTargetGlobalAddress(GV, dl, PtrVt, 0, 0);
     }
   } else if (ExternalSymbolSDNode *S = dyn_cast<ExternalSymbolSDNode>(Callee)) {
     isDirect = true;
-    bool isStub = Subtarget->isTargetMachO() &&
-                  getTargetMachine().getRelocationModel() != Reloc::Static;
-    isARMFunc = !Subtarget->isThumb() || (isStub && !Subtarget->isMClass());
     // tBX takes a register source operand.
     const char *Sym = S->getSymbol();
     if (isARMFunc && Subtarget->isThumb1Only() && !Subtarget->hasV5TOps()) {
@@ -1906,12 +1898,7 @@ ARMTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
       SDValue PICLabel = DAG.getConstant(ARMPCLabelIndex, dl, MVT::i32);
       Callee = DAG.getNode(ARMISD::PIC_ADD, dl, PtrVt, Callee, PICLabel);
     } else {
-      unsigned OpFlags = 0;
-      // On ELF targets for PIC code, direct calls should go through the PLT
-      if (Subtarget->isTargetELF() &&
-                  getTargetMachine().getRelocationModel() == Reloc::PIC_)
-        OpFlags = ARMII::MO_PLT;
-      Callee = DAG.getTargetExternalSymbol(Sym, PtrVt, OpFlags);
+      Callee = DAG.getTargetExternalSymbol(Sym, PtrVt, 0);
     }
   }
 

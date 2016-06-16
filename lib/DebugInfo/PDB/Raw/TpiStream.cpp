@@ -65,63 +65,68 @@ TpiStream::TpiStream(const PDBFile &File,
 TpiStream::~TpiStream() {}
 
 // Computes a hash for a given TPI record.
-template <typename T> static uint32_t getTpiHash(T &Rec) {
+template <typename T>
+static uint32_t getTpiHash(T &Rec, const CVRecord<TypeLeafKind> &RawRec) {
   auto Opts = static_cast<uint16_t>(Rec.getOptions());
 
-  // We don't know how to calculate a hash value for this yet.
-  // Currently we just skip it.
-  if (Opts & static_cast<uint16_t>(ClassOptions::ForwardReference))
-    return 0;
+  bool ForwardRef =
+      Opts & static_cast<uint16_t>(ClassOptions::ForwardReference);
+  bool Scoped = Opts & static_cast<uint16_t>(ClassOptions::Scoped);
+  bool UniqueName = Opts & static_cast<uint16_t>(ClassOptions::HasUniqueName);
 
-  if (!(Opts & static_cast<uint16_t>(ClassOptions::Scoped)))
+  if (!ForwardRef && !Scoped)
     return hashStringV1(Rec.getName());
-
-  if (Opts & static_cast<uint16_t>(ClassOptions::HasUniqueName))
+  if (!ForwardRef && UniqueName)
     return hashStringV1(Rec.getUniqueName());
-
-  // This case is not implemented yet.
-  return 0;
+  return hashBufferV8(RawRec.RawData);
 }
 
 namespace {
-class TpiHashVerifier : public CVTypeVisitor<TpiHashVerifier> {
+class TpiHashVerifier : public TypeVisitorCallbacks {
 public:
   TpiHashVerifier(FixedStreamArray<support::ulittle32_t> &HashValues,
                   uint32_t NumHashBuckets)
       : HashValues(HashValues), NumHashBuckets(NumHashBuckets) {}
 
-  void visitUdtSourceLine(UdtSourceLineRecord &Rec) { verifySourceLine(Rec); }
-
-  void visitUdtModSourceLine(UdtModSourceLineRecord &Rec) {
-    verifySourceLine(Rec);
+  Error visitUdtSourceLine(UdtSourceLineRecord &Rec) override {
+    return verifySourceLine(Rec);
   }
 
-  void visitClass(ClassRecord &Rec) { verify(Rec); }
-  void visitEnum(EnumRecord &Rec) { verify(Rec); }
-  void visitInterface(ClassRecord &Rec) { verify(Rec); }
-  void visitStruct(ClassRecord &Rec) { verify(Rec); }
-  void visitUnion(UnionRecord &Rec) { verify(Rec); }
+  Error visitUdtModSourceLine(UdtModSourceLineRecord &Rec) override {
+    return verifySourceLine(Rec);
+  }
 
-  void visitTypeEnd(const CVRecord<TypeLeafKind> &Record) { ++Index; }
+  Error visitClass(ClassRecord &Rec) override { return verify(Rec); }
+  Error visitEnum(EnumRecord &Rec) override { return verify(Rec); }
+  Error visitUnion(UnionRecord &Rec) override { return verify(Rec); }
+
+  Error visitTypeBegin(const CVRecord<TypeLeafKind> &Rec) override {
+    ++Index;
+    RawRecord = &Rec;
+    return Error::success();
+  }
 
 private:
-  template <typename T> void verify(T &Rec) {
-    uint32_t Hash = getTpiHash(Rec);
-    if (Hash && Hash % NumHashBuckets != HashValues[Index])
-      parseError();
+  template <typename T> Error verify(T &Rec) {
+    uint32_t Hash = getTpiHash(Rec, *RawRecord);
+    if (Hash % NumHashBuckets != HashValues[Index])
+      return make_error<RawError>(raw_error_code::invalid_tpi_hash);
+    return Error::success();
   }
 
-  template <typename T> void verifySourceLine(T &Rec) {
+  template <typename T> Error verifySourceLine(T &Rec) {
     char Buf[4];
     support::endian::write32le(Buf, Rec.getUDT().getIndex());
     uint32_t Hash = hashStringV1(StringRef(Buf, 4));
     if (Hash % NumHashBuckets != HashValues[Index])
-      parseError();
+      return make_error<RawError>(raw_error_code::invalid_tpi_hash);
+    return Error::success();
   }
 
   FixedStreamArray<support::ulittle32_t> HashValues;
+  const CVRecord<TypeLeafKind> *RawRecord;
   uint32_t NumHashBuckets;
-  uint32_t Index = 0;
+  uint32_t Index = -1;
 };
 }
 
@@ -129,11 +134,8 @@ private:
 // Currently we only verify SRC_LINE records.
 Error TpiStream::verifyHashValues() {
   TpiHashVerifier Verifier(HashValues, Header->NumHashBuckets);
-  Verifier.visitTypeStream(TypeRecords);
-  if (Verifier.hadError())
-    return make_error<RawError>(raw_error_code::corrupt_file,
-                                "Corrupt TPI hash table.");
-  return Error::success();
+  CVTypeVisitor Visitor(Verifier);
+  return Visitor.visitTypeStream(TypeRecords);
 }
 
 Error TpiStream::reload() {
