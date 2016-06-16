@@ -43,21 +43,20 @@ public:
   /// FIXME: Make the visitor interpret the trailing bytes so that clients don't
   /// need to.
 #define TYPE_RECORD(EnumName, EnumVal, Name)                                   \
-  void visit##Name(TypeLeafKind LeafType, Name##Record &Record) {}
+  void visit##Name(Name##Record &Record) {}
 #define TYPE_RECORD_ALIAS(EnumName, EnumVal, Name, AliasName)
 #define MEMBER_RECORD(EnumName, EnumVal, Name)                                 \
-  void visit##Name(TypeLeafKind LeafType, Name##Record &Record) {}
+  void visit##Name(Name##Record &Record) {}
 #define MEMBER_RECORD_ALIAS(EnumName, EnumVal, Name, AliasName)
 #include "TypeRecords.def"
 
   void visitTypeRecord(const CVRecord<TypeLeafKind> &Record) {
     ArrayRef<uint8_t> LeafData = Record.Data;
-    ArrayRef<uint8_t> RecordData = LeafData;
     auto *DerivedThis = static_cast<Derived *>(this);
-    DerivedThis->visitTypeBegin(Record.Type, RecordData);
+    DerivedThis->visitTypeBegin(Record);
     switch (Record.Type) {
     default:
-      DerivedThis->visitUnknownType(Record.Type, RecordData);
+      DerivedThis->visitUnknownType(Record);
       break;
     case LF_FIELDLIST:
       DerivedThis->visitFieldList(Record.Type, LeafData);
@@ -68,7 +67,7 @@ public:
     auto Result = Name##Record::deserialize(RK, LeafData);                     \
     if (Result.getError())                                                     \
       return parseError();                                                     \
-    DerivedThis->visit##Name(Record.Type, *Result);                            \
+    DerivedThis->visit##Name(*Result);                                         \
     break;                                                                     \
   }
 #define TYPE_RECORD_ALIAS(EnumName, EnumVal, Name, AliasName)                  \
@@ -76,7 +75,7 @@ public:
 #define MEMBER_RECORD(EnumName, EnumVal, Name)
 #include "TypeRecords.def"
       }
-      DerivedThis->visitTypeEnd(Record.Type, RecordData);
+      DerivedThis->visitTypeEnd(Record);
   }
 
   /// Visits the type records in Data. Sets the error flag on parse failures.
@@ -89,12 +88,12 @@ public:
   }
 
   /// Action to take on unknown types. By default, they are ignored.
-  void visitUnknownType(TypeLeafKind Leaf, ArrayRef<uint8_t> RecordData) {}
+  void visitUnknownType(const CVRecord<TypeLeafKind> &Record) {}
 
   /// Paired begin/end actions for all types. Receives all record data,
   /// including the fixed-length record prefix.
-  void visitTypeBegin(TypeLeafKind Leaf, ArrayRef<uint8_t> RecordData) {}
-  void visitTypeEnd(TypeLeafKind Leaf, ArrayRef<uint8_t> RecordData) {}
+  void visitTypeBegin(const CVRecord<TypeLeafKind> &Record) {}
+  void visitTypeEnd(const CVRecord<TypeLeafKind> &Record) {}
 
   ArrayRef<uint8_t> skipPadding(ArrayRef<uint8_t> Data) {
     if (Data.empty())
@@ -133,7 +132,7 @@ public:
     auto Result = Name##Record::deserialize(RK, FieldData);                    \
     if (Result.getError())                                                     \
       return parseError();                                                     \
-    DerivedThis->visit##Name(Leaf, *Result);                                   \
+    DerivedThis->visit##Name(*Result);                                         \
     break;                                                                     \
   }
 #define MEMBER_RECORD_ALIAS(EnumName, EnumVal, Name, AliasName)                \

@@ -90,23 +90,19 @@ public:
                   uint32_t NumHashBuckets)
       : HashValues(HashValues), NumHashBuckets(NumHashBuckets) {}
 
-  void visitUdtSourceLine(TypeLeafKind, UdtSourceLineRecord &Rec) {
+  void visitUdtSourceLine(UdtSourceLineRecord &Rec) { verifySourceLine(Rec); }
+
+  void visitUdtModSourceLine(UdtModSourceLineRecord &Rec) {
     verifySourceLine(Rec);
   }
 
-  void visitUdtModSourceLine(TypeLeafKind, UdtModSourceLineRecord &Rec) {
-    verifySourceLine(Rec);
-  }
+  void visitClass(ClassRecord &Rec) { verify(Rec); }
+  void visitEnum(EnumRecord &Rec) { verify(Rec); }
+  void visitInterface(ClassRecord &Rec) { verify(Rec); }
+  void visitStruct(ClassRecord &Rec) { verify(Rec); }
+  void visitUnion(UnionRecord &Rec) { verify(Rec); }
 
-  void visitClass(TypeLeafKind, ClassRecord &Rec) { verify(Rec); }
-  void visitEnum(TypeLeafKind, EnumRecord &Rec) { verify(Rec); }
-  void visitInterface(TypeLeafKind, ClassRecord &Rec) { verify(Rec); }
-  void visitStruct(TypeLeafKind, ClassRecord &Rec) { verify(Rec); }
-  void visitUnion(TypeLeafKind, UnionRecord &Rec) { verify(Rec); }
-
-  void visitTypeEnd(TypeLeafKind Leaf, ArrayRef<uint8_t> RecordData) {
-    ++Index;
-  }
+  void visitTypeEnd(const CVRecord<TypeLeafKind> &Record) { ++Index; }
 
 private:
   template <typename T> void verify(T &Rec) {
