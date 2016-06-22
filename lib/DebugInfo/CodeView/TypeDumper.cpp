@@ -195,6 +195,8 @@ static StringRef getLeafTypeName(TypeLeafKind LT) {
   case ename:                                                                  \
     return #name;
 #include "llvm/DebugInfo/CodeView/TypeRecords.def"
+  case LF_FIELDLIST:
+    return "FieldList";
   default:
     break;
   }
@@ -214,6 +216,9 @@ Error CVTypeDumper::visitTypeBegin(const CVRecord<TypeLeafKind> &Record) {
 }
 
 Error CVTypeDumper::visitTypeEnd(const CVRecord<TypeLeafKind> &Record) {
+  if (Record.Type == LF_FIELDLIST)
+    Name = "<field list>";
+
   // Always record some name for every type, even if Name is empty. CVUDTNames
   // is indexed by type index, and must have one entry for every type.
   recordType(Name);
@@ -400,6 +405,7 @@ Error CVTypeDumper::visitPointer(PointerRecord &Ptr) {
   W->printNumber("IsConst", Ptr.isConst());
   W->printNumber("IsVolatile", Ptr.isVolatile());
   W->printNumber("IsUnaligned", Ptr.isUnaligned());
+  W->printNumber("SizeOf", Ptr.getSize());
 
   if (Ptr.isPointerToMember()) {
     const MemberPointerInfo &MI = Ptr.getMemberInfo();
@@ -608,6 +614,12 @@ Error CVTypeDumper::visitVirtualBaseClass(VirtualBaseClassRecord &Base) {
   printTypeIndex("VBPtrType", Base.getVBPtrType());
   W->printHex("VBPtrOffset", Base.getVBPtrOffset());
   W->printHex("VBTableIndex", Base.getVTableIndex());
+  return Error::success();
+}
+
+Error CVTypeDumper::visitListContinuation(ListContinuationRecord &Cont) {
+  DictScope S(*W, "ListContinuation");
+  printTypeIndex("ContinuationIndex", Cont.getContinuationIndex());
   return Error::success();
 }
 

@@ -81,7 +81,7 @@
 ; CHECK:       Const (0x1)
 ; CHECK:     ]
 ; CHECK:   }
-; CHECK:   UnknownLeaf (0x1005) {
+; CHECK:   FieldList (0x1005) {
 ; CHECK:     TypeLeafKind: LF_FIELDLIST (0x1203)
 ; CHECK:     DataMember {
 ; CHECK:       AccessSpecifier: Public (0x3)
@@ -113,7 +113,7 @@
 ; CHECK:     Properties [ (0x200)
 ; CHECK:       HasUniqueName (0x200)
 ; CHECK:     ]
-; CHECK:     FieldList: sdm (0x1005)
+; CHECK:     FieldList: <field list> (0x1005)
 ; CHECK:     DerivedFrom: 0x0
 ; CHECK:     VShape: 0x0
 ; CHECK:     SizeOf: 12
@@ -132,7 +132,7 @@
 ; CHECK:     Name: Union
 ; CHECK:     LinkageName: .?ATUnion@@
 ; CHECK:   }
-; CHECK:   UnknownLeaf (0x1008) {
+; CHECK:   FieldList (0x1008) {
 ; CHECK:     TypeLeafKind: LF_FIELDLIST (0x1203)
 ; CHECK:     DataMember {
 ; CHECK:       AccessSpecifier: Public (0x3)
@@ -153,7 +153,7 @@
 ; CHECK:     Properties [ (0x200)
 ; CHECK:       HasUniqueName (0x200)
 ; CHECK:     ]
-; CHECK:     FieldList: b (0x1008)
+; CHECK:     FieldList: <field list> (0x1008)
 ; CHECK:     SizeOf: 4
 ; CHECK:     Name: Union
 ; CHECK:     LinkageName: .?ATUnion@@
@@ -171,7 +171,7 @@
 ; CHECK:     SizeOf: 0
 ; CHECK:     Name: Class
 ; CHECK:   }
-; CHECK:   UnknownLeaf (0x100B) {
+; CHECK:   FieldList (0x100B) {
 ; CHECK:     TypeLeafKind: LF_FIELDLIST (0x1203)
 ; CHECK:     DataMember {
 ; CHECK:       AccessSpecifier: Public (0x3)
@@ -198,7 +198,7 @@
 ; CHECK:     Properties [ (0x200)
 ; CHECK:       HasUniqueName (0x200)
 ; CHECK:     ]
-; CHECK:     FieldList: prot (0x100B)
+; CHECK:     FieldList: <field list> (0x100B)
 ; CHECK:     DerivedFrom: 0x0
 ; CHECK:     VShape: 0x0
 ; CHECK:     SizeOf: 12
@@ -249,7 +249,7 @@
 ; CHECK:     IsVolatile: 0
 ; CHECK:     IsUnaligned: 0
 ; CHECK:   }
-; CHECK:   UnknownLeaf (0x1011) {
+; CHECK:   FieldList (0x1011) {
 ; CHECK:     TypeLeafKind: LF_FIELDLIST (0x1203)
 ; CHECK:     DataMember {
 ; CHECK:       AccessSpecifier: Public (0x3)
@@ -270,7 +270,7 @@
 ; CHECK:     Properties [ (0x200)
 ; CHECK:       HasUniqueName (0x200)
 ; CHECK:     ]
-; CHECK:     FieldList: d (0x1011)
+; CHECK:     FieldList: <field list> (0x1011)
 ; CHECK:     DerivedFrom: 0x0
 ; CHECK:     VShape: 0x0
 ; CHECK:     SizeOf: 48
@@ -288,10 +288,10 @@
 ; CHECK:     DerivedFrom: 0x0
 ; CHECK:     VShape: 0x0
 ; CHECK:     SizeOf: 0
-; CHECK:     Name: Nested
+; CHECK:     Name: Class::Nested
 ; CHECK:     LinkageName: .?AUNested@Class@@
 ; CHECK:   }
-; CHECK:   UnknownLeaf (0x1014) {
+; CHECK:   FieldList (0x1014) {
 ; CHECK:     TypeLeafKind: LF_FIELDLIST (0x1203)
 ; CHECK:     DataMember {
 ; CHECK:       AccessSpecifier: Public (0x3)
@@ -306,11 +306,11 @@
 ; CHECK:     Properties [ (0x200)
 ; CHECK:       HasUniqueName (0x200)
 ; CHECK:     ]
-; CHECK:     FieldList: n (0x1014)
+; CHECK:     FieldList: <field list> (0x1014)
 ; CHECK:     DerivedFrom: 0x0
 ; CHECK:     VShape: 0x0
 ; CHECK:     SizeOf: 4
-; CHECK:     Name: Nested
+; CHECK:     Name: Class::Nested
 ; CHECK:     LinkageName: .?AUNested@Class@@
 ; CHECK:   }
 ; CHECK:   Pointer (0x1016) {
@@ -324,26 +324,22 @@
 ; CHECK:     IsVolatile: 0
 ; CHECK:     IsUnaligned: 0
 ; CHECK:   }
-; CHECK:   ArgList (0x1017) {
-; CHECK:     TypeLeafKind: LF_ARGLIST (0x1201)
-; CHECK:     NumArgs: 1
-; CHECK:     Arguments [
-; CHECK:       ArgType: DerivedClass* (0x1016)
-; CHECK:     ]
-; CHECK:   }
-; CHECK:   Procedure (0x1018) {
-; CHECK:     TypeLeafKind: LF_PROCEDURE (0x1008)
+; CHECK:   MemberFunction (0x1017) {
+; CHECK:     TypeLeafKind: LF_MFUNCTION (0x1009)
 ; CHECK:     ReturnType: void (0x3)
+; CHECK:     ClassType: DerivedClass (0x100D)
+; CHECK:     ThisType: DerivedClass* (0x1016)
 ; CHECK:     CallingConvention: NearC (0x0)
 ; CHECK:     FunctionOptions [ (0x0)
 ; CHECK:     ]
-; CHECK:     NumParameters: 1
-; CHECK:     ArgListType: (DerivedClass*) (0x1017)
+; CHECK:     NumParameters: 0
+; CHECK:     ArgListType: () (0x1000)
+; CHECK:     ThisAdjustment: 0
 ; CHECK:   }
-; CHECK:   FuncId (0x1019) {
-; CHECK:     TypeLeafKind: LF_FUNC_ID (0x1601)
-; CHECK:     ParentScope: 0x0
-; CHECK:     FunctionType: void (DerivedClass*) (0x1018)
+; CHECK:   FuncId (0x1018) {
+; CHECK:     TypeLeafKind: LF_MFUNC_ID (0x1602)
+; CHECK:     ClassType: DerivedClass (0x100D)
+; CHECK:     FunctionType: void DerivedClass::() (0x1017)
 ; CHECK:     Name: DerivedClass::DerivedClass
 ; CHECK:   }
 ; CHECK: ]

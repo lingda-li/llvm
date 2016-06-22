@@ -65,6 +65,21 @@ static cl::opt<unsigned>
                             "loop-access analysis (default = 100)"),
                    cl::init(100));
 
+/// This enables versioning on the strides of symbolically striding memory
+/// accesses in code like the following.
+///   for (i = 0; i < N; ++i)
+///     A[i * Stride1] += B[i * Stride2] ...
+///
+/// Will be roughly translated to
+///    if (Stride1 == 1 && Stride2 == 1) {
+///      for (i = 0; i < N; i+=4)
+///       A[i:i+3] += ...
+///    } else
+///      ...
+static cl::opt<bool> EnableMemAccessVersioning(
+    "enable-mem-access-versioning", cl::init(true), cl::Hidden,
+    cl::desc("Enable symbolic stride memory access versioning"));
+
 /// \brief Enable store-to-load forwarding conflict detection. This option can
 /// be disabled for correctness testing.
 static cl::opt<bool> EnableForwardingConflictDetection(
@@ -1488,8 +1503,7 @@ bool LoopAccessInfo::canAnalyzeLoop() {
   return true;
 }
 
-void LoopAccessInfo::analyzeLoop(const ValueToValueMap &SymbolicStrides) {
-
+void LoopAccessInfo::analyzeLoop() {
   typedef SmallPtrSet<Value*, 16> ValueSet;
 
   // Holds the Load and Store instructions.
@@ -1541,6 +1555,8 @@ void LoopAccessInfo::analyzeLoop(const ValueToValueMap &SymbolicStrides) {
         NumLoads++;
         Loads.push_back(Ld);
         DepChecker.addAccess(Ld);
+        if (EnableMemAccessVersioning)
+          collectStridedAccess(Ld);
         continue;
       }
 
@@ -1563,6 +1579,8 @@ void LoopAccessInfo::analyzeLoop(const ValueToValueMap &SymbolicStrides) {
         NumStores++;
         Stores.push_back(St);
         DepChecker.addAccess(St);
+        if (EnableMemAccessVersioning)
+          collectStridedAccess(St);
       }
     } // Next instr.
   } // Next block.
@@ -1879,17 +1897,35 @@ LoopAccessInfo::addRuntimeChecks(Instruction *Loc) const {
   return addRuntimeChecks(Loc, PtrRtChecking.getChecks());
 }
 
+void LoopAccessInfo::collectStridedAccess(Value *MemAccess) {
+  Value *Ptr = nullptr;
+  if (LoadInst *LI = dyn_cast<LoadInst>(MemAccess))
+    Ptr = LI->getPointerOperand();
+  else if (StoreInst *SI = dyn_cast<StoreInst>(MemAccess))
+    Ptr = SI->getPointerOperand();
+  else
+    return;
+
+  Value *Stride = getStrideFromPointer(Ptr, PSE.getSE(), TheLoop);
+  if (!Stride)
+    return;
+
+  DEBUG(dbgs() << "LAA: Found a strided access that we can version");
+  DEBUG(dbgs() << "  Ptr: " << *Ptr << " Stride: " << *Stride << "\n");
+  SymbolicStrides[Ptr] = Stride;
+  StrideSet.insert(Stride);
+}
+
 LoopAccessInfo::LoopAccessInfo(Loop *L, ScalarEvolution *SE,
                                const DataLayout &DL,
                                const TargetLibraryInfo *TLI, AliasAnalysis *AA,
-                               DominatorTree *DT, LoopInfo *LI,
-                               const ValueToValueMap &Strides)
+                               DominatorTree *DT, LoopInfo *LI)
     : PSE(*SE, *L), PtrRtChecking(SE), DepChecker(PSE, L), TheLoop(L), DL(DL),
       TLI(TLI), AA(AA), DT(DT), LI(LI), NumLoads(0), NumStores(0),
       MaxSafeDepDistBytes(-1U), CanVecMem(false),
       StoreToLoopInvariantAddress(false) {
   if (canAnalyzeLoop())
-    analyzeLoop(Strides);
+    analyzeLoop();
 }
 
 void LoopAccessInfo::print(raw_ostream &OS, unsigned Depth) const {
@@ -1932,22 +1968,12 @@ void LoopAccessInfo::print(raw_ostream &OS, unsigned Depth) const {
   PSE.print(OS, Depth);
 }
 
-const LoopAccessInfo &
-LoopAccessAnalysis::getInfo(Loop *L, const ValueToValueMap &Strides) {
+const LoopAccessInfo &LoopAccessAnalysis::getInfo(Loop *L) {
   auto &LAI = LoopAccessInfoMap[L];
-
-#ifndef NDEBUG
-  assert((!LAI || LAI->NumSymbolicStrides == Strides.size()) &&
-         "Symbolic strides changed for loop");
-#endif
 
   if (!LAI) {
     const DataLayout &DL = L->getHeader()->getModule()->getDataLayout();
-    LAI =
-        llvm::make_unique<LoopAccessInfo>(L, SE, DL, TLI, AA, DT, LI, Strides);
-#ifndef NDEBUG
-    LAI->NumSymbolicStrides = Strides.size();
-#endif
+    LAI = llvm::make_unique<LoopAccessInfo>(L, SE, DL, TLI, AA, DT, LI);
   }
   return *LAI.get();
 }

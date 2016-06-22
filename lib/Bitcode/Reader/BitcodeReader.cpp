@@ -281,7 +281,6 @@ class BitcodeReader : public GVMaterializer {
 
 public:
   std::error_code error(BitcodeError E, const Twine &Message);
-  std::error_code error(BitcodeError E);
   std::error_code error(const Twine &Message);
 
   BitcodeReader(MemoryBuffer *Buffer, LLVMContext &Context);
@@ -506,15 +505,10 @@ class ModuleSummaryIndexBitcodeReader {
   std::string SourceFileName;
 
 public:
-  std::error_code error(BitcodeError E, const Twine &Message);
-  std::error_code error(BitcodeError E);
   std::error_code error(const Twine &Message);
 
   ModuleSummaryIndexBitcodeReader(
       MemoryBuffer *Buffer, DiagnosticHandlerFunction DiagnosticHandler,
-      bool CheckGlobalValSummaryPresenceOnly = false);
-  ModuleSummaryIndexBitcodeReader(
-      DiagnosticHandlerFunction DiagnosticHandler,
       bool CheckGlobalValSummaryPresenceOnly = false);
   ~ModuleSummaryIndexBitcodeReader() { freeState(); }
 
@@ -552,26 +546,17 @@ BitcodeDiagnosticInfo::BitcodeDiagnosticInfo(std::error_code EC,
 
 void BitcodeDiagnosticInfo::print(DiagnosticPrinter &DP) const { DP << Msg; }
 
-static std::error_code error(DiagnosticHandlerFunction DiagnosticHandler,
+static std::error_code error(const DiagnosticHandlerFunction &DiagnosticHandler,
                              std::error_code EC, const Twine &Message) {
   BitcodeDiagnosticInfo DI(EC, DS_Error, Message);
   DiagnosticHandler(DI);
   return EC;
 }
 
-static std::error_code error(DiagnosticHandlerFunction DiagnosticHandler,
-                             std::error_code EC) {
-  return error(DiagnosticHandler, EC, EC.message());
-}
-
 static std::error_code error(LLVMContext &Context, std::error_code EC,
                              const Twine &Message) {
   return error([&](const DiagnosticInfo &DI) { Context.diagnose(DI); }, EC,
                Message);
-}
-
-static std::error_code error(LLVMContext &Context, std::error_code EC) {
-  return error(Context, EC, EC.message());
 }
 
 static std::error_code error(LLVMContext &Context, const Twine &Message) {
@@ -596,10 +581,6 @@ std::error_code BitcodeReader::error(const Twine &Message) {
   }
   return ::error(Context, make_error_code(BitcodeError::CorruptedBitcode),
                  Message);
-}
-
-std::error_code BitcodeReader::error(BitcodeError E) {
-  return ::error(Context, make_error_code(E));
 }
 
 BitcodeReader::BitcodeReader(MemoryBuffer *Buffer, LLVMContext &Context)
@@ -2692,6 +2673,16 @@ std::error_code BitcodeReader::parseMetadata(bool ModuleLevel) {
               parseMetadataStrings(Record, Blob, NextMetadataNo))
         return EC;
       break;
+    case bitc::METADATA_GLOBAL_DECL_ATTACHMENT: {
+      if (Record.size() % 2 == 0)
+        return error("Invalid record");
+      unsigned ValueID = Record[0];
+      if (ValueID >= ValueList.size())
+        return error("Invalid record");
+      if (auto *GO = dyn_cast<GlobalObject>(ValueList[ValueID]))
+        parseGlobalObjectAttachment(*GO, ArrayRef<uint64_t>(Record).slice(1));
+      break;
+    }
     case bitc::METADATA_KIND: {
       // Support older bitcode files that had METADATA_KIND records in a
       // block with METADATA_BLOCK_ID.
@@ -3838,16 +3829,6 @@ std::error_code BitcodeReader::parseModule(uint64_t ResumeBit,
         NewGV->setComdat(reinterpret_cast<Comdat *>(1));
       }
 
-      break;
-    }
-    case bitc::MODULE_CODE_GLOBALVAR_ATTACHMENT: {
-      if (Record.size() % 2 == 0)
-        return error("Invalid record");
-      unsigned ValueID = Record[0];
-      if (ValueID >= ValueList.size())
-        return error("Invalid record");
-      if (auto *GV = dyn_cast<GlobalVariable>(ValueList[ValueID]))
-        parseGlobalObjectAttachment(*GV, ArrayRef<uint64_t>(Record).slice(1));
       break;
     }
     // FUNCTION:  [type, callingconv, isproto, linkage, paramattr,
@@ -5737,30 +5718,15 @@ BitcodeReader::initLazyStream(std::unique_ptr<DataStreamer> Streamer) {
   return std::error_code();
 }
 
-std::error_code ModuleSummaryIndexBitcodeReader::error(BitcodeError E,
-                                                       const Twine &Message) {
-  return ::error(DiagnosticHandler, make_error_code(E), Message);
-}
-
 std::error_code ModuleSummaryIndexBitcodeReader::error(const Twine &Message) {
   return ::error(DiagnosticHandler,
                  make_error_code(BitcodeError::CorruptedBitcode), Message);
-}
-
-std::error_code ModuleSummaryIndexBitcodeReader::error(BitcodeError E) {
-  return ::error(DiagnosticHandler, make_error_code(E));
 }
 
 ModuleSummaryIndexBitcodeReader::ModuleSummaryIndexBitcodeReader(
     MemoryBuffer *Buffer, DiagnosticHandlerFunction DiagnosticHandler,
     bool CheckGlobalValSummaryPresenceOnly)
     : DiagnosticHandler(std::move(DiagnosticHandler)), Buffer(Buffer),
-      CheckGlobalValSummaryPresenceOnly(CheckGlobalValSummaryPresenceOnly) {}
-
-ModuleSummaryIndexBitcodeReader::ModuleSummaryIndexBitcodeReader(
-    DiagnosticHandlerFunction DiagnosticHandler,
-    bool CheckGlobalValSummaryPresenceOnly)
-    : DiagnosticHandler(std::move(DiagnosticHandler)), Buffer(nullptr),
       CheckGlobalValSummaryPresenceOnly(CheckGlobalValSummaryPresenceOnly) {}
 
 void ModuleSummaryIndexBitcodeReader::freeState() { Buffer = nullptr; }
@@ -6555,9 +6521,9 @@ std::string llvm::getBitcodeProducerString(MemoryBufferRef Buffer,
 }
 
 // Parse the specified bitcode buffer, returning the function info index.
-ErrorOr<std::unique_ptr<ModuleSummaryIndex>>
-llvm::getModuleSummaryIndex(MemoryBufferRef Buffer,
-                            DiagnosticHandlerFunction DiagnosticHandler) {
+ErrorOr<std::unique_ptr<ModuleSummaryIndex>> llvm::getModuleSummaryIndex(
+    MemoryBufferRef Buffer,
+    const DiagnosticHandlerFunction &DiagnosticHandler) {
   std::unique_ptr<MemoryBuffer> Buf = MemoryBuffer::getMemBuffer(Buffer, false);
   ModuleSummaryIndexBitcodeReader R(Buf.get(), DiagnosticHandler);
 
@@ -6576,8 +6542,9 @@ llvm::getModuleSummaryIndex(MemoryBufferRef Buffer,
 }
 
 // Check if the given bitcode buffer contains a global value summary block.
-bool llvm::hasGlobalValueSummary(MemoryBufferRef Buffer,
-                                 DiagnosticHandlerFunction DiagnosticHandler) {
+bool llvm::hasGlobalValueSummary(
+    MemoryBufferRef Buffer,
+    const DiagnosticHandlerFunction &DiagnosticHandler) {
   std::unique_ptr<MemoryBuffer> Buf = MemoryBuffer::getMemBuffer(Buffer, false);
   ModuleSummaryIndexBitcodeReader R(Buf.get(), DiagnosticHandler, true);
 

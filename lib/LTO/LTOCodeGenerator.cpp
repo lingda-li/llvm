@@ -13,8 +13,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/LTO/LTOCodeGenerator.h"
+#include "llvm/LTO/UpdateCompilerUsed.h"
 
-#include "UpdateCompilerUsed.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Analysis/Passes.h"
@@ -123,7 +123,7 @@ void LTOCodeGenerator::initializeLTOPasses() {
   initializeReversePostOrderFunctionAttrsLegacyPassPass(R);
   initializeGlobalsAAWrapperPassPass(R);
   initializeLICMPass(R);
-  initializeMergedLoadStoreMotionPass(R);
+  initializeMergedLoadStoreMotionLegacyPassPass(R);
   initializeGVNLegacyPassPass(R);
   initializeMemCpyOptLegacyPassPass(R);
   initializeDCELegacyPassPass(R);
