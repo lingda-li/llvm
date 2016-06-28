@@ -347,8 +347,8 @@ void Function::setParent(Module *parent) {
 void Function::dropAllReferences() {
   setIsMaterializable(false);
 
-  for (iterator I = begin(), E = end(); I != E; ++I)
-    I->dropAllReferences();
+  for (BasicBlock &BB : *this)
+    BB.dropAllReferences();
 
   // Delete all basic blocks. They are now unused, except possibly by
   // blockaddresses, but BasicBlock's destructor takes care of those.
@@ -531,11 +531,9 @@ static std::string getMangledTypeStr(Type* Ty) {
 
 std::string Intrinsic::getName(ID id, ArrayRef<Type*> Tys) {
   assert(id < num_intrinsics && "Invalid intrinsic ID!");
-  if (Tys.empty())
-    return IntrinsicNameTable[id];
   std::string Result(IntrinsicNameTable[id]);
-  for (unsigned i = 0; i < Tys.size(); ++i) {
-    Result += "." + getMangledTypeStr(Tys[i]);
+  for (Type *Ty : Tys) {
+    Result += "." + getMangledTypeStr(Ty);
   }
   return Result;
 }
@@ -1058,6 +1056,60 @@ bool Intrinsic::matchIntrinsicType(Type *Ty, ArrayRef<Intrinsic::IITDescriptor> 
     }
   }
   llvm_unreachable("unhandled");
+}
+
+bool
+Intrinsic::matchIntrinsicVarArg(bool isVarArg,
+                                ArrayRef<Intrinsic::IITDescriptor> &Infos) {
+  // If there are no descriptors left, then it can't be a vararg.
+  if (Infos.empty())
+    return isVarArg;
+
+  // There should be only one descriptor remaining at this point.
+  if (Infos.size() != 1)
+    return true;
+
+  // Check and verify the descriptor.
+  IITDescriptor D = Infos.front();
+  Infos = Infos.slice(1);
+  if (D.Kind == IITDescriptor::VarArg)
+    return !isVarArg;
+
+  return true;
+}
+
+Optional<Function*> Intrinsic::remangleIntrinsicFunction(Function *F) {
+  Intrinsic::ID ID = F->getIntrinsicID();
+  if (!ID)
+    return None;
+
+  FunctionType *FTy = F->getFunctionType();
+  // Accumulate an array of overloaded types for the given intrinsic
+  SmallVector<Type *, 4> ArgTys;
+  {
+    SmallVector<Intrinsic::IITDescriptor, 8> Table;
+    getIntrinsicInfoTableEntries(ID, Table);
+    ArrayRef<Intrinsic::IITDescriptor> TableRef = Table;
+
+    // If we encounter any problems matching the signature with the descriptor
+    // just give up remangling. It's up to verifier to report the discrepancy.
+    if (Intrinsic::matchIntrinsicType(FTy->getReturnType(), TableRef, ArgTys))
+      return None;
+    for (auto Ty : FTy->params())
+      if (Intrinsic::matchIntrinsicType(Ty, TableRef, ArgTys))
+        return None;
+    if (Intrinsic::matchIntrinsicVarArg(FTy->isVarArg(), TableRef))
+      return None;
+  }
+
+  StringRef Name = F->getName();
+  if (Name == Intrinsic::getName(ID, ArgTys))
+    return None;
+
+  auto NewDecl = Intrinsic::getDeclaration(F->getParent(), ID, ArgTys);
+  NewDecl->setCallingConv(F->getCallingConv());
+  assert(NewDecl->getFunctionType() == FTy && "Shouldn't change the signature");
+  return NewDecl;
 }
 
 /// hasAddressTaken - returns true if there are any uses of this function

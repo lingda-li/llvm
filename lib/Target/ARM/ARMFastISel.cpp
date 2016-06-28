@@ -540,15 +540,14 @@ unsigned ARMFastISel::ARMMaterializeInt(const Constant *C, MVT VT) {
 }
 
 bool ARMFastISel::isPositionIndependent() const {
-  return TM.getRelocationModel() == Reloc::PIC_;
+  return TLI.isPositionIndependent();
 }
 
 unsigned ARMFastISel::ARMMaterializeGV(const GlobalValue *GV, MVT VT) {
   // For now 32-bit only.
   if (VT != MVT::i32 || GV->isThreadLocal()) return 0;
 
-  Reloc::Model RelocM = TM.getRelocationModel();
-  bool IsIndirect = Subtarget->GVIsIndirectSymbol(GV, RelocM);
+  bool IsIndirect = Subtarget->isGVIndirectSymbol(GV);
   const TargetRegisterClass *RC = isThumb2 ? &ARM::rGPRRegClass
                                            : &ARM::GPRRegClass;
   unsigned DestReg = createResultReg(RC);
@@ -2935,10 +2934,7 @@ bool ARMFastISel::tryToFoldLoadIntoMI(MachineInstr *MI, unsigned OpNo,
 
 unsigned ARMFastISel::ARMLowerPICELF(const GlobalValue *GV,
                                      unsigned Align, MVT VT) {
-  Reloc::Model RM = TM.getRelocationModel();
-  const Triple &TargetTriple = TM.getTargetTriple();
-  bool UseGOT_PREL =
-      !shouldAssumeDSOLocal(RM, TargetTriple, *GV->getParent(), GV);
+  bool UseGOT_PREL = !TM.shouldAssumeDSOLocal(*GV->getParent(), GV);
 
   LLVMContext *Context = &MF->getFunction()->getContext();
   unsigned ARMPCLabelIndex = AFI->createPICLabelUId();

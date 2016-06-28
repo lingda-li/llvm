@@ -157,6 +157,8 @@ class LLVM_LIBRARY_VISIBILITY CodeViewDebug : public DebugHandlerBase {
   /// Number of type lowering frames active on the stack.
   unsigned TypeEmissionLevel = 0;
 
+  codeview::TypeIndex VBPType;
+
   const DISubprogram *CurrentSubprogram = nullptr;
 
   // The UDTs we have seen while processing types; each entry is a pair of type
@@ -191,6 +193,8 @@ class LLVM_LIBRARY_VISIBILITY CodeViewDebug : public DebugHandlerBase {
 
   void emitDebugInfoForGlobals();
 
+  void emitDebugInfoForRetainedTypes();
+
   void emitDebugInfoForUDTs(
       ArrayRef<std::pair<std::string, codeview::TypeIndex>> UDTs);
 
@@ -216,6 +220,10 @@ class LLVM_LIBRARY_VISIBILITY CodeViewDebug : public DebugHandlerBase {
   /// particular, locals from inlined code live inside the inlining site.
   void recordLocalVariable(LocalVariable &&Var, const DILocation *Loc);
 
+  /// Emits local variables in the appropriate order.
+  void emitLocalVariableList(ArrayRef<LocalVariable> Locals);
+
+  /// Emits an S_LOCAL record and its associated defined ranges.
   void emitLocalVariable(const LocalVariable &Var);
 
   /// Translates the DIType to codeview if necessary and returns a type index
@@ -227,6 +235,10 @@ class LLVM_LIBRARY_VISIBILITY CodeViewDebug : public DebugHandlerBase {
                                             const DICompositeType *Class);
 
   codeview::TypeIndex getScopeIndex(const DIScope *Scope);
+
+  codeview::TypeIndex getVBPTypeIndex();
+
+  void addToUDTs(const DIType *Ty, codeview::TypeIndex TI);
 
   codeview::TypeIndex lowerType(const DIType *Ty, const DIType *ClassTy);
   codeview::TypeIndex lowerTypeAlias(const DIDerivedType *Ty);

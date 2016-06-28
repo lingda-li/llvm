@@ -344,6 +344,9 @@ void CodeViewDebug::endModule() {
   setCurrentSubprogram(nullptr);
   emitDebugInfoForGlobals();
 
+  // Emit retained types.
+  emitDebugInfoForRetainedTypes();
+
   // Switch back to the generic .debug$S section after potentially processing
   // comdat symbol sections.
   switchToDebugSectionForSymbol(nullptr);
@@ -501,8 +504,7 @@ void CodeViewDebug::emitInlinedCallSite(const FunctionInfo &FI,
 
   OS.EmitLabel(InlineEnd);
 
-  for (const LocalVariable &Var : Site.InlinedLocals)
-    emitLocalVariable(Var);
+  emitLocalVariableList(Site.InlinedLocals);
 
   // Recurse on child inlined call sites before closing the scope.
   for (const DILocation *ChildSite : Site.ChildSites) {
@@ -605,8 +607,7 @@ void CodeViewDebug::emitDebugInfoForFunction(const Function *GV,
     emitNullTerminatedSymbolName(OS, FuncName);
     OS.EmitLabel(ProcRecordEnd);
 
-    for (const LocalVariable &Var : FI.Locals)
-      emitLocalVariable(Var);
+    emitLocalVariableList(FI.Locals);
 
     // Emit inlined call site information. Only emit functions inlined directly
     // into the parent function. We'll emit the other sites recursively as part
@@ -826,6 +827,27 @@ void CodeViewDebug::beginFunction(const MachineFunction *MF) {
   }
 }
 
+void CodeViewDebug::addToUDTs(const DIType *Ty, TypeIndex TI) {
+  SmallVector<StringRef, 5> QualifiedNameComponents;
+  const DISubprogram *ClosestSubprogram = getQualifiedNameComponents(
+      Ty->getScope().resolve(), QualifiedNameComponents);
+
+  std::string FullyQualifiedName =
+      getQualifiedName(QualifiedNameComponents, Ty->getName());
+
+  if (ClosestSubprogram == nullptr)
+    GlobalUDTs.emplace_back(std::move(FullyQualifiedName), TI);
+  else if (ClosestSubprogram == CurrentSubprogram)
+    LocalUDTs.emplace_back(std::move(FullyQualifiedName), TI);
+
+  // TODO: What if the ClosestSubprogram is neither null or the current
+  // subprogram?  Currently, the UDT just gets dropped on the floor.
+  //
+  // The current behavior is not desirable.  To get maximal fidelity, we would
+  // need to perform all type translation before beginning emission of .debug$S
+  // and then make LocalUDTs a member of FunctionInfo
+}
+
 TypeIndex CodeViewDebug::lowerType(const DIType *Ty, const DIType *ClassTy) {
   // Generic dispatch for lowering an unknown type.
   switch (Ty->getTag()) {
@@ -870,25 +892,7 @@ TypeIndex CodeViewDebug::lowerTypeAlias(const DIDerivedType *Ty) {
   TypeIndex UnderlyingTypeIndex = getTypeIndex(UnderlyingTypeRef);
   StringRef TypeName = Ty->getName();
 
-  SmallVector<StringRef, 5> QualifiedNameComponents;
-  const DISubprogram *ClosestSubprogram = getQualifiedNameComponents(
-      Ty->getScope().resolve(), QualifiedNameComponents);
-
-  if (ClosestSubprogram == nullptr) {
-    std::string FullyQualifiedName =
-        getQualifiedName(QualifiedNameComponents, TypeName);
-    GlobalUDTs.emplace_back(std::move(FullyQualifiedName), UnderlyingTypeIndex);
-  } else if (ClosestSubprogram == CurrentSubprogram) {
-    std::string FullyQualifiedName =
-        getQualifiedName(QualifiedNameComponents, TypeName);
-    LocalUDTs.emplace_back(std::move(FullyQualifiedName), UnderlyingTypeIndex);
-  }
-  // TODO: What if the ClosestSubprogram is neither null or the current
-  // subprogram?  Currently, the UDT just gets dropped on the floor.
-  //
-  // The current behavior is not desirable.  To get maximal fidelity, we would
-  // need to perform all type translation before beginning emission of .debug$S
-  // and then make LocalUDTs a member of FunctionInfo
+  addToUDTs(Ty, UnderlyingTypeIndex);
 
   if (UnderlyingTypeIndex == TypeIndex(SimpleTypeKind::Int32Long) &&
       TypeName == "HRESULT")
@@ -896,6 +900,7 @@ TypeIndex CodeViewDebug::lowerTypeAlias(const DIDerivedType *Ty) {
   if (UnderlyingTypeIndex == TypeIndex(SimpleTypeKind::UInt16Short) &&
       TypeName == "wchar_t")
     return TypeIndex(SimpleTypeKind::WideCharacter);
+
   return UnderlyingTypeIndex;
 }
 
@@ -1312,6 +1317,9 @@ struct llvm::ClassInfo {
   // MethodName -> MethodsList
   typedef MapVector<MDString *, MethodsList> MethodsMap;
 
+  /// Base classes.
+  std::vector<const DIDerivedType *> Inheritance;
+
   /// Direct members.
   MemberList Members;
   // Direct overloaded methods gathered by name.
@@ -1359,10 +1367,10 @@ ClassInfo CodeViewDebug::collectClassInfo(const DICompositeType *Ty) {
     if (auto *SP = dyn_cast<DISubprogram>(Element)) {
       Info.Methods[SP->getRawName()].push_back(SP);
     } else if (auto *DDTy = dyn_cast<DIDerivedType>(Element)) {
-      if (DDTy->getTag() == dwarf::DW_TAG_member)
+      if (DDTy->getTag() == dwarf::DW_TAG_member) {
         collectMemberInfo(Info, DDTy);
-      else if (DDTy->getTag() == dwarf::DW_TAG_inheritance) {
-        // FIXME: collect class info from inheritance.
+      } else if (DDTy->getTag() == dwarf::DW_TAG_inheritance) {
+        Info.Inheritance.push_back(DDTy);
       } else if (DDTy->getTag() == dwarf::DW_TAG_friend) {
         // Ignore friend members. It appears that MSVC emitted info about
         // friends in the past, but modern versions do not.
@@ -1406,10 +1414,19 @@ TypeIndex CodeViewDebug::lowerCompleteTypeClass(const DICompositeType *Ty) {
       getFullyQualifiedName(Ty->getScope().resolve(), Ty->getName());
 
   uint64_t SizeInBytes = Ty->getSizeInBits() / 8;
-  return TypeTable.writeClass(ClassRecord(
+
+  TypeIndex ClassTI = TypeTable.writeClass(ClassRecord(
       Kind, FieldCount, CO, HfaKind::None, WindowsRTClassKind::None, FieldTI,
       TypeIndex(), VShapeTI, SizeInBytes, FullName, Ty->getIdentifier()));
-  // FIXME: Make an LF_UDT_SRC_LINE record.
+
+  TypeTable.writeUdtSourceLine(UdtSourceLineRecord(
+      ClassTI, TypeTable.writeStringId(StringIdRecord(
+                   TypeIndex(0x0), getFullFilepath(Ty->getFile()))),
+      Ty->getLine()));
+
+  addToUDTs(Ty, ClassTI);
+
+  return ClassTI;
 }
 
 TypeIndex CodeViewDebug::lowerTypeUnion(const DICompositeType *Ty) {
@@ -1433,10 +1450,19 @@ TypeIndex CodeViewDebug::lowerCompleteTypeUnion(const DICompositeType *Ty) {
   uint64_t SizeInBytes = Ty->getSizeInBits() / 8;
   std::string FullName =
       getFullyQualifiedName(Ty->getScope().resolve(), Ty->getName());
-  return TypeTable.writeUnion(UnionRecord(FieldCount, CO, HfaKind::None,
-                                          FieldTI, SizeInBytes, FullName,
-                                          Ty->getIdentifier()));
-  // FIXME: Make an LF_UDT_SRC_LINE record.
+
+  TypeIndex UnionTI = TypeTable.writeUnion(
+      UnionRecord(FieldCount, CO, HfaKind::None, FieldTI, SizeInBytes, FullName,
+                  Ty->getIdentifier()));
+
+  TypeTable.writeUdtSourceLine(UdtSourceLineRecord(
+      UnionTI, TypeTable.writeStringId(StringIdRecord(
+                   TypeIndex(0x0), getFullFilepath(Ty->getFile()))),
+      Ty->getLine()));
+
+  addToUDTs(Ty, UnionTI);
+
+  return UnionTI;
 }
 
 std::tuple<TypeIndex, TypeIndex, unsigned>
@@ -1448,6 +1474,27 @@ CodeViewDebug::lowerRecordFieldList(const DICompositeType *Ty) {
   unsigned MemberCount = 0;
   ClassInfo Info = collectClassInfo(Ty);
   FieldListRecordBuilder Fields;
+
+  // Create base classes.
+  for (const DIDerivedType *I : Info.Inheritance) {
+    if (I->getFlags() & DINode::FlagVirtual) {
+      // Virtual base.
+      // FIXME: Emit VBPtrOffset when the frontend provides it.
+      unsigned VBPtrOffset = 0;
+      // FIXME: Despite the accessor name, the offset is really in bytes.
+      unsigned VBTableIndex = I->getOffsetInBits() / 4;
+      Fields.writeVirtualBaseClass(VirtualBaseClassRecord(
+          translateAccessFlags(Ty->getTag(), I->getFlags()),
+          getTypeIndex(I->getBaseType()), getVBPTypeIndex(), VBPtrOffset,
+          VBTableIndex));
+    } else {
+      assert(I->getOffsetInBits() % 8 == 0 &&
+             "bases must be on byte boundaries");
+      Fields.writeBaseClass(BaseClassRecord(
+          translateAccessFlags(Ty->getTag(), I->getFlags()),
+          getTypeIndex(I->getBaseType()), I->getOffsetInBits() / 8));
+    }
+  }
 
   // Create members.
   for (ClassInfo::MemberInfo &MemberInfo : Info.Members) {
@@ -1505,6 +1552,24 @@ CodeViewDebug::lowerRecordFieldList(const DICompositeType *Ty) {
   }
   TypeIndex FieldTI = TypeTable.writeFieldList(Fields);
   return std::make_tuple(FieldTI, TypeIndex(), MemberCount);
+}
+
+TypeIndex CodeViewDebug::getVBPTypeIndex() {
+  if (!VBPType.getIndex()) {
+    // Make a 'const int *' type.
+    ModifierRecord MR(TypeIndex::Int32(), ModifierOptions::Const);
+    TypeIndex ModifiedTI = TypeTable.writeModifier(MR);
+
+    PointerKind PK = getPointerSizeInBytes() == 8 ? PointerKind::Near64
+                                                  : PointerKind::Near32;
+    PointerMode PM = PointerMode::Pointer;
+    PointerOptions PO = PointerOptions::None;
+    PointerRecord PR(ModifiedTI, PK, PM, PO, getPointerSizeInBytes());
+
+    VBPType = TypeTable.writePointer(PR);
+  }
+
+  return VBPType;
 }
 
 struct CodeViewDebug::TypeLoweringScope {
@@ -1611,6 +1676,25 @@ void CodeViewDebug::emitDeferredCompleteTypes() {
       getCompleteTypeIndex(RecordTy);
     TypesToEmit.clear();
   }
+}
+
+void CodeViewDebug::emitLocalVariableList(ArrayRef<LocalVariable> Locals) {
+  // Get the sorted list of parameters and emit them first.
+  SmallVector<const LocalVariable *, 6> Params;
+  for (const LocalVariable &L : Locals)
+    if (L.DIVar->isParameter())
+      Params.push_back(&L);
+  std::sort(Params.begin(), Params.end(),
+            [](const LocalVariable *L, const LocalVariable *R) {
+              return L->DIVar->getArg() < R->DIVar->getArg();
+            });
+  for (const LocalVariable *L : Params)
+    emitLocalVariable(*L);
+
+  // Next emit all non-parameters in the order that we found them.
+  for (const LocalVariable &L : Locals)
+    if (!L.DIVar->isParameter())
+      emitLocalVariable(L);
 }
 
 void CodeViewDebug::emitLocalVariable(const LocalVariable &Var) {
@@ -1783,6 +1867,18 @@ void CodeViewDebug::emitDebugInfoForGlobals() {
           emitDebugInfoForGlobal(G, GVSym);
           endCVSubsection(EndLabel);
         }
+      }
+    }
+  }
+}
+
+void CodeViewDebug::emitDebugInfoForRetainedTypes() {
+  NamedMDNode *CUs = MMI->getModule()->getNamedMetadata("llvm.dbg.cu");
+  for (const MDNode *Node : CUs->operands()) {
+    for (auto *Ty : cast<DICompileUnit>(Node)->getRetainedTypes()) {
+      if (DIType *RT = dyn_cast<DIType>(Ty)) {
+        getTypeIndex(RT);
+        // FIXME: Add to global/local DTU list.
       }
     }
   }

@@ -44,6 +44,10 @@ const char *TargetLowering::getTargetNodeName(unsigned Opcode) const {
   return nullptr;
 }
 
+bool TargetLowering::isPositionIndependent() const {
+  return getTargetMachine().getRelocationModel() == Reloc::PIC_;
+}
+
 /// Check whether a given call node is in tail position within its function. If
 /// so, it sets Chain to the input chain of the tail call.
 bool TargetLowering::isInTailCallPosition(SelectionDAG &DAG, SDNode *Node,
@@ -277,7 +281,7 @@ void TargetLowering::softenSetCCOperands(SelectionDAG &DAG, EVT VT,
 /// returned value is a member of the MachineJumpTableInfo::JTEntryKind enum.
 unsigned TargetLowering::getJumpTableEncoding() const {
   // In non-pic modes, just use the address of a block.
-  if (getTargetMachine().getRelocationModel() != Reloc::PIC_)
+  if (!isPositionIndependent())
     return MachineJumpTableInfo::EK_BlockAddress;
 
   // In PIC mode, if the target supports a GPRel32 directive, use it.
@@ -311,17 +315,20 @@ TargetLowering::getPICJumpTableRelocBaseExpr(const MachineFunction *MF,
 
 bool
 TargetLowering::isOffsetFoldingLegal(const GlobalAddressSDNode *GA) const {
-  // Assume that everything is safe in static mode.
-  if (getTargetMachine().getRelocationModel() == Reloc::Static)
-    return true;
+  const TargetMachine &TM = getTargetMachine();
+  const GlobalValue *GV = GA->getGlobal();
 
-  // In dynamic-no-pic mode, assume that known defined values are safe.
-  if (getTargetMachine().getRelocationModel() == Reloc::DynamicNoPIC &&
-      GA && GA->getGlobal()->isStrongDefinitionForLinker())
-    return true;
+  // If the address is not even local to this DSO we will have to load it from
+  // a got and then add the offset.
+  if (!TM.shouldAssumeDSOLocal(*GV->getParent(), GV))
+    return false;
 
-  // Otherwise assume nothing is safe.
-  return false;
+  // If the code is position independent we will have to add a base register.
+  if (isPositionIndependent())
+    return false;
+
+  // Otherwise we can do it.
+  return true;
 }
 
 //===----------------------------------------------------------------------===//

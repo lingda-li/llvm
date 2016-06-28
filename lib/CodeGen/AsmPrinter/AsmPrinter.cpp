@@ -124,6 +124,10 @@ AsmPrinter::~AsmPrinter() {
   }
 }
 
+bool AsmPrinter::isPositionIndependent() const {
+  return TM.getRelocationModel() == Reloc::PIC_;
+}
+
 /// getFunctionNumber - Return a unique ID for the current function.
 ///
 unsigned AsmPrinter::getFunctionNumber() const {
@@ -1173,17 +1177,11 @@ bool AsmPrinter::doFinalization(Module &M) {
     // to notice uses in operands (due to constant exprs etc).  This should
     // happen with the MC stuff eventually.
 
-    // Print out module-level global variables here.
-    for (const auto &G : M.globals()) {
-      if (!G.hasExternalWeakLinkage())
+    // Print out module-level global objects here.
+    for (const auto &GO : M.global_objects()) {
+      if (!GO.hasExternalWeakLinkage())
         continue;
-      OutStreamer->EmitSymbolAttribute(getSymbol(&G), MCSA_WeakReference);
-    }
-
-    for (const auto &F : M) {
-      if (!F.hasExternalWeakLinkage())
-        continue;
-      OutStreamer->EmitSymbolAttribute(getSymbol(&F), MCSA_WeakReference);
+      OutStreamer->EmitSymbolAttribute(getSymbol(&GO), MCSA_WeakReference);
     }
   }
 

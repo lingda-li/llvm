@@ -23,6 +23,7 @@
 #include "llvm/ADT/Statistic.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/ADT/Triple.h"
+#include "llvm/CodeGen/Analysis.h"
 #include "llvm/CodeGen/CallingConvLower.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineFunction.h"
@@ -1961,19 +1962,16 @@ bool PPCTargetLowering::getPreIndexedAddressParts(SDNode *N, SDValue &Base,
 //  LowerOperation implementation
 //===----------------------------------------------------------------------===//
 
-/// GetLabelAccessInfo - Return true if we should reference labels using a
-/// PICBase, set the HiOpFlags and LoOpFlags to the target MO flags.
-static bool GetLabelAccessInfo(const TargetMachine &TM,
-                               const PPCSubtarget &Subtarget,
+/// Return true if we should reference labels using a PICBase, set the HiOpFlags
+/// and LoOpFlags to the target MO flags.
+static void getLabelAccessInfo(bool IsPIC, const PPCSubtarget &Subtarget,
                                unsigned &HiOpFlags, unsigned &LoOpFlags,
                                const GlobalValue *GV = nullptr) {
   HiOpFlags = PPCII::MO_HA;
   LoOpFlags = PPCII::MO_LO;
 
   // Don't use the pic base if not in PIC relocation model.
-  bool isPIC = TM.getRelocationModel() == Reloc::PIC_;
-
-  if (isPIC) {
+  if (IsPIC) {
     HiOpFlags |= PPCII::MO_PIC_FLAG;
     LoOpFlags |= PPCII::MO_PIC_FLAG;
   }
@@ -1989,8 +1987,6 @@ static bool GetLabelAccessInfo(const TargetMachine &TM,
       LoOpFlags |= PPCII::MO_NLP_HIDDEN_FLAG;
     }
   }
-
-  return isPIC;
 }
 
 static SDValue LowerLabelRef(SDValue HiPart, SDValue LoPart, bool isPIC,
@@ -2049,10 +2045,10 @@ SDValue PPCTargetLowering::LowerConstantPool(SDValue Op,
   }
 
   unsigned MOHiFlag, MOLoFlag;
-  bool isPIC =
-      GetLabelAccessInfo(DAG.getTarget(), Subtarget, MOHiFlag, MOLoFlag);
+  bool IsPIC = isPositionIndependent();
+  getLabelAccessInfo(IsPIC, Subtarget, MOHiFlag, MOLoFlag);
 
-  if (isPIC && Subtarget.isSVR4ABI()) {
+  if (IsPIC && Subtarget.isSVR4ABI()) {
     SDValue GA = DAG.getTargetConstantPool(C, PtrVT, CP->getAlignment(),
                                            PPCII::MO_PIC_FLAG);
     return getTOCEntry(DAG, SDLoc(CP), false, GA);
@@ -2062,7 +2058,7 @@ SDValue PPCTargetLowering::LowerConstantPool(SDValue Op,
     DAG.getTargetConstantPool(C, PtrVT, CP->getAlignment(), 0, MOHiFlag);
   SDValue CPILo =
     DAG.getTargetConstantPool(C, PtrVT, CP->getAlignment(), 0, MOLoFlag);
-  return LowerLabelRef(CPIHi, CPILo, isPIC, DAG);
+  return LowerLabelRef(CPIHi, CPILo, IsPIC, DAG);
 }
 
 SDValue PPCTargetLowering::LowerJumpTable(SDValue Op, SelectionDAG &DAG) const {
@@ -2078,10 +2074,10 @@ SDValue PPCTargetLowering::LowerJumpTable(SDValue Op, SelectionDAG &DAG) const {
   }
 
   unsigned MOHiFlag, MOLoFlag;
-  bool isPIC =
-      GetLabelAccessInfo(DAG.getTarget(), Subtarget, MOHiFlag, MOLoFlag);
+  bool IsPIC = isPositionIndependent();
+  getLabelAccessInfo(IsPIC, Subtarget, MOHiFlag, MOLoFlag);
 
-  if (isPIC && Subtarget.isSVR4ABI()) {
+  if (IsPIC && Subtarget.isSVR4ABI()) {
     SDValue GA = DAG.getTargetJumpTable(JT->getIndex(), PtrVT,
                                         PPCII::MO_PIC_FLAG);
     return getTOCEntry(DAG, SDLoc(GA), false, GA);
@@ -2089,7 +2085,7 @@ SDValue PPCTargetLowering::LowerJumpTable(SDValue Op, SelectionDAG &DAG) const {
 
   SDValue JTIHi = DAG.getTargetJumpTable(JT->getIndex(), PtrVT, MOHiFlag);
   SDValue JTILo = DAG.getTargetJumpTable(JT->getIndex(), PtrVT, MOLoFlag);
-  return LowerLabelRef(JTIHi, JTILo, isPIC, DAG);
+  return LowerLabelRef(JTIHi, JTILo, IsPIC, DAG);
 }
 
 SDValue PPCTargetLowering::LowerBlockAddress(SDValue Op,
@@ -2107,11 +2103,11 @@ SDValue PPCTargetLowering::LowerBlockAddress(SDValue Op,
   }
 
   unsigned MOHiFlag, MOLoFlag;
-  bool isPIC =
-      GetLabelAccessInfo(DAG.getTarget(), Subtarget, MOHiFlag, MOLoFlag);
+  bool IsPIC = isPositionIndependent();
+  getLabelAccessInfo(IsPIC, Subtarget, MOHiFlag, MOLoFlag);
   SDValue TgtBAHi = DAG.getTargetBlockAddress(BA, PtrVT, 0, MOHiFlag);
   SDValue TgtBALo = DAG.getTargetBlockAddress(BA, PtrVT, 0, MOLoFlag);
-  return LowerLabelRef(TgtBAHi, TgtBALo, isPIC, DAG);
+  return LowerLabelRef(TgtBAHi, TgtBALo, IsPIC, DAG);
 }
 
 SDValue PPCTargetLowering::LowerGlobalTLSAddress(SDValue Op,
@@ -2220,10 +2216,10 @@ SDValue PPCTargetLowering::LowerGlobalAddress(SDValue Op,
   }
 
   unsigned MOHiFlag, MOLoFlag;
-  bool isPIC =
-      GetLabelAccessInfo(DAG.getTarget(), Subtarget, MOHiFlag, MOLoFlag, GV);
+  bool IsPIC = isPositionIndependent();
+  getLabelAccessInfo(IsPIC, Subtarget, MOHiFlag, MOLoFlag, GV);
 
-  if (isPIC && Subtarget.isSVR4ABI()) {
+  if (IsPIC && Subtarget.isSVR4ABI()) {
     SDValue GA = DAG.getTargetGlobalAddress(GV, DL, PtrVT,
                                             GSDN->getOffset(),
                                             PPCII::MO_PIC_FLAG);
@@ -2235,7 +2231,7 @@ SDValue PPCTargetLowering::LowerGlobalAddress(SDValue Op,
   SDValue GALo =
     DAG.getTargetGlobalAddress(GV, DL, PtrVT, GSDN->getOffset(), MOLoFlag);
 
-  SDValue Ptr = LowerLabelRef(GAHi, GALo, isPIC, DAG);
+  SDValue Ptr = LowerLabelRef(GAHi, GALo, IsPIC, DAG);
 
   // If the global reference is actually to a non-lazy-pointer, we have to do an
   // extra load to get the address of the global.
@@ -2979,8 +2975,8 @@ SDValue PPCTargetLowering::LowerFormalArguments_32SVR4(
     SDValue FIN = DAG.getFrameIndex(FuncInfo->getVarArgsFrameIndex(), PtrVT);
 
     // The fixed integer arguments of a variadic function are stored to the
-    // VarArgsFrameIndex on the stack so that they may be loaded by deferencing
-    // the result of va_next.
+    // VarArgsFrameIndex on the stack so that they may be loaded by
+    // dereferencing the result of va_next.
     for (unsigned GPRIndex = 0; GPRIndex != NumGPArgRegs; ++GPRIndex) {
       // Get an existing live-in vreg, or add a new one.
       unsigned VReg = MF.getRegInfo().getLiveInVirtReg(GPArgRegs[GPRIndex]);
@@ -3436,8 +3432,8 @@ SDValue PPCTargetLowering::LowerFormalArguments_64SVR4(
     SDValue FIN = DAG.getFrameIndex(FuncInfo->getVarArgsFrameIndex(), PtrVT);
 
     // If this function is vararg, store any remaining integer argument regs
-    // to their spots on the stack so that they may be loaded by deferencing the
-    // result of va_next.
+    // to their spots on the stack so that they may be loaded by dereferencing
+    // the result of va_next.
     for (GPR_idx = (ArgOffset - LinkageSize) / PtrByteSize;
          GPR_idx < Num_GPR_Regs; ++GPR_idx) {
       unsigned VReg = MF.addLiveIn(GPR[GPR_idx], &PPC::G8RCRegClass);
@@ -3793,8 +3789,8 @@ SDValue PPCTargetLowering::LowerFormalArguments_Darwin(
     SDValue FIN = DAG.getFrameIndex(FuncInfo->getVarArgsFrameIndex(), PtrVT);
 
     // If this function is vararg, store any remaining integer argument regs
-    // to their spots on the stack so that they may be loaded by deferencing the
-    // result of va_next.
+    // to their spots on the stack so that they may be loaded by dereferencing
+    // the result of va_next.
     for (; GPR_idx != Num_GPR_Regs; ++GPR_idx) {
       unsigned VReg;
 
@@ -4279,23 +4275,28 @@ PrepareCall(SelectionDAG &DAG, SDValue &Callee, SDValue &InFlag, SDValue &Chain,
       needIndirectCall = false;
     }
 
+  // PC-relative references to external symbols should go through $stub, unless
+  // we're building with the leopard linker or later, which automatically
+  // synthesizes these stubs.
+  const TargetMachine &TM = DAG.getTarget();
+  const Triple &TargetTriple = Subtarget.getTargetTriple();
+  bool OldMachOLinker =
+      TargetTriple.isMacOSX() && TargetTriple.isMacOSXVersionLT(10, 5);
+  const Module *Mod = DAG.getMachineFunction().getFunction()->getParent();
+  const GlobalValue *GV = nullptr;
+  if (auto *G = dyn_cast<GlobalAddressSDNode>(Callee))
+    GV = G->getGlobal();
+  bool Local = TM.shouldAssumeDSOLocal(*Mod, GV);
+  bool UsePlt =
+      !Local && (OldMachOLinker || (Subtarget.isTargetELF() && !isPPC64));
+
   if (isFunctionGlobalAddress(Callee)) {
     GlobalAddressSDNode *G = cast<GlobalAddressSDNode>(Callee);
     // A call to a TLS address is actually an indirect call to a
     // thread-specific pointer.
     unsigned OpFlags = 0;
-    if ((DAG.getTarget().getRelocationModel() != Reloc::Static &&
-         (Subtarget.getTargetTriple().isMacOSX() &&
-          Subtarget.getTargetTriple().isMacOSXVersionLT(10, 5)) &&
-         !G->getGlobal()->isStrongDefinitionForLinker()) ||
-        (Subtarget.isTargetELF() && !isPPC64 &&
-         !G->getGlobal()->hasLocalLinkage() &&
-         DAG.getTarget().getRelocationModel() == Reloc::PIC_)) {
-      // PC-relative references to external symbols should go through $stub,
-      // unless we're building with the leopard linker or later, which
-      // automatically synthesizes these stubs.
+    if (UsePlt)
       OpFlags = PPCII::MO_PLT_OR_STUB;
-    }
 
     // If the callee is a GlobalAddress/ExternalSymbol node (quite common,
     // every direct call is) turn it into a TargetGlobalAddress /
@@ -4308,16 +4309,8 @@ PrepareCall(SelectionDAG &DAG, SDValue &Callee, SDValue &InFlag, SDValue &Chain,
   if (ExternalSymbolSDNode *S = dyn_cast<ExternalSymbolSDNode>(Callee)) {
     unsigned char OpFlags = 0;
 
-    if ((DAG.getTarget().getRelocationModel() != Reloc::Static &&
-         (Subtarget.getTargetTriple().isMacOSX() &&
-          Subtarget.getTargetTriple().isMacOSXVersionLT(10, 5))) ||
-        (Subtarget.isTargetELF() && !isPPC64 &&
-         DAG.getTarget().getRelocationModel() == Reloc::PIC_)) {
-      // PC-relative references to external symbols should go through $stub,
-      // unless we're building with the leopard linker or later, which
-      // automatically synthesizes these stubs.
+    if (UsePlt)
       OpFlags = PPCII::MO_PLT_OR_STUB;
-    }
 
     Callee = DAG.getTargetExternalSymbol(S->getSymbol(), Callee.getValueType(),
                                          OpFlags);
@@ -8702,10 +8695,8 @@ PPCTargetLowering::emitEHSjLjLongJmp(MachineInstr *MI,
   unsigned BP =
       (PVT == MVT::i64)
           ? PPC::X30
-          : (Subtarget.isSVR4ABI() &&
-                     MF->getTarget().getRelocationModel() == Reloc::PIC_
-                 ? PPC::R29
-                 : PPC::R30);
+          : (Subtarget.isSVR4ABI() && isPositionIndependent() ? PPC::R29
+                                                              : PPC::R30);
 
   MachineInstrBuilder MIB;
 
