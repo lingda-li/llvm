@@ -23,7 +23,6 @@
 #include "llvm/ADT/Statistic.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/ADT/Triple.h"
-#include "llvm/CodeGen/Analysis.h"
 #include "llvm/CodeGen/CallingConvLower.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineFunction.h"
@@ -4279,16 +4278,12 @@ PrepareCall(SelectionDAG &DAG, SDValue &Callee, SDValue &InFlag, SDValue &Chain,
   // we're building with the leopard linker or later, which automatically
   // synthesizes these stubs.
   const TargetMachine &TM = DAG.getTarget();
-  const Triple &TargetTriple = Subtarget.getTargetTriple();
-  bool OldMachOLinker =
-      TargetTriple.isMacOSX() && TargetTriple.isMacOSXVersionLT(10, 5);
   const Module *Mod = DAG.getMachineFunction().getFunction()->getParent();
   const GlobalValue *GV = nullptr;
   if (auto *G = dyn_cast<GlobalAddressSDNode>(Callee))
     GV = G->getGlobal();
   bool Local = TM.shouldAssumeDSOLocal(*Mod, GV);
-  bool UsePlt =
-      !Local && (OldMachOLinker || (Subtarget.isTargetELF() && !isPPC64));
+  bool UsePlt = !Local && Subtarget.isTargetELF() && !isPPC64;
 
   if (isFunctionGlobalAddress(Callee)) {
     GlobalAddressSDNode *G = cast<GlobalAddressSDNode>(Callee);
@@ -4296,7 +4291,7 @@ PrepareCall(SelectionDAG &DAG, SDValue &Callee, SDValue &InFlag, SDValue &Chain,
     // thread-specific pointer.
     unsigned OpFlags = 0;
     if (UsePlt)
-      OpFlags = PPCII::MO_PLT_OR_STUB;
+      OpFlags = PPCII::MO_PLT;
 
     // If the callee is a GlobalAddress/ExternalSymbol node (quite common,
     // every direct call is) turn it into a TargetGlobalAddress /
@@ -4310,7 +4305,7 @@ PrepareCall(SelectionDAG &DAG, SDValue &Callee, SDValue &InFlag, SDValue &Chain,
     unsigned char OpFlags = 0;
 
     if (UsePlt)
-      OpFlags = PPCII::MO_PLT_OR_STUB;
+      OpFlags = PPCII::MO_PLT;
 
     Callee = DAG.getTargetExternalSymbol(S->getSymbol(), Callee.getValueType(),
                                          OpFlags);
@@ -11130,7 +11125,7 @@ unsigned PPCTargetLowering::getPrefLoopAlignment(MachineLoop *ML) const {
     uint64_t LoopSize = 0;
     for (auto I = ML->block_begin(), IE = ML->block_end(); I != IE; ++I)
       for (auto J = (*I)->begin(), JE = (*I)->end(); J != JE; ++J) {
-        LoopSize += TII->GetInstSizeInBytes(J);
+        LoopSize += TII->GetInstSizeInBytes(*J);
         if (LoopSize > 32)
           break;
       }
