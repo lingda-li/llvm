@@ -70,6 +70,7 @@ CoveragePrinter::create(const CoverageViewOptions &Opts) {
   case CoverageViewOptions::OutputFormat::Text:
     return llvm::make_unique<CoveragePrinterText>(Opts);
   }
+  llvm_unreachable("Unknown coverage output format!");
 }
 
 std::string SourceCoverageView::formatCount(uint64_t N) {
@@ -85,6 +86,16 @@ std::string SourceCoverageView::formatCount(uint64_t N) {
   }
   Result.push_back(" kMGTPEZY"[(Len - 1) / 3]);
   return Result;
+}
+
+bool SourceCoverageView::shouldRenderRegionMarkers(
+    bool LineHasMultipleRegions) const {
+  return getOptions().ShowRegionMarkers &&
+         (!getOptions().ShowLineStatsOrRegionMarkers || LineHasMultipleRegions);
+}
+
+bool SourceCoverageView::hasSubViews() const {
+  return !ExpansionSubViews.empty() || !InstantiationSubViews.empty();
 }
 
 std::unique_ptr<SourceCoverageView>
@@ -115,6 +126,8 @@ void SourceCoverageView::print(raw_ostream &OS, bool WholeFile,
                                bool ShowSourceName, unsigned ViewDepth) {
   if (ShowSourceName)
     renderSourceName(OS);
+
+  renderViewHeader(OS);
 
   // We need the expansions and instantiations sorted so we can go through them
   // while we iterate lines.
@@ -174,12 +187,8 @@ void SourceCoverageView::print(raw_ostream &OS, bool WholeFile,
                ExpansionColumn, ViewDepth);
 
     // Show the region markers.
-    if (getOptions().ShowRegionMarkers &&
-        (!getOptions().ShowLineStatsOrRegionMarkers ||
-         LineCount.hasMultipleRegions()) &&
-        !LineSegments.empty()) {
+    if (shouldRenderRegionMarkers(LineCount.hasMultipleRegions()))
       renderRegionMarkers(OS, LineSegments, ViewDepth);
-    }
 
     // Show the expansions and instantiations for this line.
     bool RenderedSubView = false;
@@ -191,9 +200,8 @@ void SourceCoverageView::print(raw_ostream &OS, bool WholeFile,
       // this subview.
       if (RenderedSubView) {
         ExpansionColumn = NextESV->getStartCol();
-        renderExpansionSite(
-            OS, *NextESV, {*LI, LI.line_number()}, WrappedSegment, LineSegments,
-            ExpansionColumn, ViewDepth);
+        renderExpansionSite(OS, {*LI, LI.line_number()}, WrappedSegment,
+                            LineSegments, ExpansionColumn, ViewDepth);
         renderViewDivider(OS, ViewDepth + 1);
       }
 
@@ -207,5 +215,8 @@ void SourceCoverageView::print(raw_ostream &OS, bool WholeFile,
     }
     if (RenderedSubView)
       renderViewDivider(OS, ViewDepth + 1);
+    renderLineSuffix(OS, ViewDepth);
   }
+
+  renderViewFooter(OS);
 }
