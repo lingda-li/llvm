@@ -3022,9 +3022,7 @@ ScalarEvolution::getGEPExpr(Type *PointeeType, const SCEV *BaseExpr,
 
 const SCEV *ScalarEvolution::getSMaxExpr(const SCEV *LHS,
                                          const SCEV *RHS) {
-  SmallVector<const SCEV *, 2> Ops;
-  Ops.push_back(LHS);
-  Ops.push_back(RHS);
+  SmallVector<const SCEV *, 2> Ops = {LHS, RHS};
   return getSMaxExpr(Ops);
 }
 
@@ -3125,9 +3123,7 @@ ScalarEvolution::getSMaxExpr(SmallVectorImpl<const SCEV *> &Ops) {
 
 const SCEV *ScalarEvolution::getUMaxExpr(const SCEV *LHS,
                                          const SCEV *RHS) {
-  SmallVector<const SCEV *, 2> Ops;
-  Ops.push_back(LHS);
-  Ops.push_back(RHS);
+  SmallVector<const SCEV *, 2> Ops = {LHS, RHS};
   return getUMaxExpr(Ops);
 }
 
@@ -5024,7 +5020,7 @@ const SCEV *ScalarEvolution::createSCEV(Value *V) {
           MulOps.push_back(getSCEV(BO->LHS));
           break;
         }
-	BO = NewBO;
+        BO = NewBO;
       } while (true);
 
       return getMulExpr(MulOps);

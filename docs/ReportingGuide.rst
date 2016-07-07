@@ -23,7 +23,7 @@ immediate attention, you can also reach out to any of the event organizers or
 staff. Event organizers and staff will be prepared to handle the incident and
 able to help. If you cannot find one of the organizers, the venue staff can
 locate one for you. We will also post detailed contact information for specific
-events as part of each events’ information. In person reports will still be
+events as part of each events' information. In person reports will still be
 kept confidential exactly as above, but also feel free to (anonymously if
 needed) email conduct@llvm.org.
 
@@ -33,7 +33,7 @@ needed) email conduct@llvm.org.
    intended to discourage this self enforcement of community norms. Instead,
    the mechanisms described here are intended to supplement any self
    enforcement within the community. They provide avenues for handling severe
-   cases or cases where the reporting party does not whish to respond directly
+   cases or cases where the reporting party does not wish to respond directly
    for any reason.
 
 Filing a report

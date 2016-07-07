@@ -18,8 +18,8 @@ that end, we have a few ground rules that we ask people to adhere to:
 * `be careful in the words that you choose and be kind to others`_, and
 * `when we disagree, try to understand why`_.
 
-This isn’t an exhaustive list of things that you can’t do. Rather, take it in
-the spirit in which it’s intended - a guide to make it easier to communicate
+This isn't an exhaustive list of things that you can't do. Rather, take it in
+the spirit in which it's intended - a guide to make it easier to communicate
 and participate in the community.
 
 This code of conduct applies to all spaces managed by the LLVM project or The
@@ -29,7 +29,8 @@ by the project that the community uses for communication. It applies to all of
 your communication and conduct in these spaces, including emails, chats, things
 you say, slides, videos, posters, signs, or even t-shirts you display in these
 spaces. In addition, violations of this code outside these spaces may, in rare
-cases, affect a person's ability to participate within them.
+cases, affect a person's ability to participate within them, when the conduct
+amounts to an egregious violation of this code.
 
 If you believe someone is violating the code of conduct, we ask that you report
 it by emailing conduct@llvm.org. For more details please see our
@@ -61,7 +62,7 @@ it by emailing conduct@llvm.org. For more details please see our
 * **Be respectful.** Not all of us will agree all the time, but disagreement is
   no excuse for poor behavior and poor manners. We might all experience some
   frustration now and then, but we cannot allow that frustration to turn into
-  a personal attack. It’s important to remember that a community where people
+  a personal attack. It's important to remember that a community where people
   feel uncomfortable or threatened is not a productive one. Members of the LLVM
   community should be respectful when dealing with other members as well as
   with people outside the LLVM community.
@@ -89,11 +90,11 @@ it by emailing conduct@llvm.org. For more details please see our
 * **When we disagree, try to understand why.** Disagreements, both social and
   technical, happen all the time and LLVM is no exception. It is important that
   we resolve disagreements and differing views constructively. Remember that
-  we’re different. The strength of LLVM comes from its varied community, people
+  we're different. The strength of LLVM comes from its varied community, people
   from a wide range of backgrounds. Different people have different
   perspectives on issues. Being unable to understand why someone holds
-  a viewpoint doesn’t mean that they’re wrong. Don’t forget that it is human to
-  err and blaming each other doesn’t get us anywhere. Instead, focus on helping
+  a viewpoint doesn't mean that they're wrong. Don't forget that it is human to
+  err and blaming each other doesn't get us anywhere. Instead, focus on helping
   to resolve issues and learning from mistakes.
 
 Questions?

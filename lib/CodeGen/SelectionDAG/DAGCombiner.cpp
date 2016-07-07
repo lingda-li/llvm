@@ -392,8 +392,12 @@ namespace {
     /// chain (aliasing node.)
     SDValue FindBetterChain(SDNode *N, SDValue Chain);
 
-    /// Do FindBetterChain for a store and any possibly adjacent stores on
-    /// consecutive chains.
+    /// Try to replace a store and any possibly adjacent stores on
+    /// consecutive chains with better chains. Return true only if St is
+    /// replaced.
+    ///
+    /// Notice that other chains may still be replaced even if the function
+    /// returns false.
     bool findBetterNeighborChains(StoreSDNode *St);
 
     /// Match "(X shl/srl V1) & V2" where V2 may not be present.
@@ -1735,7 +1739,7 @@ SDValue DAGCombiner::visitADD(SDNode *N) {
     return SDValue(N, 0);
 
   // fold (a+b) -> (a|b) iff a and b share no bits.
-  if ((!LegalOperations || TLI.isOperationLegalOrCustom(ISD::OR, VT)) &&
+  if ((!LegalOperations || TLI.isOperationLegal(ISD::OR, VT)) &&
       VT.isInteger() && !VT.isVector() && DAG.haveNoCommonBitsSet(N0, N1))
     return DAG.getNode(ISD::OR, SDLoc(N), VT, N0, N1);
 
@@ -2838,7 +2842,7 @@ SDValue DAGCombiner::SimplifyBinOpWithSameOpcodeHands(SDNode *N) {
                                       N0->getOperand(0), N1->getOperand(0));
         AddToWorklist(NewNode.getNode());
         return DAG.getVectorShuffle(VT, SDLoc(N), NewNode, ShOp,
-                                    &SVN0->getMask()[0]);
+                                    SVN0->getMask());
       }
 
       // Don't try to fold this node if it requires introducing a
@@ -2859,7 +2863,7 @@ SDValue DAGCombiner::SimplifyBinOpWithSameOpcodeHands(SDNode *N) {
                                       N0->getOperand(1), N1->getOperand(1));
         AddToWorklist(NewNode.getNode());
         return DAG.getVectorShuffle(VT, SDLoc(N), ShOp, NewNode,
-                                    &SVN0->getMask()[0]);
+                                    SVN0->getMask());
       }
     }
   }
@@ -3775,19 +3779,24 @@ SDValue DAGCombiner::visitOR(SDNode *N) {
           int M0 = SV0->getMaskElt(i);
           int M1 = SV1->getMaskElt(i);
 
-          // Both shuffle indexes are undef. Propagate Undef.
-          if (M0 < 0 && M1 < 0) {
+          // Determine if either index is pointing to a zero vector.
+          bool M0Zero = M0 < 0 || (ZeroN00 == (M0 < NumElts));
+          bool M1Zero = M1 < 0 || (ZeroN10 == (M1 < NumElts));
+
+          // If one element is zero and the otherside is undef, keep undef.
+          // This also handles the case that both are undef.
+          if ((M0Zero && M1 < 0) || (M1Zero && M0 < 0)) {
             Mask[i] = -1;
             continue;
           }
 
-          // Determine if either index is pointing to a zero vector.
-          bool M0Zero = M0 >= 0 && (ZeroN00 == (M0 < NumElts));
-          bool M1Zero = M1 >= 0 && (ZeroN10 == (M1 < NumElts));
+          // Make sure only one of the elements is zero.
           if (M0Zero == M1Zero) {
             CanFold = false;
             break;
           }
+
+          assert((M0 >= 0 || M1 >= 0) && "Undef index!");
 
           // We have a zero and non-zero element. If the non-zero came from
           // SV0 make the index a LHS index. If it came from SV1, make it
@@ -3808,8 +3817,7 @@ SDValue DAGCombiner::visitOR(SDNode *N) {
           }
 
           if (LegalMask)
-            return DAG.getVectorShuffle(VT, SDLoc(N), NewLHS,
-                                        NewRHS, &Mask[0]);
+            return DAG.getVectorShuffle(VT, SDLoc(N), NewLHS, NewRHS, Mask);
         }
       }
     }
@@ -6441,7 +6449,7 @@ SDValue DAGCombiner::visitZERO_EXTEND(SDNode *N) {
       isa<LoadSDNode>(N0.getOperand(0)) &&
       N0.getOperand(1).getOpcode() == ISD::Constant &&
       TLI.isLoadExtLegal(ISD::ZEXTLOAD, VT, N0.getValueType()) &&
-      (!LegalOperations && TLI.isOperationLegalOrCustom(N0.getOpcode(), VT))) {
+      (!LegalOperations && TLI.isOperationLegal(N0.getOpcode(), VT))) {
     LoadSDNode *LN0 = cast<LoadSDNode>(N0.getOperand(0));
     if (LN0->getExtensionType() != ISD::SEXTLOAD && LN0->isUnindexed()) {
       bool DoXform = true;
@@ -12098,6 +12106,7 @@ SDValue DAGCombiner::visitSTORE(SDNode *N) {
       // manipulation. Return the original node to not do anything else.
       return SDValue(ST, 0);
     }
+    Chain = ST->getChain();
   }
 
   // Try transforming N to an indexed store.
@@ -12392,6 +12401,14 @@ SDValue DAGCombiner::visitEXTRACT_VECTOR_ELT(SDNode *N) {
     if (BCSrc.getValueType().isScalarInteger())
       return DAG.getNode(ISD::TRUNCATE, SDLoc(N), NVT, BCSrc);
   }
+
+  // extract_vector_elt (insert_vector_elt vec, val, idx), idx) -> val
+  //
+  // This only really matters if the index is non-constant since other combines
+  // on the constant elements already work.
+  if (InVec.getOpcode() == ISD::INSERT_VECTOR_ELT &&
+      EltNo == InVec.getOperand(2))
+    return InVec.getOperand(1);
 
   // Transform: (EXTRACT_VECTOR_ELT( VECTOR_SHUFFLE )) -> EXTRACT_VECTOR_ELT.
   // We only perform this optimization before the op legalization phase because
@@ -12894,7 +12911,7 @@ SDValue DAGCombiner::visitBUILD_VECTOR(SDNode *N) {
     SDValue Ops[2];
     Ops[0] = VecIn1;
     Ops[1] = VecIn2;
-    return DAG.getVectorShuffle(VT, dl, Ops[0], Ops[1], &Mask[0]);
+    return DAG.getVectorShuffle(VT, dl, Ops[0], Ops[1], Mask);
   }
 
   return SDValue();
@@ -13427,8 +13444,7 @@ SDValue DAGCombiner::visitVECTOR_SHUFFLE(SDNode *N) {
       if (Idx >= (int)NumElts) Idx -= NumElts;
       NewMask.push_back(Idx);
     }
-    return DAG.getVectorShuffle(VT, SDLoc(N), N0, DAG.getUNDEF(VT),
-                                &NewMask[0]);
+    return DAG.getVectorShuffle(VT, SDLoc(N), N0, DAG.getUNDEF(VT), NewMask);
   }
 
   // Canonicalize shuffle undef, v -> v, undef.  Commute the shuffle mask.
@@ -13448,7 +13464,7 @@ SDValue DAGCombiner::visitVECTOR_SHUFFLE(SDNode *N) {
       NewMask.push_back(Idx);
     }
     if (Changed)
-      return DAG.getVectorShuffle(VT, SDLoc(N), N0, N1, &NewMask[0]);
+      return DAG.getVectorShuffle(VT, SDLoc(N), N0, N1, NewMask);
   }
 
   // If it is a splat, check if the argument vector is another splat or a
@@ -13752,7 +13768,7 @@ SDValue DAGCombiner::visitVECTOR_SHUFFLE(SDNode *N) {
     //   shuffle(shuffle(A, B, M0), C, M1) -> shuffle(A, B, M2)
     //   shuffle(shuffle(A, B, M0), C, M1) -> shuffle(A, C, M2)
     //   shuffle(shuffle(A, B, M0), C, M1) -> shuffle(B, C, M2)
-    return DAG.getVectorShuffle(VT, SDLoc(N), SV0, SV1, &Mask[0]);
+    return DAG.getVectorShuffle(VT, SDLoc(N), SV0, SV1, Mask);
   }
 
   return SDValue();
@@ -13921,7 +13937,7 @@ SDValue DAGCombiner::XformToShuffleWithZero(SDNode *N) {
     SDValue Zero = DAG.getConstant(0, dl, ClearVT);
     return DAG.getBitcast(VT, DAG.getVectorShuffle(ClearVT, dl,
                                                    DAG.getBitcast(ClearVT, LHS),
-                                                   Zero, &Indices[0]));
+                                                   Zero, Indices));
   };
 
   // Determine maximum split level (byte level masking).
@@ -13973,7 +13989,7 @@ SDValue DAGCombiner::SimplifyVBinOp(SDNode *N) {
                                      N->getFlags());
       AddUsersToWorklist(N);
       return DAG.getVectorShuffle(VT, SDLoc(N), NewBinOp, UndefVector,
-                                  &SVN0->getMask()[0]);
+                                  SVN0->getMask());
     }
   }
 
@@ -14939,7 +14955,7 @@ SDValue DAGCombiner::FindBetterChain(SDNode *N, SDValue OldChain) {
   return DAG.getNode(ISD::TokenFactor, SDLoc(N), MVT::Other, Aliases);
 }
 
-bool DAGCombiner::findBetterNeighborChains(StoreSDNode* St) {
+bool DAGCombiner::findBetterNeighborChains(StoreSDNode *St) {
   // This holds the base pointer, index, and the offset in bytes from the base
   // pointer.
   BaseIndexOffset BasePtr = BaseIndexOffset::match(St->getBasePtr(), DAG);
@@ -14999,7 +15015,7 @@ bool DAGCombiner::findBetterNeighborChains(StoreSDNode* St) {
     }
   }
 
-  bool MadeChange = false;
+  bool MadeChangeToSt = false;
   SmallVector<std::pair<StoreSDNode *, SDValue>, 8> BetterChains;
 
   for (StoreSDNode *ChainedStore : ChainedStores) {
@@ -15007,7 +15023,8 @@ bool DAGCombiner::findBetterNeighborChains(StoreSDNode* St) {
     SDValue BetterChain = FindBetterChain(ChainedStore, Chain);
 
     if (Chain != BetterChain) {
-      MadeChange = true;
+      if (ChainedStore == St)
+        MadeChangeToSt = true;
       BetterChains.push_back(std::make_pair(ChainedStore, BetterChain));
     }
   }
@@ -15017,7 +15034,7 @@ bool DAGCombiner::findBetterNeighborChains(StoreSDNode* St) {
   for (auto Replacement : BetterChains)
     replaceStoreChain(Replacement.first, Replacement.second);
 
-  return MadeChange;
+  return MadeChangeToSt;
 }
 
 /// This is the entry point for the file.
