@@ -4788,6 +4788,13 @@ static bool getTargetShuffleMaskIndices(SDValue MaskNode,
   if (MaskNode.getOpcode() != ISD::BUILD_VECTOR)
     return false;
 
+  // We can always decode if the buildvector is all zero constants,
+  // but can't use isBuildVectorAllZeros as it might contain UNDEFs.
+  if (llvm::all_of(MaskNode->ops(), X86::isZeroNode)) {
+    RawMask.append(VT.getSizeInBits() / MaskEltSizeInBits, 0);
+    return true;
+  }
+
   // TODO: Handle (MaskEltSizeInBits % VT.getScalarSizeInBits()) == 0
   if ((VT.getScalarSizeInBits() % MaskEltSizeInBits) != 0)
     return false;
@@ -17796,13 +17803,6 @@ static SDValue LowerINTRINSIC_WO_CHAIN(SDValue Op, const X86Subtarget &Subtarget
     case VSHIFT:
       return getTargetVShiftNode(IntrData->Opc0, dl, Op.getSimpleValueType(),
                                  Op.getOperand(1), Op.getOperand(2), DAG);
-    case VSHIFT_MASK:
-      return getVectorMaskingNode(getTargetVShiftNode(IntrData->Opc0, dl,
-                                                      Op.getSimpleValueType(),
-                                                      Op.getOperand(1),
-                                                      Op.getOperand(2), DAG),
-                                  Op.getOperand(4), Op.getOperand(3), Subtarget,
-                                  DAG);
     case COMPRESS_EXPAND_IN_REG: {
       SDValue Mask = Op.getOperand(3);
       SDValue DataToCompress = Op.getOperand(1);
