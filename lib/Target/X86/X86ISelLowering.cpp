@@ -3825,6 +3825,14 @@ static bool isTargetShuffle(unsigned Opcode) {
   }
 }
 
+static bool isTargetShuffleVariableMask(unsigned Opcode) {
+  switch (Opcode) {
+  default: return false;
+  case X86ISD::PSHUFB:
+    return true;
+  }
+}
+
 static SDValue getTargetShuffleNode(unsigned Opc, const SDLoc &dl, MVT VT,
                                     SDValue V1, unsigned TargetMask,
                                     SelectionDAG &DAG) {
@@ -4105,13 +4113,6 @@ bool X86TargetLowering::getTgtMemIntrinsic(IntrinsicInfo &Info,
     Info.writeMem = true;
     break;
   }
-  case STOREANT: {
-    Info.ptrVal = I.getArgOperand(0);
-    Info.memVT = MVT::getVT(I.getArgOperand(1)->getType());
-    Info.align = Info.memVT.getSizeInBits()/8;
-    Info.writeMem = true;
-    break;
-  }
   default:
     return false;
   }
@@ -4197,6 +4198,16 @@ static bool isUndefInRange(ArrayRef<int> Mask, unsigned Pos, unsigned Size) {
 /// specified range (L, H].
 static bool isUndefOrInRange(int Val, int Low, int Hi) {
   return (Val < 0) || (Val >= Low && Val < Hi);
+}
+
+/// Return true if every element in Mask is undef or if its value
+/// falls within the specified range (L, H].
+static bool isUndefOrInRange(ArrayRef<int> Mask,
+                             int Low, int Hi) {
+  for (int M : Mask)
+    if (!isUndefOrInRange(M, Low, Hi))
+      return false;
+  return true;
 }
 
 /// Val is either less than zero (undef) or equal to the specified value.
@@ -6551,11 +6562,11 @@ static SDValue materializeVectorConstant(SDValue Op, SelectionDAG &DAG,
   // vectors or broken into v4i32 operations on 256-bit vectors. AVX2 can use
   // vpcmpeqd on 256-bit vectors.
   if (Subtarget.hasSSE2() && ISD::isBuildVectorAllOnes(Op.getNode())) {
-    if (VT == MVT::v4i32 || (VT == MVT::v8i32 && Subtarget.hasInt256()))
+    if (VT == MVT::v4i32 || VT == MVT::v16i32 ||
+        (VT == MVT::v8i32 && Subtarget.hasInt256()))
       return Op;
 
-    if (!VT.is512BitVector())
-      return getOnesVector(VT, Subtarget, DAG, DL);
+    return getOnesVector(VT, Subtarget, DAG, DL);
   }
 
   return SDValue();
@@ -8684,16 +8695,14 @@ static SDValue lowerVectorShuffleAsBroadcast(const SDLoc &DL, MVT VT,
 // are much smaller to encode than a SHUFPS and an INSERTPS. We can also
 // perform INSERTPS if a single V1 element is out of place and all V2
 // elements are zeroable.
-static SDValue lowerVectorShuffleAsInsertPS(const SDLoc &DL,
-                                            SDValue V1, SDValue V2,
-                                            ArrayRef<int> Mask,
-                                            SelectionDAG &DAG) {
-  assert(V1.getSimpleValueType() == MVT::v4f32 && "Bad operand type!");
-  assert(V2.getSimpleValueType() == MVT::v4f32 && "Bad operand type!");
+static bool matchVectorShuffleAsInsertPS(SDValue &V1, SDValue &V2,
+                                         unsigned &InsertPSMask,
+                                         const SmallBitVector &Zeroable,
+                                         ArrayRef<int> Mask,
+                                         SelectionDAG &DAG) {
+  assert(V1.getSimpleValueType().is128BitVector() && "Bad operand type!");
+  assert(V2.getSimpleValueType().is128BitVector() && "Bad operand type!");
   assert(Mask.size() == 4 && "Unexpected mask size for v4 shuffle!");
-
-  SmallBitVector Zeroable = computeZeroableShuffleElements(Mask, V1, V2);
-
   unsigned ZMask = 0;
   int V1DstIndex = -1;
   int V2DstIndex = -1;
@@ -8714,7 +8723,7 @@ static SDValue lowerVectorShuffleAsInsertPS(const SDLoc &DL,
 
     // We can only insert a single non-zeroable element.
     if (V1DstIndex >= 0 || V2DstIndex >= 0)
-      return SDValue();
+      return false;
 
     if (Mask[i] < 4) {
       // V1 input out of place for insertion.
@@ -8727,7 +8736,7 @@ static SDValue lowerVectorShuffleAsInsertPS(const SDLoc &DL,
 
   // Don't bother if we have no (non-zeroable) element for insertion.
   if (V1DstIndex < 0 && V2DstIndex < 0)
-    return SDValue();
+    return false;
 
   // Determine element insertion src/dst indices. The src index is from the
   // start of the inserted vector, not the start of the concatenated vector.
@@ -8747,8 +8756,23 @@ static SDValue lowerVectorShuffleAsInsertPS(const SDLoc &DL,
   if (!V1UsedInPlace)
     V1 = DAG.getUNDEF(MVT::v4f32);
 
-  unsigned InsertPSMask = V2SrcIndex << 6 | V2DstIndex << 4 | ZMask;
+  // Insert the V2 element into the desired position.
+  InsertPSMask = V2SrcIndex << 6 | V2DstIndex << 4 | ZMask;
   assert((InsertPSMask & ~0xFFu) == 0 && "Invalid mask!");
+  return true;
+}
+
+static SDValue lowerVectorShuffleAsInsertPS(const SDLoc &DL, SDValue V1,
+                                            SDValue V2, ArrayRef<int> Mask,
+                                            SelectionDAG &DAG) {
+  assert(V1.getSimpleValueType() == MVT::v4f32 && "Bad operand type!");
+  assert(V2.getSimpleValueType() == MVT::v4f32 && "Bad operand type!");
+  SmallBitVector Zeroable = computeZeroableShuffleElements(Mask, V1, V2);
+
+  // Attempt to match the insertps pattern.
+  unsigned InsertPSMask;
+  if (!matchVectorShuffleAsInsertPS(V1, V2, InsertPSMask, Zeroable, Mask, DAG))
+    return SDValue();
 
   // Insert the V2 element into the desired position.
   return DAG.getNode(X86ISD::INSERTPS, DL, MVT::v4f32, V1, V2,
@@ -11817,11 +11841,15 @@ static SDValue lowerV16F32VectorShuffle(SDLoc DL, ArrayRef<int> Mask,
     if (V2.isUndef())
       return DAG.getNode(X86ISD::VPERMILPI, DL, MVT::v16f32, V1,
                          getV4X86ShuffleImm8ForMask(RepeatedMask, DL, DAG));
-  }
 
-  if (SDValue Unpck =
-          lowerVectorShuffleWithUNPCK(DL, MVT::v16f32, Mask, V1, V2, DAG))
-    return Unpck;
+    // Use dedicated unpack instructions for masks that match their pattern.
+    if (SDValue Unpck =
+            lowerVectorShuffleWithUNPCK(DL, MVT::v16f32, Mask, V1, V2, DAG))
+      return Unpck;
+
+    // Otherwise, fall back to a SHUFPS sequence.
+    return lowerVectorShuffleWithSHUFPS(DL, MVT::v16f32, RepeatedMask, V1, V2, DAG);
+  }
 
   return lowerVectorShuffleWithPERMV(DL, MVT::v16f32, Mask, V1, V2, DAG);
 }
@@ -18523,20 +18551,6 @@ static SDValue LowerINTRINSIC_W_CHAIN(SDValue Op, const X86Subtarget &Subtarget,
                            Mask, PassThru, Subtarget, DAG), Chain};
     return DAG.getMergeValues(Results, dl);
   }
-  case STOREANT: {
-    // Store (MOVNTPD, MOVNTPS, MOVNTDQ) using non-temporal hint intrinsic implementation.
-    SDValue Data = Op.getOperand(3);
-    SDValue Addr = Op.getOperand(2);
-    SDValue Chain = Op.getOperand(0);
-
-    MemIntrinsicSDNode *MemIntr = dyn_cast<MemIntrinsicSDNode>(Op);
-    assert(MemIntr && "Expected MemIntrinsicSDNode!");
-    MachineMemOperand *MMO = MemIntr->getMemOperand();
-
-    MMO->setFlags(MachineMemOperand::MONonTemporal);
-
-    return DAG.getStore(Chain, dl, Data, Addr, MMO);
-  }
   }
 }
 
@@ -24840,12 +24854,47 @@ static bool matchPermuteVectorShuffle(MVT SrcVT, ArrayRef<int> Mask,
            "Expected unary shuffle");
   }
 
-  // We only support permutation of 32/64 bit elements.
-  // TODO - support PSHUFLW/PSHUFHW.
   unsigned MaskScalarSizeInBits = SrcVT.getSizeInBits() / Mask.size();
+  MVT MaskEltVT = MVT::getIntegerVT(MaskScalarSizeInBits);
+
+  // Handle PSHUFLW/PSHUFHW repeated patterns.
+  if (MaskScalarSizeInBits == 16) {
+    SmallVector<int, 4> RepeatedMask;
+    if (is128BitLaneRepeatedShuffleMask(MaskEltVT, Mask, RepeatedMask)) {
+      ArrayRef<int> LoMask(Mask.data() + 0, 4);
+      ArrayRef<int> HiMask(Mask.data() + 4, 4);
+
+      // PSHUFLW: permute lower 4 elements only.
+      if (isUndefOrInRange(LoMask, 0, 4) &&
+          isSequentialOrUndefInRange(HiMask, 0, 4, 4)) {
+        Shuffle = X86ISD::PSHUFLW;
+        ShuffleVT = MVT::getVectorVT(MVT::i16, SrcVT.getSizeInBits() / 16);
+        PermuteImm = getV4X86ShuffleImm(LoMask);
+        return true;
+      }
+
+      // PSHUFHW: permute upper 4 elements only.
+      if (isUndefOrInRange(HiMask, 4, 8) &&
+          isSequentialOrUndefInRange(LoMask, 0, 4, 0)) {
+        // Offset the HiMask so that we can create the shuffle immediate.
+        int OffsetHiMask[4];
+        for (int i = 0; i != 4; ++i)
+          OffsetHiMask[i] = (HiMask[i] < 0 ? HiMask[i] : HiMask[i] - 4);
+
+        Shuffle = X86ISD::PSHUFHW;
+        ShuffleVT = MVT::getVectorVT(MVT::i16, SrcVT.getSizeInBits() / 16);
+        PermuteImm = getV4X86ShuffleImm(OffsetHiMask);
+        return true;
+      }
+
+      return false;
+    }
+    return false;
+  }
+
+  // We only support permutation of 32/64 bit elements after this.
   if (MaskScalarSizeInBits != 32 && MaskScalarSizeInBits != 64)
     return false;
-  MVT MaskEltVT = MVT::getIntegerVT(MaskScalarSizeInBits);
 
   // AVX introduced the VPERMILPD/VPERMILPS float permutes, before then we
   // had to use 2-input SHUFPD/SHUFPS shuffles (not handled here).
@@ -24900,17 +24949,8 @@ static bool matchPermuteVectorShuffle(MVT SrcVT, ArrayRef<int> Mask,
 
   // Narrow the repeated mask for 32-bit element permutes.
   SmallVector<int, 4> WordMask = RepeatedMask;
-  if (MaskScalarSizeInBits == 64) {
-    WordMask.clear();
-    for (int M : RepeatedMask) {
-      if (M == SM_SentinelUndef) {
-        WordMask.append(2, SM_SentinelUndef);
-        continue;
-      }
-      WordMask.push_back((M * 2) + 0);
-      WordMask.push_back((M * 2) + 1);
-    }
-  }
+  if (MaskScalarSizeInBits == 64)
+    scaleShuffleMask(2, RepeatedMask, WordMask);
 
   Shuffle = (FloatDomain ? X86ISD::VPERMILPI : X86ISD::PSHUFD);
   ShuffleVT = (FloatDomain ? MVT::f32 : MVT::i32);
@@ -24977,7 +25017,7 @@ static bool matchBinaryVectorShuffle(MVT SrcVT, ArrayRef<int> Mask,
 /// instruction but should only be used to replace chains over a certain depth.
 static bool combineX86ShuffleChain(SDValue Input, SDValue Root,
                                    ArrayRef<int> Mask, int Depth,
-                                   bool HasPSHUFB, SelectionDAG &DAG,
+                                   bool HasVariableMask, SelectionDAG &DAG,
                                    TargetLowering::DAGCombinerInfo &DCI,
                                    const X86Subtarget &Subtarget) {
   assert(!Mask.empty() && "Cannot combine an empty shuffle mask!");
@@ -25111,16 +25151,44 @@ static bool combineX86ShuffleChain(SDValue Input, SDValue Root,
     }
   }
 
+  // Attempt to combine to INSERTPS.
+  if (Subtarget.hasSSE41() && NumMaskElts == 4 &&
+      (VT == MVT::v2f64 || VT == MVT::v4f32)) {
+    SmallBitVector Zeroable(4, false);
+    for (unsigned i = 0; i != NumMaskElts; ++i)
+      if (Mask[i] < 0)
+        Zeroable[i] = true;
+
+    unsigned InsertPSMask;
+    SDValue V1 = Input, V2 = Input;
+    if (Zeroable.any() && matchVectorShuffleAsInsertPS(V1, V2, InsertPSMask,
+                                                       Zeroable, Mask, DAG)) {
+      if (Depth == 1 && Root.getOpcode() == X86ISD::INSERTPS)
+        return false; // Nothing to do!
+      V1 = DAG.getBitcast(MVT::v4f32, V1);
+      DCI.AddToWorklist(V1.getNode());
+      V2 = DAG.getBitcast(MVT::v4f32, V2);
+      DCI.AddToWorklist(V2.getNode());
+      Res = DAG.getNode(X86ISD::INSERTPS, DL, MVT::v4f32, V1, V2,
+                        DAG.getConstant(InsertPSMask, DL, MVT::i8));
+      DCI.AddToWorklist(Res.getNode());
+      DCI.CombineTo(Root.getNode(), DAG.getBitcast(RootVT, Res),
+                    /*AddTo*/ true);
+      return true;
+    }
+  }
+
   // Don't try to re-form single instruction chains under any circumstances now
   // that we've done encoding canonicalization for them.
   if (Depth < 2)
     return false;
 
-  // If we have 3 or more shuffle instructions or a chain involving PSHUFB, we
-  // can replace them with a single PSHUFB instruction profitably. Intel's
-  // manuals suggest only using PSHUFB if doing so replacing 5 instructions, but
-  // in practice PSHUFB tends to be *very* fast so we're more aggressive.
-  if ((Depth >= 3 || HasPSHUFB) &&
+  // If we have 3 or more shuffle instructions or a chain involving a variable
+  // mask, we can replace them with a single PSHUFB instruction profitably.
+  // Intel's manuals suggest only using PSHUFB if doing so replacing 5
+  // instructions, but in practice PSHUFB tends to be *very* fast so we're
+  // more aggressive.
+  if ((Depth >= 3 || HasVariableMask) &&
       ((VT.is128BitVector() && Subtarget.hasSSSE3()) ||
        (VT.is256BitVector() && Subtarget.hasAVX2()) ||
        (VT.is512BitVector() && Subtarget.hasBWI()))) {
@@ -25190,7 +25258,7 @@ static bool combineX86ShuffleChain(SDValue Input, SDValue Root,
 /// combining in this recursive walk.
 static bool combineX86ShufflesRecursively(SDValue Op, SDValue Root,
                                           ArrayRef<int> RootMask,
-                                          int Depth, bool HasPSHUFB,
+                                          int Depth, bool HasVariableMask,
                                           SelectionDAG &DAG,
                                           TargetLowering::DAGCombinerInfo &DCI,
                                           const X86Subtarget &Subtarget) {
@@ -25292,13 +25360,12 @@ static bool combineX86ShufflesRecursively(SDValue Op, SDValue Root,
 
   assert(Input0 && "Shuffle with no inputs detected");
 
-  // TODO - generalize this to support any variable mask shuffle.
-  HasPSHUFB |= (Op.getOpcode() == X86ISD::PSHUFB);
+  HasVariableMask |= isTargetShuffleVariableMask(Op.getOpcode());
 
   // See if we can recurse into Input0 (if it's a target shuffle).
   if (Op->isOnlyUserOf(Input0.getNode()) &&
-      combineX86ShufflesRecursively(Input0, Root, Mask, Depth + 1, HasPSHUFB,
-                                    DAG, DCI, Subtarget))
+      combineX86ShufflesRecursively(Input0, Root, Mask, Depth + 1,
+                                    HasVariableMask, DAG, DCI, Subtarget))
     return true;
 
   // Minor canonicalization of the accumulated shuffle mask to make it easier
@@ -25311,8 +25378,8 @@ static bool combineX86ShufflesRecursively(SDValue Op, SDValue Root,
     Mask = std::move(WidenedMask);
   }
 
-  return combineX86ShuffleChain(Input0, Root, Mask, Depth, HasPSHUFB, DAG, DCI,
-                                Subtarget);
+  return combineX86ShuffleChain(Input0, Root, Mask, Depth, HasVariableMask, DAG,
+                                DCI, Subtarget);
 }
 
 /// \brief Get the PSHUF-style mask from PSHUF node.
@@ -27823,6 +27890,7 @@ static SDValue combineANDXORWithAllOnesIntoANDNP(SDNode *N, SelectionDAG &DAG) {
   SDLoc DL(N);
 
   if (VT != MVT::v2i64 && VT != MVT::v4i64 &&
+      VT != MVT::v8i64 && VT != MVT::v16i32 &&
       VT != MVT::v4i32 && VT != MVT::v8i32) // Legal with VLX
     return SDValue();
 
@@ -27838,7 +27906,7 @@ static SDValue combineANDXORWithAllOnesIntoANDNP(SDNode *N, SelectionDAG &DAG) {
 
   N01 = peekThroughBitcasts(N01);
 
-  // Either match a direct AllOnes for 128 and 256-bit vectors, or an
+  // Either match a direct AllOnes for 128, 256, and 512-bit vectors, or an
   // insert_subvector building a 256-bit AllOnes vector.
   if (!ISD::isBuildVectorAllOnes(N01.getNode())) {
     if (!VT.is256BitVector() || N01->getOpcode() != ISD::INSERT_SUBVECTOR)

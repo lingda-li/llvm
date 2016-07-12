@@ -853,11 +853,6 @@ bool SIInstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
   switch (MI.getOpcode()) {
   default: return AMDGPUInstrInfo::expandPostRAPseudo(MI);
 
-  case AMDGPU::SGPR_USE:
-    // This is just a placeholder for register allocation.
-    MI.eraseFromParent();
-    break;
-
   case AMDGPU::V_MOV_B64_PSEUDO: {
     unsigned Dst = MI.getOperand(0).getReg();
     unsigned DstLo = RI.getSubReg(Dst, AMDGPU::sub0);
@@ -2673,14 +2668,6 @@ void SIInstrInfo::moveToVALU(MachineInstr &TopInst) const {
     if (HasDst)
      addUsersToMoveToVALUWorklist(NewDstReg, MRI, Worklist);
   }
-}
-
-//===----------------------------------------------------------------------===//
-// Indirect addressing callbacks
-//===----------------------------------------------------------------------===//
-
-const TargetRegisterClass *SIInstrInfo::getIndirectAddrRegClass() const {
-  return &AMDGPU::VGPR_32RegClass;
 }
 
 void SIInstrInfo::lowerScalarAbs(SmallVectorImpl<MachineInstr *> &Worklist,
