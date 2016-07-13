@@ -91,6 +91,12 @@ protected:
                                        unsigned OpIdx1) const override;
 
 public:
+
+  enum TargetOperandFlags {
+    MO_NONE = 0,
+    MO_GOTPCREL = 1
+  };
+
   explicit SIInstrInfo(const SISubtarget &);
 
   const SIRegisterInfo &getRegisterInfo() const {
@@ -348,6 +354,14 @@ public:
 
   bool isDPP(uint16_t Opcode) const {
     return get(Opcode).TSFlags & SIInstrFlags::DPP;
+  }
+
+  static bool isScalarUnit(const MachineInstr &MI) {
+    return MI.getDesc().TSFlags & (SIInstrFlags::SALU | SIInstrFlags::SMRD);
+  }
+
+  static bool usesVM_CNT(const MachineInstr &MI) {
+    return MI.getDesc().TSFlags & SIInstrFlags::VM_CNT;
   }
 
   bool isVGPRCopy(const MachineInstr &MI) const {

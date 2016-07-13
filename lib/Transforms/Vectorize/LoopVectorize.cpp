@@ -2601,9 +2601,7 @@ void InnerLoopVectorizer::scalarizeInstruction(Instruction *Instr,
   setDebugLocFromInst(Builder, Instr);
 
   // Find all of the vectorized parameters.
-  for (unsigned op = 0, e = Instr->getNumOperands(); op != e; ++op) {
-    Value *SrcOp = Instr->getOperand(op);
-
+  for (Value *SrcOp : Instr->operands()) {
     // If we are accessing the old induction variable, use the new one.
     if (SrcOp == OldInduction) {
       Params.push_back(getVectorValue(SrcOp));
@@ -2611,7 +2609,7 @@ void InnerLoopVectorizer::scalarizeInstruction(Instruction *Instr,
     }
 
     // Try using previously calculated values.
-    Instruction *SrcInst = dyn_cast<Instruction>(SrcOp);
+    auto *SrcInst = dyn_cast<Instruction>(SrcOp);
 
     // If the src is an instruction that appeared earlier in the basic block,
     // then it should already be vectorized.
@@ -3112,10 +3110,9 @@ void InnerLoopVectorizer::fixupIVUsers(PHINode *OrigPhi,
   // value (the value that feeds into the phi from the loop latch).
   // We allow both, but they, obviously, have different values.
 
-  // We only expect at most one of each kind of user. This is because LCSSA will
-  // canonicalize the users to a single PHI node per exit block, and we
-  // currently only vectorize loops with a single exit.
   assert(OrigLoop->getExitBlock() && "Expected a single exit block");
+
+  DenseMap<Value *, Value *> MissingVals;
 
   // An external user of the last iteration's value should see the value that
   // the remainder loop uses to initialize its own IV.
@@ -3124,15 +3121,7 @@ void InnerLoopVectorizer::fixupIVUsers(PHINode *OrigPhi,
     Instruction *UI = cast<Instruction>(U);
     if (!OrigLoop->contains(UI)) {
       assert(isa<PHINode>(UI) && "Expected LCSSA form");
-      // One corner case we have to handle is two IVs "chasing" each-other,
-      // that is %IV2 = phi [...], [ %IV1, %latch ]
-      // In this case, if IV1 has an external use, we need to avoid adding both
-      // "last value of IV1" and "penultimate value of IV2". Since we don't know
-      // which IV will be handled first, check we haven't handled this user yet.
-      auto *User = cast<PHINode>(UI);
-      if (User->getBasicBlockIndex(MiddleBlock) == -1)
-        User->addIncoming(EndValue, MiddleBlock);
-      break;
+      MissingVals[UI] = EndValue;
     }
   }
 
@@ -3144,12 +3133,7 @@ void InnerLoopVectorizer::fixupIVUsers(PHINode *OrigPhi,
     if (!OrigLoop->contains(UI)) {
       const DataLayout &DL =
           OrigLoop->getHeader()->getModule()->getDataLayout();
-
       assert(isa<PHINode>(UI) && "Expected LCSSA form");
-      auto *User = cast<PHINode>(UI);
-      // As above, check we haven't already handled this user.
-      if (User->getBasicBlockIndex(MiddleBlock) != -1)
-        break;
 
       IRBuilder<> B(MiddleBlock->getTerminator());
       Value *CountMinusOne = B.CreateSub(
@@ -3158,9 +3142,19 @@ void InnerLoopVectorizer::fixupIVUsers(PHINode *OrigPhi,
                                        "cast.cmo");
       Value *Escape = II.transform(B, CMO, PSE.getSE(), DL);
       Escape->setName("ind.escape");
-      User->addIncoming(Escape, MiddleBlock);
-      break;
+      MissingVals[UI] = Escape;
     }
+  }
+
+  for (auto &I : MissingVals) {
+    PHINode *PHI = cast<PHINode>(I.first);
+    // One corner case we have to handle is two IVs "chasing" each-other,
+    // that is %IV2 = phi [...], [ %IV1, %latch ]
+    // In this case, if IV1 has an external use, we need to avoid adding both
+    // "last value of IV1" and "penultimate value of IV2". So, verify that we
+    // don't already have an incoming value for the middle block.
+    if (PHI->getBasicBlockIndex(MiddleBlock) == -1)
+      PHI->addIncoming(I.second, MiddleBlock);
   }
 }
 
