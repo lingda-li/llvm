@@ -1047,6 +1047,18 @@ let AddedComplexity = 40 in {
   def: Storexs_pat<store,         I64, S4_storerd_rr>;
 }
 
+class Store_rr_pat<PatFrag Store, PatFrag Value, InstHexagon MI>
+  : Pat<(Store Value:$Ru, (add I32:$Rs, I32:$Rt)),
+        (MI IntRegs:$Rs, IntRegs:$Rt, 0, Value:$Ru)>;
+
+let AddedComplexity = 20 in {
+  def: Store_rr_pat<truncstorei8,  I32, S4_storerb_rr>;
+  def: Store_rr_pat<truncstorei16, I32, S4_storerh_rr>;
+  def: Store_rr_pat<store,         I32, S4_storeri_rr>;
+  def: Store_rr_pat<store,         I64, S4_storerd_rr>;
+}
+
+
 // memd(Rx++#s4:3)=Rtt
 // memd(Rx++#s4:3:circ(Mu))=Rtt
 // memd(Rx++I:circ(Mu))=Rtt
@@ -1733,7 +1745,7 @@ class NVJ_ConstImm_template<string mnemonic, bits<3> majOp, string ImmVal,
   : NVInst_V4<(outs),
     (ins IntRegs:$src1, brtarget:$offset),
     "if ("#!if(isNegCond, "!","")#mnemonic
-    #"($src1.new, #"#ImmVal#")) jump:"
+    #"($src1.new, #" # ImmVal # ")) jump:"
     #!if(isTak, "t","nt")#" $offset", []> {
 
       let isTaken = isTak;
@@ -2822,13 +2834,13 @@ def S4_lsli: SInst <(outs IntRegs:$Rd), (ins s6Imm:$s6, IntRegs:$Rt),
 //===----------------------------------------------------------------------===//
 
 def m5Imm8Pred : PatLeaf<(i32 imm), [{
-  int32_t v = (int8_t)N->getSExtValue();
-  return v >= -32 && v <= -1;
+  int8_t v = (int8_t)N->getSExtValue();
+  return v > -32 && v <= -1;
 }]>;
 
 def m5Imm16Pred : PatLeaf<(i32 imm), [{
-  int32_t v = (int16_t)N->getSExtValue();
-  return v >= -32 && v <= -1;
+  int16_t v = (int16_t)N->getSExtValue();
+  return v > -32 && v <= -1;
 }]>;
 
 def Clr5Imm8Pred : PatLeaf<(i32 imm), [{
@@ -3193,7 +3205,7 @@ let AddedComplexity = 200 in {
         /*sext*/    Clr5Imm16, L4_iand_memoph_io>;
   defm: Memopxi_pat<zextloadi16, truncstorei16, u6_1ImmPred, and, Clr5Imm16Pred,
         /*zext*/    Clr5Imm16, L4_iand_memoph_io>;
-  defm: Memopxi_pat<load, store, u6_2ImmPred, and, Clr5ImmPred, Clr5Imm16,
+  defm: Memopxi_pat<load, store, u6_2ImmPred, and, Clr5ImmPred, Clr5Imm32,
                     L4_iand_memopw_io>;
 
   // setbit imm
@@ -3343,6 +3355,7 @@ defm L4_return: LD_MISC_L4_RETURN <"dealloc_return">, PredNewRel;
 let isCall = 1, isBarrier = 1, isReturn = 1, isTerminator = 1,
     Defs = [R29, R30, R31, PC], isPredicable = 0, isAsmParserOnly = 1 in {
   def RESTORE_DEALLOC_RET_JMP_V4 : T_JMP<"">;
+
   let isExtended = 1, opExtendable = 0 in
   def RESTORE_DEALLOC_RET_JMP_V4_EXT : T_JMP<"">;
 
@@ -3689,6 +3702,17 @@ class Stoream_pat<PatFrag Store, PatFrag Value, PatFrag Addr, PatFrag ValueMod,
   : Pat<(Store Value:$val, Addr:$addr),
         (MI Addr:$addr, (ValueMod Value:$val))>;
 
+let AddedComplexity = 30 in {
+  def: Storea_pat<truncstorei8,  I32, addrga, S2_storerbabs>;
+  def: Storea_pat<truncstorei16, I32, addrga, S2_storerhabs>;
+  def: Storea_pat<store,         I32, addrga, S2_storeriabs>;
+  def: Storea_pat<store,         I64, addrga, S2_storerdabs>;
+
+  def: Stoream_pat<truncstorei8,  I64, addrga, LoReg, S2_storerbabs>;
+  def: Stoream_pat<truncstorei16, I64, addrga, LoReg, S2_storerhabs>;
+  def: Stoream_pat<truncstorei32, I64, addrga, LoReg, S2_storeriabs>;
+}
+
 def: Storea_pat<SwapSt<atomic_store_8>,  I32, addrgp, S2_storerbgp>;
 def: Storea_pat<SwapSt<atomic_store_16>, I32, addrgp, S2_storerhgp>;
 def: Storea_pat<SwapSt<atomic_store_32>, I32, addrgp, S2_storerigp>;
@@ -3825,6 +3849,26 @@ defm loadri  : LD_Abs<"memw",  "LDriw",  IntRegs, u16_2Imm, 0b100>;
 
 let accessSize = DoubleWordAccess in
 defm loadrd  : LD_Abs<"memd",  "LDrid", DoubleRegs, u16_3Imm, 0b110>;
+
+class LoadAbs_pats <PatFrag ldOp, InstHexagon MI, ValueType VT = i32>
+  : Pat <(VT (ldOp (HexagonCONST32 tglobaladdr:$absaddr))),
+         (VT (MI tglobaladdr:$absaddr))>;
+
+let AddedComplexity  = 30 in {
+  def: LoadAbs_pats <load,        L4_loadri_abs>;
+  def: LoadAbs_pats <zextloadi1,  L4_loadrub_abs>;
+  def: LoadAbs_pats <sextloadi8,  L4_loadrb_abs>;
+  def: LoadAbs_pats <extloadi8,   L4_loadrub_abs>;
+  def: LoadAbs_pats <zextloadi8,  L4_loadrub_abs>;
+  def: LoadAbs_pats <sextloadi16, L4_loadrh_abs>;
+  def: LoadAbs_pats <extloadi16,  L4_loadruh_abs>;
+  def: LoadAbs_pats <zextloadi16, L4_loadruh_abs>;
+  def: LoadAbs_pats <load,        L4_loadrd_abs, i64>;
+}
+
+let AddedComplexity  = 30 in
+def: Pat<(i64 (zextloadi1 (HexagonCONST32 tglobaladdr:$absaddr))),
+         (Zext64 (L4_loadrub_abs tglobaladdr:$absaddr))>;
 
 //===----------------------------------------------------------------------===//
 // multiclass for load instructions with GP-relative addressing mode.
@@ -4107,7 +4151,7 @@ class CJInst_tstbit_R0<string px, bit np, string tnt>
   : InstHexagon<(outs), (ins IntRegs:$Rs, brtarget:$r9_2),
   ""#px#" = tstbit($Rs, #0); if ("
     #!if(np, "!","")#""#px#".new) jump:"#tnt#" $r9_2",
-  [], "", COMPOUND, TypeCOMPOUND>, OpcodeHexagon {
+  [], "", COMPOUND_CJ_ARCHDEPSLOT, TypeCOMPOUND>, OpcodeHexagon {
   bits<4> Rs;
   bits<11> r9_2;
 
@@ -4153,7 +4197,7 @@ class CJInst_RR<string px, string op, bit np, string tnt>
   : InstHexagon<(outs), (ins IntRegs:$Rs, IntRegs:$Rt, brtarget:$r9_2),
   ""#px#" = cmp."#op#"($Rs, $Rt); if ("
    #!if(np, "!","")#""#px#".new) jump:"#tnt#" $r9_2",
-  [], "", COMPOUND, TypeCOMPOUND>, OpcodeHexagon {
+  [], "", COMPOUND_CJ_ARCHDEPSLOT, TypeCOMPOUND>, OpcodeHexagon {
   bits<4> Rs;
   bits<4> Rt;
   bits<11> r9_2;
@@ -4207,7 +4251,7 @@ class CJInst_RU5<string px, string op, bit np, string tnt>
   : InstHexagon<(outs), (ins IntRegs:$Rs, u5Imm:$U5, brtarget:$r9_2),
   ""#px#" = cmp."#op#"($Rs, #$U5); if ("
     #!if(np, "!","")#""#px#".new) jump:"#tnt#" $r9_2",
-  [], "", COMPOUND, TypeCOMPOUND>, OpcodeHexagon {
+  [], "", COMPOUND_CJ_ARCHDEPSLOT, TypeCOMPOUND>, OpcodeHexagon {
   bits<4> Rs;
   bits<5> U5;
   bits<11> r9_2;
@@ -4262,7 +4306,7 @@ class CJInst_Rn1<string px, string op, bit np, string tnt>
   : InstHexagon<(outs), (ins IntRegs:$Rs, brtarget:$r9_2),
   ""#px#" = cmp."#op#"($Rs,#-1); if ("
   #!if(np, "!","")#""#px#".new) jump:"#tnt#" $r9_2",
-  [], "", COMPOUND, TypeCOMPOUND>, OpcodeHexagon {
+  [], "", COMPOUND_CJ_ARCHDEPSLOT, TypeCOMPOUND>, OpcodeHexagon {
   bits<4> Rs;
   bits<11> r9_2;
 
@@ -4311,7 +4355,7 @@ defm gt : T_pnp_CJInst_Rn1<"gt">;
 let Defs = [PC], isBranch = 1, hasSideEffects = 0, hasNewValue = 1,
     isExtentSigned = 1, opNewValue = 0, isExtendable = 1, opExtentBits = 11,
     opExtentAlign = 2, opExtendable = 2 in
-def J4_jumpseti: CJInst <
+def J4_jumpseti: CJInst_JMPSET <
   (outs IntRegs:$Rd),
   (ins u6Imm:$U6, brtarget:$r9_2),
   "$Rd = #$U6 ; jump $r9_2"> {
@@ -4331,7 +4375,7 @@ def J4_jumpseti: CJInst <
 let Defs = [PC], isBranch = 1, hasSideEffects = 0, hasNewValue = 1,
     isExtentSigned = 1, opNewValue = 0, isExtendable = 1, opExtentBits = 11,
     opExtentAlign = 2, opExtendable = 2 in
-def J4_jumpsetr: CJInst <
+def J4_jumpsetr: CJInst_JMPSET <
   (outs IntRegs:$Rd),
   (ins IntRegs:$Rs, brtarget:$r9_2),
   "$Rd = $Rs ; jump $r9_2"> {
