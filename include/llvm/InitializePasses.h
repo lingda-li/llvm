@@ -120,6 +120,7 @@ void initializeEarlyIfConverterPass(PassRegistry&);
 void initializeEdgeBundlesPass(PassRegistry&);
 void initializeEfficiencySanitizerPass(PassRegistry&);
 void initializeEliminateAvailableExternallyLegacyPassPass(PassRegistry &);
+void initializeGVNHoistLegacyPassPass(PassRegistry &);
 void initializeExpandISelPseudosPass(PassRegistry&);
 void initializeExpandPostRAPass(PassRegistry&);
 void initializeExternalAAWrapperPassPass(PassRegistry&);
@@ -175,7 +176,7 @@ void initializeLoadStoreVectorizerPass(PassRegistry&);
 void initializeLocalStackSlotPassPass(PassRegistry&);
 void initializeLoopAccessLegacyAnalysisPass(PassRegistry&);
 void initializeLoopDataPrefetchPass(PassRegistry&);
-void initializeLoopDeletionPass(PassRegistry&);
+void initializeLoopDeletionLegacyPassPass(PassRegistry&);
 void initializeLoopDistributePass(PassRegistry&);
 void initializeLoopExtractorPass(PassRegistry&);
 void initializeLoopIdiomRecognizeLegacyPassPass(PassRegistry&);
@@ -335,6 +336,7 @@ void initializeVirtRegRewriterPass(PassRegistry&);
 void initializeWholeProgramDevirtPass(PassRegistry &);
 void initializeWinEHPreparePass(PassRegistry&);
 void initializeWriteBitcodePassPass(PassRegistry &);
+void initializeXRayInstrumentationPass(PassRegistry &);
 }
 
 #endif

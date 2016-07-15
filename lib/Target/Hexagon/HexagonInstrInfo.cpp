@@ -370,7 +370,7 @@ unsigned HexagonInstrInfo::isStoreToStackSlot(const MachineInstr &MI,
 /// Cond[1] = R
 /// Cond[2] = Imm
 ///
-bool HexagonInstrInfo::AnalyzeBranch(MachineBasicBlock &MBB,
+bool HexagonInstrInfo::analyzeBranch(MachineBasicBlock &MBB,
                                      MachineBasicBlock *&TBB,
                                      MachineBasicBlock *&FBB,
                                      SmallVectorImpl<MachineOperand> &Cond,
@@ -587,7 +587,7 @@ unsigned HexagonInstrInfo::InsertBranch(MachineBasicBlock &MBB,
       SmallVector<MachineOperand, 4> Cond;
       auto Term = MBB.getFirstTerminator();
       if (Term != MBB.end() && isPredicated(*Term) &&
-          !AnalyzeBranch(MBB, NewTBB, NewFBB, Cond, false)) {
+          !analyzeBranch(MBB, NewTBB, NewFBB, Cond, false)) {
         MachineBasicBlock *NextBB = &*++MBB.getIterator();
         if (NewTBB == NextBB) {
           ReverseBranchCondition(Cond);
@@ -2437,6 +2437,17 @@ bool HexagonInstrInfo::isSpillPredRegOp(const MachineInstr *MI) const {
 }
 
 
+bool HexagonInstrInfo::isTailCall(const MachineInstr *MI) const {
+  if (!MI->isBranch())
+    return false;
+
+  for (auto &Op : MI->operands())
+    if (Op.isGlobal() || Op.isSymbol())
+      return true;
+  return false;
+}
+
+
 // Returns true when SU has a timing class TC1.
 bool HexagonInstrInfo::isTC1(const MachineInstr *MI) const {
   unsigned SchedClass = MI->getDesc().getSchedClass();
@@ -2601,6 +2612,21 @@ bool HexagonInstrInfo::isValidOffset(unsigned Opcode, int Offset,
   case Hexagon::J2_loop0i:
   case Hexagon::J2_loop1i:
     return isUInt<10>(Offset);
+
+  case Hexagon::S4_storeirb_io:
+  case Hexagon::S4_storeirbt_io:
+  case Hexagon::S4_storeirbf_io:
+    return isUInt<6>(Offset);
+
+  case Hexagon::S4_storeirh_io:
+  case Hexagon::S4_storeirht_io:
+  case Hexagon::S4_storeirhf_io:
+    return isShiftedUInt<6,1>(Offset);
+
+  case Hexagon::S4_storeiri_io:
+  case Hexagon::S4_storeirit_io:
+  case Hexagon::S4_storeirif_io:
+    return isShiftedUInt<6,2>(Offset);
   }
 
   if (Extend)
@@ -2676,9 +2702,6 @@ bool HexagonInstrInfo::isValidOffset(unsigned Opcode, int Offset,
   case Hexagon::L2_ploadrubf_io:
   case Hexagon::S2_pstorerbt_io:
   case Hexagon::S2_pstorerbf_io:
-  case Hexagon::S4_storeirb_io:
-  case Hexagon::S4_storeirbt_io:
-  case Hexagon::S4_storeirbf_io:
     return isUInt<6>(Offset);
 
   case Hexagon::L2_ploadrht_io:
@@ -2687,18 +2710,12 @@ bool HexagonInstrInfo::isValidOffset(unsigned Opcode, int Offset,
   case Hexagon::L2_ploadruhf_io:
   case Hexagon::S2_pstorerht_io:
   case Hexagon::S2_pstorerhf_io:
-  case Hexagon::S4_storeirh_io:
-  case Hexagon::S4_storeirht_io:
-  case Hexagon::S4_storeirhf_io:
     return isShiftedUInt<6,1>(Offset);
 
   case Hexagon::L2_ploadrit_io:
   case Hexagon::L2_ploadrif_io:
   case Hexagon::S2_pstorerit_io:
   case Hexagon::S2_pstorerif_io:
-  case Hexagon::S4_storeiri_io:
-  case Hexagon::S4_storeirit_io:
-  case Hexagon::S4_storeirif_io:
     return isShiftedUInt<6,2>(Offset);
 
   case Hexagon::L2_ploadrdt_io:
@@ -3055,8 +3072,6 @@ bool HexagonInstrInfo::getBaseAndOffsetPosition(const MachineInstr *MI,
       unsigned &BasePos, unsigned &OffsetPos) const {
   // Deal with memops first.
   if (isMemOp(MI)) {
-    assert (MI->getOperand(0).isReg() && MI->getOperand(1).isImm() &&
-            "Bad Memop.");
     BasePos = 0;
     OffsetPos = 1;
   } else if (MI->mayStore()) {
