@@ -42,6 +42,9 @@ static cl::opt<bool> DisableHexagonCFGOpt("disable-hexagon-cfgopt",
   cl::Hidden, cl::ZeroOrMore, cl::init(false),
   cl::desc("Disable Hexagon CFG Optimization"));
 
+static cl::opt<bool> DisableHCP("disable-hcp", cl::init(false), cl::Hidden,
+  cl::ZeroOrMore, cl::desc("Disable Hexagon constant propagation"));
+
 static cl::opt<bool> DisableStoreWidening("disable-store-widen",
   cl::Hidden, cl::init(false), cl::desc("Disable store widening"));
 
@@ -67,6 +70,10 @@ static cl::opt<bool> EnableGenMux("hexagon-mux", cl::init(true), cl::Hidden,
 static cl::opt<bool> EnableGenPred("hexagon-gen-pred", cl::init(true),
   cl::Hidden, cl::desc("Enable conversion of arithmetic operations to "
   "predicate instructions"));
+
+static cl::opt<bool> EnableLoopPrefetch("hexagon-loop-prefetch",
+  cl::init(false), cl::Hidden, cl::ZeroOrMore,
+  cl::desc("Enable loop data prefetch on Hexagon"));
 
 static cl::opt<bool> DisableHSDR("disable-hsdr", cl::init(false), cl::Hidden,
   cl::desc("Disable splitting double registers"));
@@ -107,6 +114,7 @@ namespace llvm {
   FunctionPass *createHexagonCallFrameInformation();
   FunctionPass *createHexagonCFGOptimizer();
   FunctionPass *createHexagonCommonGEP();
+  FunctionPass *createHexagonConstPropagationPass();
   FunctionPass *createHexagonCopyToCombine();
   FunctionPass *createHexagonEarlyIfConversion();
   FunctionPass *createHexagonExpandCondsets();
@@ -225,6 +233,8 @@ void HexagonPassConfig::addIRPasses() {
 
   addPass(createAtomicExpandPass(TM));
   if (!NoOpt) {
+    if (EnableLoopPrefetch)
+      addPass(createLoopDataPrefetchPass());
     if (EnableCommGEP)
       addPass(createHexagonCommonGEP());
     // Replace certain combinations of shifts and ands with extracts.
@@ -257,6 +267,11 @@ bool HexagonPassConfig::addInstSelector() {
       addPass(createHexagonBitSimplify(), false);
     addPass(createHexagonPeephole());
     printAndVerify("After hexagon peephole pass");
+    // Constant propagation.
+    if (!DisableHCP) {
+      addPass(createHexagonConstPropagationPass(), false);
+      addPass(&UnreachableMachineBlockElimID, false);
+    }
     if (EnableGenInsert)
       addPass(createHexagonGenInsert(), false);
     if (EnableEarlyIf)

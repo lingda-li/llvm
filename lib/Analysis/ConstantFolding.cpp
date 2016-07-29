@@ -776,7 +776,9 @@ Constant *SymbolicallyEvaluateGEP(const GEPOperator *GEP,
           Res = ConstantExpr::getSub(Res, CE->getOperand(1));
           Res = ConstantExpr::getIntToPtr(Res, ResTy);
           if (auto *ResCE = dyn_cast<ConstantExpr>(Res))
-            Res = ConstantFoldConstantExpression(ResCE, DL, TLI);
+            if (auto *FoldedRes =
+                    ConstantFoldConstantExpression(ResCE, DL, TLI))
+              Res = FoldedRes;
           return Res;
         }
       }
@@ -985,7 +987,8 @@ Constant *llvm::ConstantFoldInstruction(Instruction *I, const DataLayout &DL,
         return nullptr;
       // Fold the PHI's operands.
       if (auto *NewC = dyn_cast<ConstantExpr>(C))
-        C = ConstantFoldConstantExpression(NewC, DL, TLI);
+        if (auto *FoldedC = ConstantFoldConstantExpression(NewC, DL, TLI))
+          C = FoldedC;
       // If the incoming value is a different constant to
       // the one we saw previously, then give up.
       if (CommonValue && C != CommonValue)
@@ -1008,7 +1011,8 @@ Constant *llvm::ConstantFoldInstruction(Instruction *I, const DataLayout &DL,
     auto *Op = cast<Constant>(&OpU);
     // Fold the Instruction's operands.
     if (auto *NewCE = dyn_cast<ConstantExpr>(Op))
-      Op = ConstantFoldConstantExpression(NewCE, DL, TLI);
+      if (auto *FoldedOp = ConstantFoldConstantExpression(NewCE, DL, TLI))
+        Op = FoldedOp;
 
     Ops.push_back(Op);
   }
@@ -1038,18 +1042,27 @@ Constant *llvm::ConstantFoldInstruction(Instruction *I, const DataLayout &DL,
 
 namespace {
 
-Constant *
-ConstantFoldConstantExpressionImpl(const ConstantExpr *CE, const DataLayout &DL,
-                                   const TargetLibraryInfo *TLI,
-                                   SmallPtrSetImpl<ConstantExpr *> &FoldedOps) {
+Constant *ConstantFoldConstantExpressionImpl(
+    const ConstantExpr *CE, const DataLayout &DL, const TargetLibraryInfo *TLI,
+    SmallDenseMap<ConstantExpr *, Constant *> &FoldedOps) {
   SmallVector<Constant *, 8> Ops;
   for (const Use &NewU : CE->operands()) {
     auto *NewC = cast<Constant>(&NewU);
     // Recursively fold the ConstantExpr's operands. If we have already folded
     // a ConstantExpr, we don't have to process it again.
     if (auto *NewCE = dyn_cast<ConstantExpr>(NewC)) {
-      if (FoldedOps.insert(NewCE).second)
-        NewC = ConstantFoldConstantExpressionImpl(NewCE, DL, TLI, FoldedOps);
+      auto It = FoldedOps.find(NewCE);
+      if (It == FoldedOps.end()) {
+        if (auto *FoldedC =
+                ConstantFoldConstantExpressionImpl(NewCE, DL, TLI, FoldedOps)) {
+          NewC = FoldedC;
+          FoldedOps.insert({NewCE, FoldedC});
+        } else {
+          FoldedOps.insert({NewCE, NewCE});
+        }
+      } else {
+        NewC = It->second;
+      }
     }
     Ops.push_back(NewC);
   }
@@ -1067,7 +1080,7 @@ ConstantFoldConstantExpressionImpl(const ConstantExpr *CE, const DataLayout &DL,
 Constant *llvm::ConstantFoldConstantExpression(const ConstantExpr *CE,
                                                const DataLayout &DL,
                                                const TargetLibraryInfo *TLI) {
-  SmallPtrSet<ConstantExpr *, 4> FoldedOps;
+  SmallDenseMap<ConstantExpr *, Constant *> FoldedOps;
   return ConstantFoldConstantExpressionImpl(CE, DL, TLI, FoldedOps);
 }
 
@@ -1424,8 +1437,8 @@ Constant *ConstantFoldBinaryFP(double (*NativeFP)(double, double), double V,
 /// integer type Ty is used to select how many bits are available for the
 /// result. Returns null if the conversion cannot be performed, otherwise
 /// returns the Constant value resulting from the conversion.
-Constant *ConstantFoldConvertToInt(const APFloat &Val, bool roundTowardZero,
-                                   Type *Ty) {
+Constant *ConstantFoldSSEConvertToInt(const APFloat &Val, bool roundTowardZero,
+                                      Type *Ty) {
   // All of these conversion intrinsics form an integer of at most 64bits.
   unsigned ResultWidth = Ty->getIntegerBitWidth();
   assert(ResultWidth <= 64 &&
@@ -1438,7 +1451,8 @@ Constant *ConstantFoldConvertToInt(const APFloat &Val, bool roundTowardZero,
   APFloat::opStatus status = Val.convertToInteger(&UIntVal, ResultWidth,
                                                   /*isSigned=*/true, mode,
                                                   &isExact);
-  if (status != APFloat::opOK && status != APFloat::opInexact)
+  if (status != APFloat::opOK &&
+      (!roundTowardZero || status != APFloat::opInexact))
     return nullptr;
   return ConstantInt::get(Ty, UIntVal, /*isSigned=*/true);
 }
@@ -1676,17 +1690,17 @@ Constant *ConstantFoldScalarCall(StringRef Name, unsigned IntrinsicID, Type *Ty,
       case Intrinsic::x86_sse2_cvtsd2si:
       case Intrinsic::x86_sse2_cvtsd2si64:
         if (ConstantFP *FPOp =
-              dyn_cast_or_null<ConstantFP>(Op->getAggregateElement(0U)))
-          return ConstantFoldConvertToInt(FPOp->getValueAPF(),
-                                          /*roundTowardZero=*/false, Ty);
+                dyn_cast_or_null<ConstantFP>(Op->getAggregateElement(0U)))
+          return ConstantFoldSSEConvertToInt(FPOp->getValueAPF(),
+                                             /*roundTowardZero=*/false, Ty);
       case Intrinsic::x86_sse_cvttss2si:
       case Intrinsic::x86_sse_cvttss2si64:
       case Intrinsic::x86_sse2_cvttsd2si:
       case Intrinsic::x86_sse2_cvttsd2si64:
         if (ConstantFP *FPOp =
-              dyn_cast_or_null<ConstantFP>(Op->getAggregateElement(0U)))
-          return ConstantFoldConvertToInt(FPOp->getValueAPF(),
-                                          /*roundTowardZero=*/true, Ty);
+                dyn_cast_or_null<ConstantFP>(Op->getAggregateElement(0U)))
+          return ConstantFoldSSEConvertToInt(FPOp->getValueAPF(),
+                                             /*roundTowardZero=*/true, Ty);
       }
     }
 

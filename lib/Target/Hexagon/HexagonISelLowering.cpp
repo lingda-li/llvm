@@ -447,7 +447,13 @@ static bool RetCC_Hexagon32(unsigned ValNo, MVT ValVT,
                             MVT LocVT, CCValAssign::LocInfo LocInfo,
                             ISD::ArgFlagsTy ArgFlags, CCState &State) {
   if (LocVT == MVT::i32 || LocVT == MVT::f32) {
-    if (unsigned Reg = State.AllocateReg(Hexagon::R0)) {
+    // Note that use of registers beyond R1 is not ABI compliant. However there
+    // are (experimental) IR passes which generate internal functions that
+    // return structs using these additional registers.
+    static const uint16_t RegList[] = { Hexagon::R0, Hexagon::R1,
+                                        Hexagon::R2, Hexagon::R3,
+                                        Hexagon::R4, Hexagon::R5};
+    if (unsigned Reg = State.AllocateReg(RegList)) {
       State.addLoc(CCValAssign::getReg(ValNo, ValVT, Reg, LocVT, LocInfo));
       return false;
     }
@@ -786,14 +792,14 @@ HexagonTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
 
   if (NeedsArgAlign && Subtarget.hasV60TOps()) {
     DEBUG(dbgs() << "Function needs byte stack align due to call args\n");
-    MachineFrameInfo* MFI = DAG.getMachineFunction().getFrameInfo();
+    MachineFrameInfo &MFI = DAG.getMachineFunction().getFrameInfo();
     // V6 vectors passed by value have 64 or 128 byte alignment depending
     // on whether we are 64 byte vector mode or 128 byte.
     bool UseHVXDbl = Subtarget.useHVXDblOps();
     assert(Subtarget.useHVXOps());
     const unsigned ObjAlign = UseHVXDbl ? 128 : 64;
     LargestAlignSeen = std::max(LargestAlignSeen, ObjAlign);
-    MFI->ensureMaxAlignment(LargestAlignSeen);
+    MFI.ensureMaxAlignment(LargestAlignSeen);
   }
   // Transform all store nodes into one single node because all store
   // nodes are independent of each other.
@@ -836,14 +842,17 @@ HexagonTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
     InFlag = SDValue();
   }
 
+  bool LongCalls = MF.getSubtarget<HexagonSubtarget>().useLongCalls();
+  unsigned Flags = LongCalls ? HexagonII::HMOTF_ConstExtended : 0;
+
   // If the callee is a GlobalAddress/ExternalSymbol node (quite common, every
   // direct call is) turn it into a TargetGlobalAddress/TargetExternalSymbol
   // node so that legalize doesn't hack it.
   if (GlobalAddressSDNode *G = dyn_cast<GlobalAddressSDNode>(Callee)) {
-    Callee = DAG.getTargetGlobalAddress(G->getGlobal(), dl, PtrVT);
+    Callee = DAG.getTargetGlobalAddress(G->getGlobal(), dl, PtrVT, 0, Flags);
   } else if (ExternalSymbolSDNode *S =
              dyn_cast<ExternalSymbolSDNode>(Callee)) {
-    Callee = DAG.getTargetExternalSymbol(S->getSymbol(), PtrVT);
+    Callee = DAG.getTargetExternalSymbol(S->getSymbol(), PtrVT, Flags);
   }
 
   // Returns a chain & a flag for retval copy to use.
@@ -863,7 +872,7 @@ HexagonTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
     Ops.push_back(InFlag);
 
   if (isTailCall) {
-    MF.getFrameInfo()->setHasTailCall();
+    MF.getFrameInfo().setHasTailCall();
     return DAG.getNode(HexagonISD::TC_RETURN, dl, NodeTys, Ops);
   }
 
@@ -1067,7 +1076,7 @@ SDValue HexagonTargetLowering::LowerFormalArguments(
     SelectionDAG &DAG, SmallVectorImpl<SDValue> &InVals) const {
 
   MachineFunction &MF = DAG.getMachineFunction();
-  MachineFrameInfo *MFI = MF.getFrameInfo();
+  MachineFrameInfo &MFI = MF.getFrameInfo();
   MachineRegisterInfo &RegInfo = MF.getRegInfo();
   auto &FuncInfo = *MF.getInfo<HexagonMachineFunctionInfo>();
 
@@ -1167,7 +1176,7 @@ SDValue HexagonTargetLowering::LowerFormalArguments(
 
       StackLocation = HEXAGON_LRFP_SIZE + VA.getLocMemOffset();
       // Create the frame index object for this incoming parameter...
-      FI = MFI->CreateFixedObject(ObjSize, StackLocation, true);
+      FI = MFI.CreateFixedObject(ObjSize, StackLocation, true);
 
       // Create the SelectionDAG nodes cordl, responding to a load
       // from this parameter.
@@ -1190,10 +1199,10 @@ SDValue HexagonTargetLowering::LowerFormalArguments(
 
   if (isVarArg) {
     // This will point to the next argument passed via stack.
-    int FrameIndex = MFI->CreateFixedObject(Hexagon_PointerSize,
-                                            HEXAGON_LRFP_SIZE +
-                                            CCInfo.getNextStackOffset(),
-                                            true);
+    int FrameIndex = MFI.CreateFixedObject(Hexagon_PointerSize,
+                                           HEXAGON_LRFP_SIZE +
+                                           CCInfo.getNextStackOffset(),
+                                           true);
     FuncInfo.setVarArgsFrameIndex(FrameIndex);
   }
 
@@ -1422,7 +1431,7 @@ SDValue
 HexagonTargetLowering::LowerRETURNADDR(SDValue Op, SelectionDAG &DAG) const {
   const HexagonRegisterInfo &HRI = *Subtarget.getRegisterInfo();
   MachineFunction &MF = DAG.getMachineFunction();
-  MachineFrameInfo &MFI = *MF.getFrameInfo();
+  MachineFrameInfo &MFI = MF.getFrameInfo();
   MFI.setReturnAddressIsTaken(true);
 
   if (verifyReturnAddressArgumentIsConstant(Op, DAG))
@@ -1447,7 +1456,7 @@ HexagonTargetLowering::LowerRETURNADDR(SDValue Op, SelectionDAG &DAG) const {
 SDValue
 HexagonTargetLowering::LowerFRAMEADDR(SDValue Op, SelectionDAG &DAG) const {
   const HexagonRegisterInfo &HRI = *Subtarget.getRegisterInfo();
-  MachineFrameInfo &MFI = *DAG.getMachineFunction().getFrameInfo();
+  MachineFrameInfo &MFI = DAG.getMachineFunction().getFrameInfo();
   MFI.setFrameAddressIsTaken(true);
 
   EVT VT = Op.getValueType();
@@ -1530,7 +1539,7 @@ SDValue
 HexagonTargetLowering::GetDynamicTLSAddr(SelectionDAG &DAG, SDValue Chain,
       GlobalAddressSDNode *GA, SDValue *InFlag, EVT PtrVT, unsigned ReturnReg,
       unsigned char OperandFlags) const {
-  MachineFrameInfo *MFI = DAG.getMachineFunction().getFrameInfo();
+  MachineFrameInfo &MFI = DAG.getMachineFunction().getFrameInfo();
   SDVTList NodeTys = DAG.getVTList(MVT::Other, MVT::Glue);
   SDLoc dl(GA);
   SDValue TGA = DAG.getTargetGlobalAddress(GA->getGlobal(), dl,
@@ -1555,7 +1564,7 @@ HexagonTargetLowering::GetDynamicTLSAddr(SelectionDAG &DAG, SDValue Chain,
   }
 
   // Inform MFI that function has calls.
-  MFI->setAdjustsStack(true);
+  MFI.setAdjustsStack(true);
 
   SDValue Flag = Chain.getValue(1);
   return DAG.getCopyFromReg(Chain, dl, ReturnReg, PtrVT, Flag);
@@ -2046,13 +2055,20 @@ HexagonTargetLowering::HexagonTargetLowering(const TargetMachine &TM,
 
   // Handling of indexed loads/stores: default is "expand".
   //
-  for (MVT LSXTy : {MVT::i8, MVT::i16, MVT::i32, MVT::i64}) {
-    setIndexedLoadAction(ISD::POST_INC, LSXTy, Legal);
-    setIndexedStoreAction(ISD::POST_INC, LSXTy, Legal);
+  for (MVT VT : {MVT::i8, MVT::i16, MVT::i32, MVT::i64}) {
+    setIndexedLoadAction(ISD::POST_INC, VT, Legal);
+    setIndexedStoreAction(ISD::POST_INC, VT, Legal);
   }
 
-  if (UseHVXDbl) {
-    for (MVT VT : {MVT::v128i8, MVT::v64i16, MVT::v32i32, MVT::v16i64}) {
+  if (UseHVXSgl) {
+    for (MVT VT : {MVT::v64i8,  MVT::v32i16, MVT::v16i32, MVT::v8i64,
+                   MVT::v128i8, MVT::v64i16, MVT::v32i32, MVT::v16i64}) {
+      setIndexedLoadAction(ISD::POST_INC, VT, Legal);
+      setIndexedStoreAction(ISD::POST_INC, VT, Legal);
+    }
+  } else if (UseHVXDbl) {
+    for (MVT VT : {MVT::v128i8, MVT::v64i16,  MVT::v32i32, MVT::v16i64,
+                   MVT::v256i8, MVT::v128i16, MVT::v64i32, MVT::v32i64}) {
       setIndexedLoadAction(ISD::POST_INC, VT, Legal);
       setIndexedStoreAction(ISD::POST_INC, VT, Legal);
     }

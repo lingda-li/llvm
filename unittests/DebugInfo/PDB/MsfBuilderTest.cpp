@@ -9,14 +9,13 @@
 
 #include "ErrorChecking.h"
 
-#include "llvm/DebugInfo/PDB/Raw/MsfBuilder.h"
-#include "llvm/DebugInfo/PDB/Raw/MsfCommon.h"
+#include "llvm/DebugInfo/Msf/MsfBuilder.h"
+#include "llvm/DebugInfo/Msf/MsfCommon.h"
 
 #include "gtest/gtest.h"
 
 using namespace llvm;
-using namespace llvm::pdb;
-using namespace llvm::pdb::msf;
+using namespace llvm::msf;
 
 namespace {
 class MsfBuilderTest : public testing::Test {
@@ -111,7 +110,7 @@ TEST_F(MsfBuilderTest, TestAddStreamNoDirectoryBlockIncrease) {
 
   auto ExpectedL1 = Msf.build();
   EXPECT_EXPECTED(ExpectedL1);
-  Layout &L1 = *ExpectedL1;
+  MsfLayout &L1 = *ExpectedL1;
 
   auto OldDirBlocks = L1.DirectoryBlocks;
   EXPECT_EQ(1U, OldDirBlocks.size());
@@ -128,7 +127,7 @@ TEST_F(MsfBuilderTest, TestAddStreamNoDirectoryBlockIncrease) {
 
   auto ExpectedL2 = Msf2.build();
   EXPECT_EXPECTED(ExpectedL2);
-  Layout &L2 = *ExpectedL2;
+  MsfLayout &L2 = *ExpectedL2;
   auto NewDirBlocks = L2.DirectoryBlocks;
   EXPECT_EQ(1U, NewDirBlocks.size());
 }
@@ -147,7 +146,7 @@ TEST_F(MsfBuilderTest, TestAddStreamWithDirectoryBlockIncrease) {
 
   auto ExpectedL1 = Msf.build();
   EXPECT_EXPECTED(ExpectedL1);
-  Layout &L1 = *ExpectedL1;
+  MsfLayout &L1 = *ExpectedL1;
   auto DirBlocks = L1.DirectoryBlocks;
   EXPECT_EQ(2U, DirBlocks.size());
 }
@@ -271,7 +270,7 @@ TEST_F(MsfBuilderTest, TestBlockCountsWhenAddingStreams) {
 }
 
 TEST_F(MsfBuilderTest, BuildMsfLayout) {
-  // Test that we can generate an Msf Layout structure from a valid layout
+  // Test that we can generate an Msf MsfLayout structure from a valid layout
   // specification.
   auto ExpectedMsf = MsfBuilder::create(Allocator, 4096);
   EXPECT_EXPECTED(ExpectedMsf);
@@ -287,7 +286,7 @@ TEST_F(MsfBuilderTest, BuildMsfLayout) {
 
   auto ExpectedLayout = Msf.build();
   EXPECT_EXPECTED(ExpectedLayout);
-  Layout &L = *ExpectedLayout;
+  MsfLayout &L = *ExpectedLayout;
   EXPECT_EQ(4096U, L.SB->BlockSize);
   EXPECT_EQ(ExpectedNumBlocks, L.SB->NumBlocks);
 
@@ -314,7 +313,7 @@ TEST_F(MsfBuilderTest, UseDirectoryBlockHint) {
 
   auto ExpectedLayout = Msf.build();
   EXPECT_EXPECTED(ExpectedLayout);
-  Layout &L = *ExpectedLayout;
+  MsfLayout &L = *ExpectedLayout;
   EXPECT_EQ(msf::getMinimumBlockCount() + 2, L.SB->NumBlocks);
   EXPECT_EQ(1U, L.DirectoryBlocks.size());
   EXPECT_EQ(1U, L.StreamMap[0].size());
@@ -336,7 +335,7 @@ TEST_F(MsfBuilderTest, DirectoryBlockHintInsufficient) {
 
   auto ExpectedLayout = Msf.build();
   EXPECT_EXPECTED(ExpectedLayout);
-  Layout &L = *ExpectedLayout;
+  MsfLayout &L = *ExpectedLayout;
   EXPECT_EQ(2U, L.DirectoryBlocks.size());
   EXPECT_EQ(B + 1, L.DirectoryBlocks[0]);
 }
@@ -354,7 +353,7 @@ TEST_F(MsfBuilderTest, DirectoryBlockHintOverestimated) {
 
   auto ExpectedLayout = Msf.build();
   EXPECT_EXPECTED(ExpectedLayout);
-  Layout &L = *ExpectedLayout;
+  MsfLayout &L = *ExpectedLayout;
   EXPECT_EQ(1U, L.DirectoryBlocks.size());
   EXPECT_EQ(B + 1, L.DirectoryBlocks[0]);
 }
