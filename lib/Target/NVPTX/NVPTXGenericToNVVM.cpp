@@ -371,7 +371,11 @@ void GenericToNVVM::remapNamedMDNode(ValueToValueMapTy &VM, NamedMDNode *N) {
   // converted to another value.
   for (unsigned i = 0; i < NumOperands; ++i) {
     MDNode *Operand = N->getOperand(i);
-    MDNode *NewOperand = MapMetadata(Operand, VM);
+    // We chose to move instead of duplicating distinct nodes given that they
+    // are meant to be unique, so duplicating would cause metadata like debug
+    // compile unit debug information to show up twice and break the
+    // verification of the module.
+    MDNode *NewOperand = MapMetadata(Operand, VM, RF_MoveDistinctMDs);
     OperandChanged |= Operand != NewOperand;
     NewOperands.push_back(NewOperand);
   }
