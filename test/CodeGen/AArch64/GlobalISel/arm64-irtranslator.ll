@@ -1,5 +1,5 @@
 ; RUN: llc -O0 -stop-after=irtranslator -global-isel -verify-machineinstrs %s -o - 2>&1 | FileCheck %s
-; REQUIRES: global-isel
+
 ; This file checks that the translation from llvm IR to generic MachineInstr
 ; is correct.
 target datalayout = "e-m:o-i64:64-i128:128-n32:64-S128"
@@ -14,6 +14,17 @@ target triple = "aarch64-apple-ios"
 ; CHECK-NEXT: RET_ReallyLR implicit %x0 
 define i64 @addi64(i64 %arg1, i64 %arg2) {
   %res = add i64 %arg1, %arg2
+  ret i64 %res
+}
+
+; CHECK-LABEL: name: muli64
+; CHECK: [[ARG1:%[0-9]+]](64) = COPY %x0
+; CHECK-NEXT: [[ARG2:%[0-9]+]](64) = COPY %x1
+; CHECK-NEXT: [[RES:%[0-9]+]](64) = G_MUL s64 [[ARG1]], [[ARG2]]
+; CHECK-NEXT: %x0 = COPY [[RES]]
+; CHECK-NEXT: RET_ReallyLR implicit %x0
+define i64 @muli64(i64 %arg1, i64 %arg2) {
+  %res = mul i64 %arg1, %arg2
   ret i64 %res
 }
 
@@ -203,12 +214,31 @@ define i64* @inttoptr(i64 %a) {
 
 ; CHECK-LABEL: name: trivial_bitcast
 ; CHECK: [[ARG1:%[0-9]+]](64) = COPY %x0
-; CHECK: [[RES:%[0-9]+]](64) = COPY [[ARG1]]
-; CHECK: %x0 = COPY [[RES]]
+; CHECK: %x0 = COPY [[ARG1]]
 ; CHECK: RET_ReallyLR implicit %x0
 define i64* @trivial_bitcast(i8* %a) {
   %val = bitcast i8* %a to i64*
   ret i64* %val
+}
+
+; CHECK-LABEL: name: trivial_bitcast_with_copy
+; CHECK:     [[A:%[0-9]+]](64) = COPY %x0
+; CHECK:     G_BR unsized %[[CAST:bb\.[0-9]+]]
+
+; CHECK: [[CAST]]:
+; CHECK:     {{%[0-9]+}}(64) = COPY [[A]]
+; CHECK:     G_BR unsized %[[END:bb\.[0-9]+]]
+
+; CHECK: [[END]]:
+define i64* @trivial_bitcast_with_copy(i8* %a) {
+  br label %cast
+
+end:
+  ret i64* %val
+
+cast:
+  %val = bitcast i8* %a to i64*
+  br label %end
 }
 
 ; CHECK-LABEL: name: bitcast
@@ -221,6 +251,19 @@ define i64 @bitcast(i64 %a) {
   %res1 = bitcast i64 %a to <2 x i32>
   %res2 = bitcast <2 x i32> %res1 to i64
   ret i64 %res2
+}
+
+; CHECK-LABEL: name: trunc
+; CHECK: [[ARG1:%[0-9]+]](64) = COPY %x0
+; CHECK: [[VEC:%[0-9]+]](128) = G_LOAD { <4 x s32>, p0 }
+; CHECK: [[RES1:%[0-9]+]](8) = G_TRUNC { s8, s64 } [[ARG1]]
+; CHECK: [[RES2:%[0-9]+]](64) = G_TRUNC { <4 x s16>, <4 x s32> } [[VEC]]
+define void @trunc(i64 %a) {
+  %vecptr = alloca <4 x i32>
+  %vec = load <4 x i32>, <4 x i32>* %vecptr
+  %res1 = trunc i64 %a to i8
+  %res2 = trunc <4 x i32> %vec to <4 x i16>
+  ret void
 }
 
 ; CHECK-LABEL: name: load
@@ -270,4 +313,87 @@ define void @intrinsics(i32 %cur, i32 %bits) {
   %vec = load <8 x i8>, <8 x i8>* %ptr.vec
   call void @llvm.aarch64.neon.st2.v8i8.p0i8(<8 x i8> %vec, <8 x i8> %vec, i8* %ptr)
   ret void
+}
+
+; CHECK-LABEL: name: test_phi
+; CHECK:     G_BRCOND s1 {{%.*}}, %[[TRUE:bb\.[0-9]+]]
+; CHECK:     G_BR unsized %[[FALSE:bb\.[0-9]+]]
+
+; CHECK: [[TRUE]]:
+; CHECK:     [[RES1:%[0-9]+]](32) = G_LOAD { s32, p0 }
+
+; CHECK: [[FALSE]]:
+; CHECK:     [[RES2:%[0-9]+]](32) = G_LOAD { s32, p0 }
+
+; CHECK:     [[RES:%[0-9]+]](32) = PHI [[RES1]], %[[TRUE]], [[RES2]], %[[FALSE]]
+; CHECK:     %w0 = COPY [[RES]]
+define i32 @test_phi(i32* %addr1, i32* %addr2, i1 %tst) {
+  br i1 %tst, label %true, label %false
+
+true:
+  %res1 = load i32, i32* %addr1
+  br label %end
+
+false:
+  %res2 = load i32, i32* %addr2
+  br label %end
+
+end:
+  %res = phi i32 [%res1, %true], [%res2, %false]
+  ret i32 %res
+}
+
+; CHECK-LABEL: name: unreachable
+; CHECK: G_ADD
+; CHECK-NEXT: {{^$}}
+; CHECK-NEXT: ...
+define void @unreachable(i32 %a) {
+  %sum = add i32 %a, %a
+  unreachable
+}
+
+  ; It's important that constants are after argument passing, but before the
+  ; rest of the entry block.
+; CHECK-LABEL: name: constant_int
+; CHECK: [[IN:%[0-9]+]](32) = COPY %w0
+; CHECK: [[ONE:%[0-9]+]](32) = G_CONSTANT s32 1
+; CHECK: G_BR unsized
+
+; CHECK: [[SUM1:%[0-9]+]](32) = G_ADD s32 [[IN]], [[ONE]]
+; CHECK: [[SUM2:%[0-9]+]](32) = G_ADD s32 [[IN]], [[ONE]]
+; CHECK: [[RES:%[0-9]+]](32) = G_ADD s32 [[SUM1]], [[SUM2]]
+; CHECK: %w0 = COPY [[RES]]
+
+define i32 @constant_int(i32 %in) {
+  br label %next
+
+next:
+  %sum1 = add i32 %in, 1
+  %sum2 = add i32 %in, 1
+  %res = add i32 %sum1, %sum2
+  ret i32 %res
+}
+
+; CHECK-LABEL: name: constant_int_start
+; CHECK: [[TWO:%[0-9]+]](32) = G_CONSTANT s32 2
+; CHECK: [[ANSWER:%[0-9]+]](32) = G_CONSTANT s32 42
+; CHECK: [[RES:%[0-9]+]](32) = G_ADD s32 [[TWO]], [[ANSWER]]
+define i32 @constant_int_start() {
+  %res = add i32 2, 42
+  ret i32 %res
+}
+
+; CHECK-LABEL: name: test_undef
+; CHECK: [[UNDEF:%[0-9]+]](32) = IMPLICIT_DEF
+; CHECK: %w0 = COPY [[UNDEF]]
+define i32 @test_undef() {
+  ret i32 undef
+}
+
+; CHECK-LABEL: name: test_constant_inttoptr
+; CHECK: [[ONE:%[0-9]+]](64) = G_CONSTANT s64 1
+; CHECK: [[PTR:%[0-9]+]](64) = G_INTTOPTR { p0, s64 } [[ONE]]
+; CHECK: %x0 = COPY [[PTR]]
+define i8* @test_constant_inttoptr() {
+  ret i8* inttoptr(i64 1 to i8*)
 }

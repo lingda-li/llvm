@@ -31,9 +31,7 @@ bool isPositiveHalfWord(SDNode *N);
 
       CONST32 = OP_BEGIN,
       CONST32_GP,  // For marking data present in GP.
-      FCONST32,
       ALLOCA,
-      ARGEXTEND,
 
       AT_GOT,      // Index in GOT.
       AT_PCREL,    // Offset relative to PC.
@@ -246,6 +244,10 @@ bool isPositiveHalfWord(SDNode *N);
     /// compare a register against the immediate without having to materialize
     /// the immediate into a register.
     bool isLegalICmpImmediate(int64_t Imm) const override;
+
+    EVT getOptimalMemOpType(uint64_t Size, unsigned DstAlign,
+        unsigned SrcAlign, bool IsMemset, bool ZeroMemset, bool MemcpyStrSrc,
+        MachineFunction &MF) const override;
 
     bool allowsMisalignedMemoryAccesses(EVT VT, unsigned AddrSpace,
         unsigned Align, bool *Fast) const override;

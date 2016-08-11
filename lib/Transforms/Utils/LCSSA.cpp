@@ -186,14 +186,14 @@ bool llvm::formLCSSAForInstructions(SmallVectorImpl<Instruction *> &Worklist,
 
       // Otherwise, do full PHI insertion.
       SSAUpdate.RewriteUse(*UseToRewrite);
+    }
 
-      // SSAUpdater might have inserted phi-nodes inside other loops. We'll need
-      // to post-process them to keep LCSSA form.
-      for (PHINode *InsertedPN : InsertedPHIs) {
-        if (auto *OtherLoop = LI.getLoopFor(InsertedPN->getParent()))
-          if (!L->contains(OtherLoop))
-            PostProcessPHIs.push_back(InsertedPN);
-      }
+    // SSAUpdater might have inserted phi-nodes inside other loops. We'll need
+    // to post-process them to keep LCSSA form.
+    for (PHINode *InsertedPN : InsertedPHIs) {
+      if (auto *OtherLoop = LI.getLoopFor(InsertedPN->getParent()))
+        if (!L->contains(OtherLoop))
+          PostProcessPHIs.push_back(InsertedPN);
     }
 
     // Post process PHI instructions that were inserted into another disjoint
@@ -360,7 +360,7 @@ bool LCSSAWrapperPass::runOnFunction(Function &F) {
   return formLCSSAOnAllLoops(LI, *DT, SE);
 }
 
-PreservedAnalyses LCSSAPass::run(Function &F, AnalysisManager<Function> &AM) {
+PreservedAnalyses LCSSAPass::run(Function &F, FunctionAnalysisManager &AM) {
   auto &LI = AM.getResult<LoopAnalysis>(F);
   auto &DT = AM.getResult<DominatorTreeAnalysis>(F);
   auto *SE = AM.getCachedResult<ScalarEvolutionAnalysis>(F);

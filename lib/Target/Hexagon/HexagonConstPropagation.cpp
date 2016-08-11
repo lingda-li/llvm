@@ -218,8 +218,6 @@ namespace {
     void visitNonBranch(const MachineInstr &MI);
     void visitBranchesFrom(const MachineInstr &BrI);
     void visitUsesOf(unsigned R);
-    bool isExecutable(const MachineBasicBlock *MB) const;
-    void pushLayoutSuccessor(const MachineBasicBlock *MB);
     bool computeBlockSuccessors(const MachineBasicBlock *MB,
           SetVector<const MachineBasicBlock*> &Targets);
     void removeCFGEdge(MachineBasicBlock *From, MachineBasicBlock *To);
@@ -770,26 +768,6 @@ void MachineConstPropagator::visitUsesOf(unsigned Reg) {
       visitBranchesFrom(MI);
   }
 }
-
-
-bool MachineConstPropagator::isExecutable(const MachineBasicBlock *MB) const {
-  unsigned MBN = MB->getNumber();
-  for (const MachineBasicBlock *PB : MB->predecessors()) {
-    unsigned PBN = PB->getNumber();
-    if (EdgeExec.count(CFGEdge(PBN, MBN)))
-      return true;
-  }
-  return false;
-}
-
-
-void MachineConstPropagator::pushLayoutSuccessor(const MachineBasicBlock *MB) {
-  MachineFunction::const_iterator BI = MB->getIterator();
-  unsigned MBN = MB->getNumber();
-  unsigned SBN = std::next(BI)->getNumber();
-  FlowQ.push(CFGEdge(MBN, SBN));
-}
-
 
 bool MachineConstPropagator::computeBlockSuccessors(const MachineBasicBlock *MB,
       SetVector<const MachineBasicBlock*> &Targets) {
@@ -1993,14 +1971,13 @@ bool HexagonConstEvaluator::evaluate(const MachineInstr &MI,
     default:
       return false;
     case Hexagon::A2_tfrsi:
-    case Hexagon::CONST32:
     case Hexagon::A2_tfrpi:
-    case Hexagon::CONST32_Int_Real:
-    case Hexagon::CONST64_Int_Real:
+    case Hexagon::CONST32:
+    case Hexagon::CONST64:
     {
       const MachineOperand &VO = MI.getOperand(1);
-      // The operand of CONST32_Int_Real can be a blockaddress, e.g.
-      //   %vreg0<def> = CONST32_Int_Real <blockaddress(@eat, %L)>
+      // The operand of CONST32 can be a blockaddress, e.g.
+      //   %vreg0<def> = CONST32 <blockaddress(@eat, %L)>
       // Do this check for all instructions for safety.
       if (!VO.isImm())
         return false;
@@ -2047,8 +2024,8 @@ bool HexagonConstEvaluator::evaluate(const MachineInstr &MI,
     case Hexagon::A2_combineii:  // combine(#s8Ext, #s8)
     case Hexagon::A4_combineii:  // combine(#s8, #u6Ext)
     {
-      int64_t Hi = MI.getOperand(1).getImm();
-      int64_t Lo = MI.getOperand(2).getImm();
+      uint64_t Hi = MI.getOperand(1).getImm();
+      uint64_t Lo = MI.getOperand(2).getImm();
       uint64_t Res = (Hi << 32) | (Lo & 0xFFFFFFFF);
       IntegerType *Ty = Type::getInt64Ty(CX);
       const ConstantInt *CI = ConstantInt::get(Ty, Res, false);
@@ -2348,10 +2325,9 @@ bool HexagonConstEvaluator::rewrite(MachineInstr &MI, const CellMap &Inputs) {
     default:
       break;
     case Hexagon::A2_tfrsi:
-    case Hexagon::CONST32:
     case Hexagon::A2_tfrpi:
-    case Hexagon::CONST32_Int_Real:
-    case Hexagon::CONST64_Int_Real:
+    case Hexagon::CONST32:
+    case Hexagon::CONST64:
     case Hexagon::TFR_PdTrue:
     case Hexagon::TFR_PdFalse:
       return false;
@@ -2943,7 +2919,7 @@ bool HexagonConstEvaluator::rewriteHexConstDefs(MachineInstr &MI,
                       .addImm(Hi)
                       .addImm(Lo);
           } else {
-            NewD = &HII.get(Hexagon::CONST64_Int_Real);
+            NewD = &HII.get(Hexagon::CONST64);
             NewMI = BuildMI(B, At, DL, *NewD, NewR)
                       .addImm(V);
           }
