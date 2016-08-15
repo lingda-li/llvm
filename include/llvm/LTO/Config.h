@@ -84,7 +84,7 @@ struct Config {
   ///
   /// Note that in out-of-process backend scenarios, none of the hooks will be
   /// called for ThinLTO tasks.
-  typedef std::function<bool(size_t Task, Module &)> ModuleHookFn;
+  typedef std::function<bool(unsigned Task, Module &)> ModuleHookFn;
 
   /// This module hook is called after linking (regular LTO) or loading
   /// (ThinLTO) the module, before modifying it.
@@ -121,6 +121,52 @@ struct Config {
       CombinedIndexHookFn;
   CombinedIndexHookFn CombinedIndexHook;
 
+  Config() {}
+  // FIXME: Remove once MSVC can synthesize move ops.
+  Config(Config &&X)
+      : CPU(std::move(X.CPU)), Features(std::move(X.Features)),
+        Options(std::move(X.Options)), MAttrs(std::move(X.MAttrs)),
+        RelocModel(std::move(X.RelocModel)), CodeModel(std::move(X.CodeModel)),
+        CGOptLevel(std::move(X.CGOptLevel)), OptLevel(std::move(X.OptLevel)),
+        DisableVerify(std::move(X.DisableVerify)),
+        OverrideTriple(std::move(X.OverrideTriple)),
+        DefaultTriple(std::move(X.DefaultTriple)),
+        ShouldDiscardValueNames(std::move(X.ShouldDiscardValueNames)),
+        DiagHandler(std::move(X.DiagHandler)),
+        ResolutionFile(std::move(X.ResolutionFile)),
+        PreOptModuleHook(std::move(X.PreOptModuleHook)),
+        PostPromoteModuleHook(std::move(X.PostPromoteModuleHook)),
+        PostInternalizeModuleHook(std::move(X.PostInternalizeModuleHook)),
+        PostImportModuleHook(std::move(X.PostImportModuleHook)),
+        PostOptModuleHook(std::move(X.PostOptModuleHook)),
+        PreCodeGenModuleHook(std::move(X.PreCodeGenModuleHook)),
+        CombinedIndexHook(std::move(X.CombinedIndexHook)) {}
+  // FIXME: Remove once MSVC can synthesize move ops.
+  Config &operator=(Config &&X) {
+    CPU = std::move(X.CPU);
+    Features = std::move(X.Features);
+    Options = std::move(X.Options);
+    MAttrs = std::move(X.MAttrs);
+    RelocModel = std::move(X.RelocModel);
+    CodeModel = std::move(X.CodeModel);
+    CGOptLevel = std::move(X.CGOptLevel);
+    OptLevel = std::move(X.OptLevel);
+    DisableVerify = std::move(X.DisableVerify);
+    OverrideTriple = std::move(X.OverrideTriple);
+    DefaultTriple = std::move(X.DefaultTriple);
+    ShouldDiscardValueNames = std::move(X.ShouldDiscardValueNames);
+    DiagHandler = std::move(X.DiagHandler);
+    ResolutionFile = std::move(X.ResolutionFile);
+    PreOptModuleHook = std::move(X.PreOptModuleHook);
+    PostPromoteModuleHook = std::move(X.PostPromoteModuleHook);
+    PostInternalizeModuleHook = std::move(X.PostInternalizeModuleHook);
+    PostImportModuleHook = std::move(X.PostImportModuleHook);
+    PostOptModuleHook = std::move(X.PostOptModuleHook);
+    PreCodeGenModuleHook = std::move(X.PreCodeGenModuleHook);
+    CombinedIndexHook = std::move(X.CombinedIndexHook);
+    return *this;
+  }
+
   /// This is a convenience function that configures this Config object to write
   /// temporary files named after the given OutputFileName for each of the LTO
   /// phases to disk. A client can use this function to implement -save-temps.
@@ -145,7 +191,7 @@ struct Config {
 /// return a output stream to write the native object to.
 ///
 /// Stream callbacks must be thread safe.
-typedef std::function<std::unique_ptr<raw_pwrite_stream>(size_t Task)>
+typedef std::function<std::unique_ptr<raw_pwrite_stream>(unsigned Task)>
     AddStreamFn;
 
 /// A derived class of LLVMContext that initializes itself according to a given
