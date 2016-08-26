@@ -551,6 +551,13 @@ static std::string getMangledTypeStr(Type* Ty) {
   return Result;
 }
 
+StringRef Intrinsic::getName(ID id) {
+  assert(id < num_intrinsics && "Invalid intrinsic ID!");
+  assert(!isOverloaded(id) &&
+         "This version of getName does not support overloading");
+  return IntrinsicNameTable[id];
+}
+
 std::string Intrinsic::getName(ID id, ArrayRef<Type*> Tys) {
   assert(id < num_intrinsics && "Invalid intrinsic ID!");
   std::string Result(IntrinsicNameTable[id]);

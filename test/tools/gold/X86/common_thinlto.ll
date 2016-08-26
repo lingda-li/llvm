@@ -4,6 +4,7 @@
 ; RUN: %gold -plugin %llvmshlibdir/LLVMgold.so \
 ; RUN:    --plugin-opt=save-temps \
 ; RUN:    --plugin-opt=thinlto \
+; RUN:    -m elf_x86_64 \
 ; RUN:    -shared %t1.o %t2.o -o %t3
 
 ; RUN: llvm-dis %t1.o.2.internalize.bc -o - | FileCheck %s --check-prefix=INTERNALIZE
@@ -14,7 +15,7 @@
 ; bar should still exist (if we had internalized P it would look dead).
 ; OPT: @bar
 
-; RUN: llvm-nm %t3.o | FileCheck %s --check-prefix=NM
+; RUN: llvm-nm %t3 | FileCheck %s --check-prefix=NM
 ; NM: bar
 
 source_filename = "common1.c"

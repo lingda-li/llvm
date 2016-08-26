@@ -182,7 +182,7 @@ namespace {
     bool runOnMachineFunction(MachineFunction &MF) override;
     MachineFunctionProperties getRequiredProperties() const override {
       return MachineFunctionProperties().set(
-          MachineFunctionProperties::Property::AllVRegsAllocated);
+          MachineFunctionProperties::Property::NoVRegs);
     }
   };
 
@@ -532,8 +532,11 @@ void HexagonFrameLowering::insertPrologueInBlock(MachineBasicBlock &MBB,
   unsigned MaxCF = MFI.getMaxCallFrameSize();
   MachineBasicBlock::iterator InsertPt = MBB.begin();
 
-  auto *FuncInfo = MF.getInfo<HexagonMachineFunctionInfo>();
-  auto &AdjustRegs = FuncInfo->getAllocaAdjustInsts();
+  SmallVector<MachineInstr *, 4> AdjustRegs;
+  for (auto &MBB : MF)
+    for (auto &MI : MBB)
+      if (MI.getOpcode() == Hexagon::PS_alloca)
+        AdjustRegs.push_back(&MI);
 
   for (auto MI : AdjustRegs) {
     assert((MI->getOpcode() == Hexagon::PS_alloca) && "Expected alloca");

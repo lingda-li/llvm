@@ -37,6 +37,7 @@
 #include "llvm/MC/MCSubtargetInfo.h"
 #include "llvm/Object/Archive.h"
 #include "llvm/Object/COFF.h"
+#include "llvm/Object/COFFImportFile.h"
 #include "llvm/Object/ELFObjectFile.h"
 #include "llvm/Object/MachO.h"
 #include "llvm/Object/ObjectFile.h"
@@ -456,6 +457,15 @@ void SourcePrinter::printSourceLine(raw_ostream &OS, uint64_t Address,
   OldLineInfo = LineInfo;
 }
 
+static bool isArmElf(const ObjectFile *Obj) {
+  return (Obj->isELF() &&
+          (Obj->getArch() == Triple::aarch64 ||
+           Obj->getArch() == Triple::aarch64_be ||
+           Obj->getArch() == Triple::arm || Obj->getArch() == Triple::armeb ||
+           Obj->getArch() == Triple::thumb ||
+           Obj->getArch() == Triple::thumbeb));
+}
+
 class PrettyPrinter {
 public:
   virtual ~PrettyPrinter(){}
@@ -493,6 +503,8 @@ public:
   void printInst(MCInstPrinter &IP, const MCInst *MI, ArrayRef<uint8_t> Bytes,
                  uint64_t Address, raw_ostream &OS, StringRef Annot,
                  MCSubtargetInfo const &STI, SourcePrinter *SP) override {
+    if (SP && (PrintSource || PrintLines))
+      SP->printSourceLine(OS, Address, "");
     if (!MI) {
       printLead(Bytes, Address, OS);
       OS << " <unknown>";
@@ -513,6 +525,8 @@ public:
     while(!HeadTail.first.empty()) {
       OS << Separator;
       Separator = "\n";
+      if (SP && (PrintSource || PrintLines))
+        SP->printSourceLine(OS, Address, "");
       printLead(Bytes, Address, OS);
       OS << Preamble;
       Preamble = "   ";
@@ -1126,12 +1140,10 @@ static void DisassembleObject(const ObjectFile *Obj, bool InlineRelocs) {
     section_iterator SecI = *SectionOrErr;
     if (SecI == Obj->section_end())
       continue;
-    
-    // For AMDGPU we need to track symbol types
+
     uint8_t SymbolType = ELF::STT_NOTYPE;
-    if (Obj->isELF() && Obj->getArch() == Triple::amdgcn) {
+    if (Obj->isELF())
       SymbolType = getElfSymbolType(Obj, Symbol);
-    }
 
     AllSymbols[*SecI].emplace_back(Address, *Name, SymbolType);
 
@@ -1188,13 +1200,17 @@ static void DisassembleObject(const ObjectFile *Obj, bool InlineRelocs) {
     SectionSymbolsTy &Symbols = AllSymbols[Section];
     std::vector<uint64_t> DataMappingSymsAddr;
     std::vector<uint64_t> TextMappingSymsAddr;
-    if (Obj->isELF() && Obj->getArch() == Triple::aarch64) {
+    if (isArmElf(Obj)) {
       for (const auto &Symb : Symbols) {
         uint64_t Address = std::get<0>(Symb);
         StringRef Name = std::get<1>(Symb);
         if (Name.startswith("$d"))
           DataMappingSymsAddr.push_back(Address - SectionAddr);
         if (Name.startswith("$x"))
+          TextMappingSymsAddr.push_back(Address - SectionAddr);
+        if (Name.startswith("$a"))
+          TextMappingSymsAddr.push_back(Address - SectionAddr);
+        if (Name.startswith("$t"))
           TextMappingSymsAddr.push_back(Address - SectionAddr);
       }
     }
@@ -1229,7 +1245,10 @@ static void DisassembleObject(const ObjectFile *Obj, bool InlineRelocs) {
 
     // If the section has no symbol at the start, just insert a dummy one.
     if (Symbols.empty() || std::get<0>(Symbols[0]) != 0) {
-      Symbols.insert(Symbols.begin(), std::make_tuple(SectionAddr, name, ELF::STT_NOTYPE));
+      Symbols.insert(Symbols.begin(),
+                     std::make_tuple(SectionAddr, name, Section.isText()
+                                                            ? ELF::STT_FUNC
+                                                            : ELF::STT_OBJECT));
     }
 
     SmallString<40> Comments;
@@ -1291,8 +1310,10 @@ static void DisassembleObject(const ObjectFile *Obj, bool InlineRelocs) {
 
         // AArch64 ELF binaries can interleave data and text in the
         // same section. We rely on the markers introduced to
-        // understand what we need to dump.
-        if (Obj->isELF() && Obj->getArch() == Triple::aarch64) {
+        // understand what we need to dump. If the data marker is within a
+        // function, it is denoted as a word/short etc
+        if (isArmElf(Obj) && std::get<2>(Symbols[si]) != ELF::STT_OBJECT &&
+            !DisassembleAll) {
           uint64_t Stride = 0;
 
           auto DAI = std::lower_bound(DataMappingSymsAddr.begin(),
@@ -1305,15 +1326,41 @@ static void DisassembleObject(const ObjectFile *Obj, bool InlineRelocs) {
               if (Index + 4 <= End) {
                 Stride = 4;
                 dumpBytes(Bytes.slice(Index, 4), outs());
-                outs() << "\t.word";
+                outs() << "\t.word\t";
+                uint32_t Data = 0;
+                if (Obj->isLittleEndian()) {
+                  const auto Word =
+                      reinterpret_cast<const support::ulittle32_t *>(
+                          Bytes.data() + Index);
+                  Data = *Word;
+                } else {
+                  const auto Word = reinterpret_cast<const support::ubig32_t *>(
+                      Bytes.data() + Index);
+                  Data = *Word;
+                }
+                outs() << "0x" << format("%08" PRIx32, Data);
               } else if (Index + 2 <= End) {
                 Stride = 2;
                 dumpBytes(Bytes.slice(Index, 2), outs());
-                outs() << "\t.short";
+                outs() << "\t\t.short\t";
+                uint16_t Data = 0;
+                if (Obj->isLittleEndian()) {
+                  const auto Short =
+                      reinterpret_cast<const support::ulittle16_t *>(
+                          Bytes.data() + Index);
+                  Data = *Short;
+                } else {
+                  const auto Short =
+                      reinterpret_cast<const support::ubig16_t *>(Bytes.data() +
+                                                                  Index);
+                  Data = *Short;
+                }
+                outs() << "0x" << format("%04" PRIx16, Data);
               } else {
                 Stride = 1;
                 dumpBytes(Bytes.slice(Index, 1), outs());
-                outs() << "\t.byte";
+                outs() << "\t\t.byte\t";
+                outs() << "0x" << format("%02" PRIx8, Bytes.slice(Index, 1)[0]);
               }
               Index += Stride;
               outs() << "\n";
@@ -1325,9 +1372,50 @@ static void DisassembleObject(const ObjectFile *Obj, bool InlineRelocs) {
           }
         }
 
+        // If there is a data symbol inside an ELF text section and we are only
+        // disassembling text (applicable all architectures),
+        // we are in a situation where we must print the data and not
+        // disassemble it.
+        if (Obj->isELF() && std::get<2>(Symbols[si]) == ELF::STT_OBJECT &&
+            !DisassembleAll && Section.isText()) {
+          // print out data up to 8 bytes at a time in hex and ascii
+          uint8_t AsciiData[9] = {'\0'};
+          uint8_t Byte;
+          int NumBytes = 0;
+
+          for (Index = Start; Index < End; Index += 1) {
+            if (NumBytes == 0) {
+              outs() << format("%8" PRIx64 ":", SectionAddr + Index);
+              outs() << "\t";
+            }
+            Byte = Bytes.slice(Index)[0];
+            outs() << format(" %02x", Byte);
+            AsciiData[NumBytes] = isprint(Byte) ? Byte : '.';
+
+            uint8_t IndentOffset = 0;
+            NumBytes++;
+            if (Index == End - 1 || NumBytes > 8) {
+              // Indent the space for less than 8 bytes data.
+              // 2 spaces for byte and one for space between bytes
+              IndentOffset = 3 * (8 - NumBytes);
+              for (int Excess = 8 - NumBytes; Excess < 8; Excess++)
+                AsciiData[Excess] = '\0';
+              NumBytes = 8;
+            }
+            if (NumBytes == 8) {
+              AsciiData[8] = '\0';
+              outs() << std::string(IndentOffset, ' ') << "         ";
+              outs() << reinterpret_cast<char *>(AsciiData);
+              outs() << '\n';
+              NumBytes = 0;
+            }
+          }
+        }
         if (Index >= End)
           break;
 
+        // Disassemble a real instruction or a data when disassemble all is
+        // provided
         bool Disassembled = DisAsm->getInstruction(Inst, Size, Bytes.slice(Index),
                                                    SectionAddr + Index, DebugOut,
                                                    CommentStream);
@@ -1824,6 +1912,20 @@ static void DumpObject(const ObjectFile *o, const Archive *a = nullptr) {
   }
 }
 
+static void DumpObject(const COFFImportFile *I, const Archive *A) {
+  StringRef ArchiveName = A ? A->getFileName() : "";
+
+  // Avoid other output when using a raw option.
+  if (!RawClangAST)
+    outs() << '\n'
+           << ArchiveName << "(" << I->getFileName() << ")"
+           << ":\tfile format COFF-import-file"
+           << "\n\n";
+
+  if (SymbolTable)
+    printCOFFSymbolTable(I);
+}
+
 /// @brief Dump each object file in \a a;
 static void DumpArchive(const Archive *a) {
   Error Err;
@@ -1836,6 +1938,8 @@ static void DumpArchive(const Archive *a) {
     }
     if (ObjectFile *o = dyn_cast<ObjectFile>(&*ChildOrErr.get()))
       DumpObject(o, a);
+    else if (COFFImportFile *I = dyn_cast<COFFImportFile>(&*ChildOrErr.get()))
+      DumpObject(I, a);
     else
       report_error(a->getFileName(), object_error::invalid_file_type);
   }
