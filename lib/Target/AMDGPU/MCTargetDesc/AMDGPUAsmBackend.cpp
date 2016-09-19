@@ -120,6 +120,7 @@ static uint64_t adjustFixupValue(const MCFixup &Fixup, uint64_t Value,
   case FK_Data_4:
   case FK_Data_8:
   case FK_PCRel_4:
+  case FK_SecRel_4:
     return Value;
   default:
     llvm_unreachable("unhandled fixup kind");
@@ -132,24 +133,21 @@ void AMDGPUAsmBackend::processFixupValue(const MCAssembler &Asm,
                                          const MCValue &Target, uint64_t &Value,
                                          bool &IsResolved) {
   if (IsResolved)
-    (void)adjustFixupValue(Fixup, Value, &Asm.getContext());
-
+    Value = adjustFixupValue(Fixup, Value, &Asm.getContext());
 }
 
 void AMDGPUAsmBackend::applyFixup(const MCFixup &Fixup, char *Data,
                                   unsigned DataSize, uint64_t Value,
                                   bool IsPCRel) const {
-  unsigned NumBytes = getFixupKindNumBytes(Fixup.getKind());
   if (!Value)
     return; // Doesn't change encoding.
-
-  Value = adjustFixupValue(Fixup, Value, nullptr);
 
   MCFixupKindInfo Info = getFixupKindInfo(Fixup.getKind());
 
   // Shift the value into position.
   Value <<= Info.TargetOffset;
 
+  unsigned NumBytes = getFixupKindNumBytes(Fixup.getKind());
   uint32_t Offset = Fixup.getOffset();
   assert(Offset + NumBytes <= DataSize && "Invalid fixup offset!");
 

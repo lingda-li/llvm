@@ -21,6 +21,7 @@ using llvm::MachineLegalizer::LegalizeAction::MoreElements;
 using llvm::MachineLegalizer::LegalizeAction::Libcall;
 using llvm::MachineLegalizer::LegalizeAction::Custom;
 using llvm::MachineLegalizer::LegalizeAction::Unsupported;
+using llvm::MachineLegalizer::LegalizeAction::NotFound;
 
 // Define a couple of pretty printers to help debugging when things go wrong.
 namespace llvm {
@@ -36,6 +37,7 @@ operator<<(std::ostream &OS, const llvm::MachineLegalizer::LegalizeAction Act) {
   case Libcall: OS << "Libcall"; break;
   case Custom: OS << "Custom"; break;
   case Unsupported: OS << "Unsupported"; break;
+  case NotFound: OS << "NotFound";
   }
   return OS;
 }
@@ -107,18 +109,19 @@ TEST(MachineLegalizerTest, VectorRISC) {
 TEST(MachineLegalizerTest, MultipleTypes) {
   using namespace TargetOpcode;
   MachineLegalizer L;
+  LLT p0 = LLT::pointer(0, 64);
+  LLT s32 = LLT::scalar(32);
+  LLT s64 = LLT::scalar(64);
 
   // Typical RISCy set of operations based on AArch64.
-  L.setAction({G_PTRTOINT, 0, LLT::scalar(64)}, Legal);
-  L.setAction({G_PTRTOINT, 1, LLT::pointer(0)}, Legal);
+  L.setAction({G_PTRTOINT, 0, s64}, Legal);
+  L.setAction({G_PTRTOINT, 1, p0}, Legal);
 
-  L.setAction({G_PTRTOINT, 0, LLT::scalar(32)}, WidenScalar);
+  L.setAction({G_PTRTOINT, 0, s32}, WidenScalar);
   L.computeTables();
 
   // Check we infer the correct types and actually do what we're told.
-  ASSERT_EQ(L.getAction({G_PTRTOINT, 0, LLT::scalar(64)}),
-                        std::make_pair(Legal, LLT::scalar(64)));
-  ASSERT_EQ(L.getAction({G_PTRTOINT, 1, LLT::pointer(0)}),
-                        std::make_pair(Legal, LLT::pointer(0)));
+  ASSERT_EQ(L.getAction({G_PTRTOINT, 0, s64}), std::make_pair(Legal, s64));
+  ASSERT_EQ(L.getAction({G_PTRTOINT, 1, p0}), std::make_pair(Legal, p0));
 }
 }

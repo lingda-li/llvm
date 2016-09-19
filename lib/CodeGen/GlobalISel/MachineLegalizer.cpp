@@ -17,9 +17,12 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "llvm/CodeGen/MachineInstr.h"
-#include "llvm/CodeGen/ValueTypes.h"
 #include "llvm/CodeGen/GlobalISel/MachineLegalizer.h"
+
+#include "llvm/ADT/SmallBitVector.h"
+#include "llvm/CodeGen/MachineInstr.h"
+#include "llvm/CodeGen/MachineRegisterInfo.h"
+#include "llvm/CodeGen/ValueTypes.h"
 #include "llvm/IR/Type.h"
 #include "llvm/Target/TargetOpcodes.h"
 using namespace llvm;
@@ -39,14 +42,18 @@ MachineLegalizer::MachineLegalizer() : TablesInitialized(false) {
 }
 
 void MachineLegalizer::computeTables() {
-  for (auto &Op : Actions) {
-    LLT Ty = Op.first.Type;
-    if (!Ty.isVector())
-      continue;
+  for (unsigned Opcode = 0; Opcode <= LastOp - FirstOp; ++Opcode) {
+    for (unsigned Idx = 0; Idx != Actions[Opcode].size(); ++Idx) {
+      for (auto &Action : Actions[Opcode][Idx]) {
+        LLT Ty = Action.first;
+        if (!Ty.isVector())
+          continue;
 
-    auto &Entry = MaxLegalVectorElts[std::make_pair(Op.first.Opcode,
-                                                    Ty.getElementType())];
-    Entry = std::max(Entry, Ty.getNumElements());
+        auto &Entry = MaxLegalVectorElts[std::make_pair(Opcode + FirstOp,
+                                                        Ty.getElementType())];
+        Entry = std::max(Entry, Ty.getNumElements());
+      }
+    }
   }
 
   TablesInitialized = true;
@@ -68,9 +75,9 @@ MachineLegalizer::getAction(const InstrAspect &Aspect) const {
       Aspect.Opcode == TargetOpcode::G_EXTRACT)
     return std::make_pair(Legal, Aspect.Type);
 
-  auto ActionIt = Actions.find(Aspect);
-  if (ActionIt != Actions.end())
-    return findLegalAction(Aspect, ActionIt->second);
+  LegalizeAction Action = findInActions(Aspect);
+  if (Action != NotFound)
+    return findLegalAction(Aspect, Action);
 
   unsigned Opcode = Aspect.Opcode;
   LLT Ty = Aspect.Type;
@@ -107,17 +114,33 @@ MachineLegalizer::getAction(const InstrAspect &Aspect) const {
 }
 
 std::tuple<MachineLegalizer::LegalizeAction, unsigned, LLT>
-MachineLegalizer::getAction(const MachineInstr &MI) const {
-  for (unsigned i = 0; i < MI.getNumTypes(); ++i) {
-    auto Action = getAction({MI.getOpcode(), i, MI.getType(i)});
+MachineLegalizer::getAction(const MachineInstr &MI,
+                            const MachineRegisterInfo &MRI) const {
+  SmallBitVector SeenTypes(8);
+  const MCOperandInfo *OpInfo = MI.getDesc().OpInfo;
+  for (unsigned i = 0; i < MI.getDesc().getNumOperands(); ++i) {
+    if (!OpInfo[i].isGenericType())
+      continue;
+
+    // We don't want to repeatedly check the same operand index, that
+    // could get expensive.
+    unsigned TypeIdx = OpInfo[i].getGenericTypeIndex();
+    if (SeenTypes[TypeIdx])
+      continue;
+
+    SeenTypes.set(TypeIdx);
+
+    LLT Ty = MRI.getType(MI.getOperand(i).getReg());
+    auto Action = getAction({MI.getOpcode(), TypeIdx, Ty});
     if (Action.first != Legal)
-      return std::make_tuple(Action.first, i, Action.second);
+      return std::make_tuple(Action.first, TypeIdx, Action.second);
   }
   return std::make_tuple(Legal, 0, LLT{});
 }
 
-bool MachineLegalizer::isLegal(const MachineInstr &MI) const {
-  return std::get<0>(getAction(MI)) == Legal;
+bool MachineLegalizer::isLegal(const MachineInstr &MI,
+                               const MachineRegisterInfo &MRI) const {
+  return std::get<0>(getAction(MI, MRI)) == Legal;
 }
 
 LLT MachineLegalizer::findLegalType(const InstrAspect &Aspect,
@@ -127,6 +150,7 @@ LLT MachineLegalizer::findLegalType(const InstrAspect &Aspect,
     llvm_unreachable("Cannot find legal type");
   case Legal:
   case Lower:
+  case Libcall:
     return Aspect.Type;
   case NarrowScalar: {
     return findLegalType(Aspect,

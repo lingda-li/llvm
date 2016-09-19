@@ -25,7 +25,8 @@ foreach (VARNAME ${variables_to_filter})
 endforeach()
 
 # Enable the coverage instrumentation (it is disabled for the Fuzzer lib).
-set(CMAKE_CXX_FLAGS "${LIBFUZZER_FLAGS_BASE} -fsanitize-coverage=edge,indirect-calls -g")
+#set(CMAKE_CXX_FLAGS "${LIBFUZZER_FLAGS_BASE} -fno-sanitize-coverage=8bit-counters  -fsanitize-coverage=edge,indirect-calls,trace-cmp,trace-div,trace-gep,trace-pc-guard -g")
+set(CMAKE_CXX_FLAGS "${LIBFUZZER_FLAGS_BASE} -fsanitize-coverage=edge,indirect-calls,trace-cmp,trace-div,trace-gep -g")
 
 # add_libfuzzer_test(<name>
 #   SOURCES source0.cpp [source1.cpp ...]
@@ -62,12 +63,15 @@ set(TestBinaries)
 ###############################################################################
 
 set(Tests
+  AbsNegAndConstantTest
+  AbsNegAndConstant64Test
   AccumulateAllocationsTest
   BufferOverflowOnInput
   CallerCalleeTest
   CounterTest
   CustomCrossOverTest
   CustomMutatorTest
+  DivTest
   EmptyTest
   FourIndependentBranchesTest
   FullCoverageSetTest
@@ -75,6 +79,7 @@ set(Tests
   MemcmpTest
   LeakTest
   LeakTimeoutTest
+  LoadTest
   NullDerefTest
   NullDerefOnEmptyTest
   NthRunCrashTest
@@ -115,18 +120,6 @@ foreach(Test ${Tests})
   add_libfuzzer_test(${Test} SOURCES ${Test}.cpp)
 endforeach()
 
-###############################################################################
-# AFL Driver test
-###############################################################################
-
-add_executable(AFLDriverTest
-  AFLDriverTest.cpp ../afl/afl_driver.cpp)
-
-set_target_properties(AFLDriverTest
-    PROPERTIES RUNTIME_OUTPUT_DIRECTORY
-    "${CMAKE_BINARY_DIR}/lib/Fuzzer/test"
-    )
-set(TestBinaries ${TestBinaries} AFLDriverTest)
 
 ###############################################################################
 # Unit tests

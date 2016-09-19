@@ -337,6 +337,8 @@ Error LTO::addRegularLTO(std::unique_ptr<InputFile> Input,
     addSymbolToGlobalRes(Obj.get(), Used, Sym, Res, 0);
 
     GlobalValue *GV = Obj->getSymbolGV(Sym.I->getRawDataRefImpl());
+    if (Sym.getFlags() & object::BasicSymbolRef::SF_Undefined)
+      continue;
     if (Res.Prevailing && GV) {
       Keep.push_back(GV);
       switch (GV->getLinkage()) {
@@ -350,13 +352,14 @@ Error LTO::addRegularLTO(std::unique_ptr<InputFile> Input,
         break;
       }
     }
-    // Common resolution: collect the maximum size/alignment.
-    // FIXME: right now we ignore the prevailing information, it is not clear
-    // what is the "right" behavior here.
+    // Common resolution: collect the maximum size/alignment over all commons.
+    // We also record if we see an instance of a common as prevailing, so that
+    // if none is prevailing we can ignore it later.
     if (Sym.getFlags() & object::BasicSymbolRef::SF_Common) {
       auto &CommonRes = RegularLTO.Commons[Sym.getIRName()];
       CommonRes.Size = std::max(CommonRes.Size, Sym.getCommonSize());
       CommonRes.Align = std::max(CommonRes.Align, Sym.getCommonAlignment());
+      CommonRes.Prevailing |= Res.Prevailing;
     }
 
     // FIXME: use proposed local attribute for FinalDefinitionInLinkageUnit.
@@ -407,11 +410,15 @@ unsigned LTO::getMaxTasks() const {
 }
 
 Error LTO::run(AddOutputFn AddOutput) {
+  // Save the status of having a regularLTO combined module, as
+  // this is needed for generating the ThinLTO Task ID, and
+  // the CombinedModule will be moved at the end of runRegularLTO.
+  bool HasRegularLTO = RegularLTO.CombinedModule != nullptr;
   // Invoke regular LTO if there was a regular LTO module to start with.
-  if (RegularLTO.CombinedModule)
+  if (HasRegularLTO)
     if (auto E = runRegularLTO(AddOutput))
       return E;
-  return runThinLTO(AddOutput);
+  return runThinLTO(AddOutput, HasRegularLTO);
 }
 
 Error LTO::runRegularLTO(AddOutputFn AddOutput) {
@@ -419,6 +426,9 @@ Error LTO::runRegularLTO(AddOutputFn AddOutput) {
   // all the prevailing when adding the inputs, and we apply it here.
   const DataLayout &DL = RegularLTO.CombinedModule->getDataLayout();
   for (auto &I : RegularLTO.Commons) {
+    if (!I.second.Prevailing)
+      // Don't do anything if no instance of this common was prevailing.
+      continue;
     GlobalVariable *OldGV = RegularLTO.CombinedModule->getNamedGlobal(I.first);
     if (OldGV && DL.getTypeAllocSize(OldGV->getValueType()) == I.second.Size) {
       // Don't create a new global if the type is already correct, just make
@@ -477,11 +487,11 @@ class lto::ThinBackendProc {
 protected:
   Config &Conf;
   ModuleSummaryIndex &CombinedIndex;
-  StringMap<GVSummaryMapTy> &ModuleToDefinedGVSummaries;
+  const StringMap<GVSummaryMapTy> &ModuleToDefinedGVSummaries;
 
 public:
   ThinBackendProc(Config &Conf, ModuleSummaryIndex &CombinedIndex,
-                  StringMap<GVSummaryMapTy> &ModuleToDefinedGVSummaries)
+                  const StringMap<GVSummaryMapTy> &ModuleToDefinedGVSummaries)
       : Conf(Conf), CombinedIndex(CombinedIndex),
         ModuleToDefinedGVSummaries(ModuleToDefinedGVSummaries) {}
 
@@ -503,10 +513,11 @@ class InProcessThinBackend : public ThinBackendProc {
   std::mutex ErrMu;
 
 public:
-  InProcessThinBackend(Config &Conf, ModuleSummaryIndex &CombinedIndex,
-                       unsigned ThinLTOParallelismLevel,
-                       StringMap<GVSummaryMapTy> &ModuleToDefinedGVSummaries,
-                       AddOutputFn AddOutput)
+  InProcessThinBackend(
+      Config &Conf, ModuleSummaryIndex &CombinedIndex,
+      unsigned ThinLTOParallelismLevel,
+      const StringMap<GVSummaryMapTy> &ModuleToDefinedGVSummaries,
+      AddOutputFn AddOutput)
       : ThinBackendProc(Conf, CombinedIndex, ModuleToDefinedGVSummaries),
         BackendThreadPool(ThinLTOParallelismLevel),
         AddOutput(std::move(AddOutput)) {}
@@ -551,13 +562,16 @@ public:
       const std::map<GlobalValue::GUID, GlobalValue::LinkageTypes> &ResolvedODR,
       MapVector<StringRef, MemoryBufferRef> &ModuleMap) override {
     StringRef ModulePath = MBRef.getBufferIdentifier();
+    assert(ModuleToDefinedGVSummaries.count(ModulePath));
+    const GVSummaryMapTy &DefinedGlobals =
+        ModuleToDefinedGVSummaries.find(ModulePath)->second;
     BackendThreadPool.async(
         [=](MemoryBufferRef MBRef, ModuleSummaryIndex &CombinedIndex,
             const FunctionImporter::ImportMapTy &ImportList,
             const FunctionImporter::ExportSetTy &ExportList,
             const std::map<GlobalValue::GUID, GlobalValue::LinkageTypes>
                 &ResolvedODR,
-            GVSummaryMapTy &DefinedGlobals,
+            const GVSummaryMapTy &DefinedGlobals,
             MapVector<StringRef, MemoryBufferRef> &ModuleMap) {
           Error E = runThinLTOBackendThread(
               AddOutput, Task, MBRef, CombinedIndex, ImportList, ExportList,
@@ -571,8 +585,8 @@ public:
           }
         },
         MBRef, std::ref(CombinedIndex), std::ref(ImportList),
-        std::ref(ExportList), std::ref(ResolvedODR),
-        std::ref(ModuleToDefinedGVSummaries[ModulePath]), std::ref(ModuleMap));
+        std::ref(ExportList), std::ref(ResolvedODR), std::ref(DefinedGlobals),
+        std::ref(ModuleMap));
     return Error();
   }
 
@@ -587,7 +601,7 @@ public:
 
 ThinBackend lto::createInProcessThinBackend(unsigned ParallelismLevel) {
   return [=](Config &Conf, ModuleSummaryIndex &CombinedIndex,
-             StringMap<GVSummaryMapTy> &ModuleToDefinedGVSummaries,
+             const StringMap<GVSummaryMapTy> &ModuleToDefinedGVSummaries,
              AddOutputFn AddOutput) {
     return llvm::make_unique<InProcessThinBackend>(
         Conf, CombinedIndex, ParallelismLevel, ModuleToDefinedGVSummaries,
@@ -603,11 +617,11 @@ class WriteIndexesThinBackend : public ThinBackendProc {
   std::unique_ptr<llvm::raw_fd_ostream> LinkedObjectsFile;
 
 public:
-  WriteIndexesThinBackend(Config &Conf, ModuleSummaryIndex &CombinedIndex,
-                          StringMap<GVSummaryMapTy> &ModuleToDefinedGVSummaries,
-                          std::string OldPrefix, std::string NewPrefix,
-                          bool ShouldEmitImportsFiles,
-                          std::string LinkedObjectsFileName)
+  WriteIndexesThinBackend(
+      Config &Conf, ModuleSummaryIndex &CombinedIndex,
+      const StringMap<GVSummaryMapTy> &ModuleToDefinedGVSummaries,
+      std::string OldPrefix, std::string NewPrefix, bool ShouldEmitImportsFiles,
+      std::string LinkedObjectsFileName)
       : ThinBackendProc(Conf, CombinedIndex, ModuleToDefinedGVSummaries),
         OldPrefix(OldPrefix), NewPrefix(NewPrefix),
         ShouldEmitImportsFiles(ShouldEmitImportsFiles),
@@ -678,7 +692,7 @@ ThinBackend lto::createWriteIndexesThinBackend(std::string OldPrefix,
                                                bool ShouldEmitImportsFiles,
                                                std::string LinkedObjectsFile) {
   return [=](Config &Conf, ModuleSummaryIndex &CombinedIndex,
-             StringMap<GVSummaryMapTy> &ModuleToDefinedGVSummaries,
+             const StringMap<GVSummaryMapTy> &ModuleToDefinedGVSummaries,
              AddOutputFn AddOutput) {
     return llvm::make_unique<WriteIndexesThinBackend>(
         Conf, CombinedIndex, ModuleToDefinedGVSummaries, OldPrefix, NewPrefix,
@@ -686,7 +700,7 @@ ThinBackend lto::createWriteIndexesThinBackend(std::string OldPrefix,
   };
 }
 
-Error LTO::runThinLTO(AddOutputFn AddOutput) {
+Error LTO::runThinLTO(AddOutputFn AddOutput, bool HasRegularLTO) {
   if (ThinLTO.ModuleMap.empty())
     return Error();
 
@@ -743,9 +757,8 @@ Error LTO::runThinLTO(AddOutputFn AddOutput) {
   // ParallelCodeGenParallelismLevel if an LTO module is present, as tasks 0
   // through ParallelCodeGenParallelismLevel-1 are reserved for parallel code
   // generation partitions.
-  unsigned Task = RegularLTO.CombinedModule
-                      ? RegularLTO.ParallelCodeGenParallelismLevel
-                      : 0;
+  unsigned Task =
+      HasRegularLTO ? RegularLTO.ParallelCodeGenParallelismLevel : 0;
   unsigned Partition = 1;
 
   for (auto &Mod : ThinLTO.ModuleMap) {

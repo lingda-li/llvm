@@ -108,6 +108,7 @@ void PrintHexArray(const uint8_t *Data, size_t Size,
 void PrintASCII(const uint8_t *Data, size_t Size, const char *PrintAfter = "");
 void PrintASCII(const Unit &U, const char *PrintAfter = "");
 void PrintASCII(const Word &W, const char *PrintAfter = "");
+void PrintPC(const char *SymbolizedFMT, const char *FallbackFMT, uintptr_t PC);
 std::string Hash(const Unit &U);
 void SetTimer(int Seconds);
 void SetSigSegvHandler();
@@ -136,9 +137,6 @@ bool IsASCII(const uint8_t *Data, size_t Size);
 int NumberOfCpuCores();
 int GetPid();
 void SleepSeconds(int Seconds);
-
-// See FuzzerTracePC.cpp
-size_t PCMapMergeFromCurrent(ValueBitMap &M);
 
 // See FuzzerTraceState.cpp
 void EnableValueProfile();
@@ -229,7 +227,6 @@ struct FuzzingOptions {
   int MutateDepth = 5;
   bool UseCounters = false;
   bool UseIndirCalls = true;
-  bool UseTraces = false;
   bool UseMemcmp = true;
   bool UseMemmem = true;
   bool UseFullCoverageSet = false;
@@ -247,6 +244,7 @@ struct FuzzingOptions {
   bool OutputCSV = false;
   bool PrintNewCovPcs = false;
   bool PrintFinalStats = false;
+  bool PrintCoverage = false;
   bool DetectLeaks = true;
   bool TruncateUnits = false;
   bool PruneCorpus = true;
@@ -359,6 +357,70 @@ private:
   std::vector<Mutator> DefaultMutators;
 };
 
+// See TracePC.cpp
+class TracePC {
+ public:
+  void HandleTrace(uintptr_t *guard, uintptr_t PC);
+  void HandleInit(uintptr_t *start, uintptr_t *stop);
+  void HandleCallerCallee(uintptr_t Caller, uintptr_t Callee);
+  size_t GetTotalCoverage() { return TotalCoverage; }
+  void SetUseCounters(bool UC) { UseCounters = UC; }
+  size_t UpdateCounterMap(ValueBitMap *Map);
+  void FinalizeTrace();
+
+  size_t GetNewPCsAndFlush(uintptr_t **NewPCsPtr = nullptr) {
+    if (NewPCsPtr)
+      *NewPCsPtr = NewPCs;
+    size_t Res = NumNewPCs;
+    NumNewPCs = 0;
+    return Res;
+  }
+
+  void Reset() {
+    TotalCoverage = 0;
+    TotalCounterBits = 0;
+    NumNewPCs = 0;
+    CounterMap.Reset();
+    TotalCoverageMap.Reset();
+    ResetGuards();
+  }
+
+  void PrintModuleInfo();
+
+  void PrintCoverage();
+
+private:
+  bool UseCounters = false;
+  size_t TotalCoverage = 0;
+  size_t TotalCounterBits = 0;
+
+  static const size_t kMaxNewPCs = 64;
+  uintptr_t NewPCs[kMaxNewPCs];
+  size_t NumNewPCs = 0;
+  void AddNewPC(uintptr_t PC) { NewPCs[(NumNewPCs++) % kMaxNewPCs] = PC; }
+
+  void ResetGuards();
+
+  struct Module {
+    uintptr_t *Start, *Stop;
+  };
+
+  Module Modules[4096];
+  size_t NumModules = 0;
+  size_t NumGuards = 0;
+
+  static const size_t kNumCounters = 1 << 14;
+  uint8_t Counters[kNumCounters];
+
+  static const size_t kNumPCs = 1 << 20;
+  uintptr_t PCs[kNumPCs];
+
+  ValueBitMap CounterMap;
+  ValueBitMap TotalCoverageMap;
+};
+
+extern TracePC TPC;
+
 class Fuzzer {
 public:
 
@@ -371,23 +433,19 @@ public:
       CallerCalleeCoverage = 0;
       CounterBitmapBits = 0;
       CounterBitmap.clear();
-      PCMap.Reset();
-      PCMapBits = 0;
       VPMap.Reset();
+      TPCMap.Reset();
       VPMapBits = 0;
-      PcBufferPos = 0;
     }
 
     std::string DebugString() const;
 
     size_t BlockCoverage;
     size_t CallerCalleeCoverage;
-    size_t PcBufferPos;
     // Precalculated number of bits in CounterBitmap.
     size_t CounterBitmapBits;
     std::vector<uint8_t> CounterBitmap;
-    ValueBitMap PCMap;
-    size_t PCMapBits;
+    ValueBitMap TPCMap;
     ValueBitMap VPMap;
     size_t VPMapBits;
   };
@@ -456,6 +514,7 @@ private:
   void MutateAndTestOne();
   void ReportNewCoverage(const Unit &U);
   void PrintNewPCs();
+  void PrintOneNewPC(uintptr_t PC);
   bool RunOne(const Unit &U) { return RunOne(U.data(), U.size()); }
   void RunOneAndUpdateCorpus(const uint8_t *Data, size_t Size);
   void WriteToOutputCorpus(const Unit &U);
@@ -520,10 +579,12 @@ private:
   // For -print_pcs
   uintptr_t* PcBuffer = nullptr;
   size_t PcBufferLen = 0;
-  size_t PrevPcBufferPos;
+  size_t PcBufferPos = 0, PrevPcBufferPos = 0;
 
   // Need to know our own thread.
   static thread_local bool IsMyThread;
+
+  bool InMergeMode = false;
 };
 
 // Global interface to functions that may or may not be available.

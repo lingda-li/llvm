@@ -205,11 +205,9 @@ define i1 @test16(i84 %X) {
   ret i1 %cmp
 }
 
-; FIXME: Vectors should fold too.
 define <2 x i1> @test16vec(<2 x i84> %X) {
 ; CHECK-LABEL: @test16vec(
-; CHECK-NEXT:    [[SHR1:%.*]] = lshr <2 x i84> %X, <i84 4, i84 4>
-; CHECK-NEXT:    [[AND:%.*]] = and <2 x i84> [[SHR1]], <i84 1, i84 1>
+; CHECK-NEXT:    [[AND:%.*]] = and <2 x i84> %X, <i84 16, i84 16>
 ; CHECK-NEXT:    [[CMP:%.*]] = icmp ne <2 x i84> [[AND]], zeroinitializer
 ; CHECK-NEXT:    ret <2 x i1> [[CMP]]
 ;
@@ -280,11 +278,9 @@ define i1 @test19a(i39 %A) {
   ret i1 %C
 }
 
-; FIXME: Vectors should fold too.
 define <2 x i1> @test19a_vec(<2 x i39> %A) {
 ; CHECK-LABEL: @test19a_vec(
-; CHECK-NEXT:    [[B_MASK:%.*]] = and <2 x i39> %A, <i39 -4, i39 -4>
-; CHECK-NEXT:    [[C:%.*]] = icmp eq <2 x i39> [[B_MASK]], <i39 -4, i39 -4>
+; CHECK-NEXT:    [[C:%.*]] = icmp ugt <2 x i39> %A, <i39 -5, i39 -5>
 ; CHECK-NEXT:    ret <2 x i1> [[C]]
 ;
   %B = ashr <2 x i39> %A, <i39 2, i39 2>

@@ -366,7 +366,8 @@ unsigned RegisterBankInfo::getSizeInBits(unsigned Reg,
     // get the size of that register class.
     RC = TRI.getMinimalPhysRegClass(Reg);
   } else {
-    unsigned RegSize = MRI.getSize(Reg);
+    LLT Ty = MRI.getType(Reg);
+    unsigned RegSize = Ty.isValid() ? Ty.getSizeInBits() : 0;
     // If Reg is not a generic register, query the register class to
     // get its size.
     if (RegSize)
@@ -389,7 +390,7 @@ void RegisterBankInfo::PartialMapping::dump() const {
 bool RegisterBankInfo::PartialMapping::verify() const {
   assert(RegBank && "Register bank not set");
   assert(Length && "Empty mapping");
-  assert((StartIdx < getHighBitIdx()) && "Overflow, switch to APInt?");
+  assert((StartIdx <= getHighBitIdx()) && "Overflow, switch to APInt?");
   // Check if the minimum width fits into RegBank.
   assert(RegBank->getSize() >= Length && "Register bank too small for Mask");
   return true;
@@ -512,7 +513,7 @@ RegisterBankInfo::OperandsMapper::OperandsMapper(
     MachineRegisterInfo &MRI)
     : MRI(MRI), MI(MI), InstrMapping(InstrMapping) {
   unsigned NumOpds = MI.getNumOperands();
-  OpToNewVRegIdx.reset(new int[NumOpds]);
+  OpToNewVRegIdx.resize(NumOpds);
   std::fill(&OpToNewVRegIdx[0], &OpToNewVRegIdx[NumOpds],
             OperandsMapper::DontKnowIdx);
   assert(InstrMapping.verify(MI) && "Invalid mapping for MI");
@@ -565,7 +566,7 @@ void RegisterBankInfo::OperandsMapper::createVRegs(unsigned OpIdx) {
   for (unsigned &NewVReg : NewVRegsForOpIdx) {
     assert(PartMap != PartMapList.end() && "Out-of-bound access");
     assert(NewVReg == 0 && "Register has already been created");
-    NewVReg = MRI.createGenericVirtualRegister(PartMap->Length);
+    NewVReg = MRI.createGenericVirtualRegister(LLT::scalar(PartMap->Length));
     MRI.setRegBank(NewVReg, *PartMap->RegBank);
     ++PartMap;
   }

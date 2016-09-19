@@ -81,12 +81,10 @@ template<> struct FoldingSetTrait<SDVTListNode> : DefaultFoldingSetTrait<SDVTLis
   }
 };
 
-template <> struct ilist_traits<SDNode> : public ilist_default_traits<SDNode> {
+template <> struct ilist_alloc_traits<SDNode> {
   static void deleteNode(SDNode *) {
     llvm_unreachable("ilist_traits<SDNode> shouldn't see a deleteNode call!");
   }
-private:
-  static void createNode(const SDNode &);
 };
 
 /// Keeps track of dbg_value information through SDISel.  We do
@@ -665,11 +663,6 @@ public:
 
     SmallVector<SDValue, 16> Ops(VT.getVectorNumElements(), Op);
     return getNode(ISD::BUILD_VECTOR, DL, VT, Ops);
-  }
-
-  /// Return a splat ISD::BUILD_VECTOR node, but with Op's SDLoc.
-  SDValue getSplatBuildVector(EVT VT, SDValue Op) {
-    return getSplatBuildVector(VT, SDLoc(Op), Op);
   }
 
   /// \brief Returns an ISD::VECTOR_SHUFFLE node semantically equivalent to
