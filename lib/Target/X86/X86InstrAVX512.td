@@ -6267,14 +6267,13 @@ multiclass avx512_cvtps2ph<X86VectorVTInfo _dest, X86VectorVTInfo _src,
                    (ins _src.RC:$src1, i32u8imm:$src2),
                    "vcvtps2ph", "$src2, $src1", "$src1, $src2",
                    (X86cvtps2ph (_src.VT _src.RC:$src1),
-                                (i32 imm:$src2),
-                                (i32 FROUND_CURRENT)),
+                                (i32 imm:$src2)),
                    NoItinerary, 0, 0, X86select>, AVX512AIi8Base;
   def mr : AVX512AIi8<0x1D, MRMDestMem, (outs),
              (ins x86memop:$dst, _src.RC:$src1, i32u8imm:$src2),
              "vcvtps2ph\t{$src2, $src1, $dst|$dst, $src1, $src2}",
              [(store (_dest.VT (X86cvtps2ph (_src.VT _src.RC:$src1),
-                                     (i32 imm:$src2), (i32 FROUND_CURRENT) )),
+                                     (i32 imm:$src2))),
                                      addr:$dst)]>;
   let hasSideEffects = 0, mayStore = 1 in
   def mrk : AVX512AIi8<0x1D, MRMDestMem, (outs),
@@ -6283,13 +6282,12 @@ multiclass avx512_cvtps2ph<X86VectorVTInfo _dest, X86VectorVTInfo _src,
               []>, EVEX_K;
 }
 multiclass avx512_cvtps2ph_sae<X86VectorVTInfo _dest, X86VectorVTInfo _src> {
-  defm rb : AVX512_maskable<0x1D, MRMDestReg, _dest ,(outs _dest.RC:$dst),
+  let hasSideEffects = 0 in
+  defm rb : AVX512_maskable_in_asm<0x1D, MRMDestReg, _dest,
+                   (outs _dest.RC:$dst),
                    (ins _src.RC:$src1, i32u8imm:$src2),
                    "vcvtps2ph", "$src2, {sae}, $src1", "$src1, {sae}, $src2",
-                   (X86cvtps2ph (_src.VT _src.RC:$src1),
-                                (i32 imm:$src2),
-                                (i32 FROUND_NO_EXC)),
-                   NoItinerary, 0, 0, X86select>, EVEX_B, AVX512AIi8Base;
+                   []>, EVEX_B, AVX512AIi8Base;
 }
 let Predicates = [HasAVX512] in {
   defm VCVTPS2PHZ : avx512_cvtps2ph<v16i16x_info, v16f32_info, f256mem>,
@@ -6303,7 +6301,7 @@ let Predicates = [HasAVX512] in {
   }
 }
 
-// Patterns for  matching conversions from float to half-float and vice versa.
+// Patterns for matching conversions from float to half-float and vice versa.
 let Predicates = [HasVLX] in {
   // Use MXCSR.RC for rounding instead of explicitly specifying the default
   // rounding mode (Nearest-Even, encoded as 0). Both are equivalent in the
@@ -6321,6 +6319,35 @@ let Predicates = [HasVLX] in {
   def : Pat<(f16_to_fp (i16 (fp_to_f16 FR32X:$src))),
             (f32 (COPY_TO_REGCLASS (VCVTPH2PSZ128rr
               (VCVTPS2PHZ128rr (COPY_TO_REGCLASS FR32X:$src, VR128X), 4)), FR32X)) >;
+}
+
+// Patterns for matching float to half-float conversion when AVX512 is supported
+// but F16C isn't. In that case we have to use 512-bit vectors.
+let Predicates = [HasAVX512, NoVLX, NoF16C] in {
+  def : Pat<(fp_to_f16 FR32X:$src),
+            (i16 (EXTRACT_SUBREG
+                  (VMOVPDI2DIZrr
+                   (v8i16 (EXTRACT_SUBREG
+                    (VCVTPS2PHZrr
+                     (INSERT_SUBREG (v16f32 (IMPLICIT_DEF)),
+                      (v4f32 (COPY_TO_REGCLASS FR32X:$src, VR128X)),
+                      sub_xmm), 4), sub_xmm))), sub_16bit))>;
+
+  def : Pat<(f16_to_fp GR16:$src),
+            (f32 (COPY_TO_REGCLASS
+                  (v4f32 (EXTRACT_SUBREG
+                   (VCVTPH2PSZrr
+                    (INSERT_SUBREG (v16i16 (IMPLICIT_DEF)),
+                     (v8i16 (COPY_TO_REGCLASS (MOVSX32rr16 GR16:$src), VR128X)),
+                     sub_xmm)), sub_xmm)), FR32X))>;
+
+  def : Pat<(f16_to_fp (i16 (fp_to_f16 FR32X:$src))),
+            (f32 (COPY_TO_REGCLASS
+                  (v4f32 (EXTRACT_SUBREG
+                          (VCVTPH2PSZrr
+                           (VCVTPS2PHZrr (INSERT_SUBREG (v16f32 (IMPLICIT_DEF)),
+                            (v4f32 (COPY_TO_REGCLASS FR32X:$src, VR128X)),
+                            sub_xmm), 4)), sub_xmm)), FR32X))>;
 }
 
 //  Unordered/Ordered scalar fp compare with Sea and set EFLAGS

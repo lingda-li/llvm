@@ -350,7 +350,7 @@ X86TargetLowering::X86TargetLowering(const X86TargetMachine &TM,
   // If we don't have F16C support, then lower half float conversions
   // into library calls.
   if (Subtarget.useSoftFloat() ||
-      (!Subtarget.hasF16C() && !Subtarget.hasVLX())) {
+      (!Subtarget.hasF16C() && !Subtarget.hasAVX512())) {
     setOperationAction(ISD::FP16_TO_FP, MVT::f32, Expand);
     setOperationAction(ISD::FP_TO_FP16, MVT::f32, Expand);
   }
@@ -14635,22 +14635,22 @@ static SDValue LowerFABSorFNEG(SDValue Op, SelectionDAG &DAG) {
 static SDValue LowerFCOPYSIGN(SDValue Op, SelectionDAG &DAG) {
   const TargetLowering &TLI = DAG.getTargetLoweringInfo();
   LLVMContext *Context = DAG.getContext();
-  SDValue Op0 = Op.getOperand(0);
-  SDValue Op1 = Op.getOperand(1);
+  SDValue Mag = Op.getOperand(0);
+  SDValue Sign = Op.getOperand(1);
   SDLoc dl(Op);
   MVT VT = Op.getSimpleValueType();
-  MVT SrcVT = Op1.getSimpleValueType();
+  MVT SignVT = Sign.getSimpleValueType();
   bool IsF128 = (VT == MVT::f128);
 
-  // If second operand is smaller, extend it first.
-  if (SrcVT.bitsLT(VT)) {
-    Op1 = DAG.getNode(ISD::FP_EXTEND, dl, VT, Op1);
-    SrcVT = VT;
+  // If the sign operand is smaller, extend it first.
+  if (SignVT.bitsLT(VT)) {
+    Sign = DAG.getNode(ISD::FP_EXTEND, dl, VT, Sign);
+    SignVT = VT;
   }
   // And if it is bigger, shrink it first.
-  if (SrcVT.bitsGT(VT)) {
-    Op1 = DAG.getNode(ISD::FP_ROUND, dl, VT, Op1, DAG.getIntPtrConstant(1, dl));
-    SrcVT = VT;
+  if (SignVT.bitsGT(VT)) {
+    Sign = DAG.getNode(ISD::FP_ROUND, dl, VT, Sign, DAG.getIntPtrConstant(1, dl));
+    SignVT = VT;
   }
 
   // At this point the operands and the result should have the same
@@ -14669,7 +14669,7 @@ static SDValue LowerFCOPYSIGN(SDValue Op, SelectionDAG &DAG) {
 
   // First, clear all bits but the sign bit from the second operand (sign).
   CV[0] = ConstantFP::get(*Context,
-                          APFloat(Sem, APInt::getHighBitsSet(SizeInBits, 1)));
+                          APFloat(Sem, APInt::getSignBit(SizeInBits)));
   Constant *C = ConstantVector::get(CV);
   auto PtrVT = TLI.getPointerTy(DAG.getDataLayout());
   SDValue CPIdx = DAG.getConstantPool(C, PtrVT, 16);
@@ -14678,46 +14678,46 @@ static SDValue LowerFCOPYSIGN(SDValue Op, SelectionDAG &DAG) {
   // scalar FP logic instructions in SSE. This allows load folding of the
   // constants into the logic instructions.
   MVT LogicVT = (VT == MVT::f64) ? MVT::v2f64 : (IsF128 ? MVT::f128 : MVT::v4f32);
-  SDValue Mask1 =
+  SDValue SignMask =
       DAG.getLoad(LogicVT, dl, DAG.getEntryNode(), CPIdx,
                   MachinePointerInfo::getConstantPool(DAG.getMachineFunction()),
                   /* Alignment = */ 16);
   if (!IsF128)
-    Op1 = DAG.getNode(ISD::SCALAR_TO_VECTOR, dl, LogicVT, Op1);
-  SDValue SignBit = DAG.getNode(X86ISD::FAND, dl, LogicVT, Op1, Mask1);
+    Sign = DAG.getNode(ISD::SCALAR_TO_VECTOR, dl, LogicVT, Sign);
+  SDValue SignBit = DAG.getNode(X86ISD::FAND, dl, LogicVT, Sign, SignMask);
 
   // Next, clear the sign bit from the first operand (magnitude).
   // If it's a constant, we can clear it here.
-  if (ConstantFPSDNode *Op0CN = dyn_cast<ConstantFPSDNode>(Op0)) {
+  if (ConstantFPSDNode *Op0CN = dyn_cast<ConstantFPSDNode>(Mag)) {
     APFloat APF = Op0CN->getValueAPF();
     // If the magnitude is a positive zero, the sign bit alone is enough.
     if (APF.isPosZero())
       return IsF128 ? SignBit :
-          DAG.getNode(ISD::EXTRACT_VECTOR_ELT, dl, SrcVT, SignBit,
+          DAG.getNode(ISD::EXTRACT_VECTOR_ELT, dl, SignVT, SignBit,
                       DAG.getIntPtrConstant(0, dl));
     APF.clearSign();
     CV[0] = ConstantFP::get(*Context, APF);
   } else {
-    CV[0] = ConstantFP::get(
-        *Context,
-        APFloat(Sem, APInt::getLowBitsSet(SizeInBits, SizeInBits - 1)));
+    CV[0] = ConstantFP::get(*Context,
+                            APFloat(Sem, ~APInt::getSignBit(SizeInBits)));
   }
   C = ConstantVector::get(CV);
   CPIdx = DAG.getConstantPool(C, PtrVT, 16);
-  SDValue Val =
+  SDValue MagMask =
       DAG.getLoad(LogicVT, dl, DAG.getEntryNode(), CPIdx,
                   MachinePointerInfo::getConstantPool(DAG.getMachineFunction()),
                   /* Alignment = */ 16);
   // If the magnitude operand wasn't a constant, we need to AND out the sign.
-  if (!isa<ConstantFPSDNode>(Op0)) {
+  SDValue MagBits = MagMask;
+  if (!isa<ConstantFPSDNode>(Mag)) {
     if (!IsF128)
-      Op0 = DAG.getNode(ISD::SCALAR_TO_VECTOR, dl, LogicVT, Op0);
-    Val = DAG.getNode(X86ISD::FAND, dl, LogicVT, Op0, Val);
+      Mag = DAG.getNode(ISD::SCALAR_TO_VECTOR, dl, LogicVT, Mag);
+    MagBits = DAG.getNode(X86ISD::FAND, dl, LogicVT, Mag, MagMask);
   }
   // OR the magnitude value with the sign bit.
-  Val = DAG.getNode(X86ISD::FOR, dl, LogicVT, Val, SignBit);
-  return IsF128 ? Val :
-      DAG.getNode(ISD::EXTRACT_VECTOR_ELT, dl, SrcVT, Val,
+  SDValue Or = DAG.getNode(X86ISD::FOR, dl, LogicVT, MagBits, SignBit);
+  return IsF128 ? Or :
+      DAG.getNode(ISD::EXTRACT_VECTOR_ELT, dl, SignVT, Or,
                   DAG.getIntPtrConstant(0, dl));
 }
 
@@ -16014,8 +16014,8 @@ SDValue X86TargetLowering::LowerSELECT(SDValue Op, SelectionDAG &DAG) const {
 
     if (SSECC != 8) {
       if (Subtarget.hasAVX512()) {
-        SDValue Cmp = DAG.getNode(X86ISD::FSETCC, DL, MVT::i1, CondOp0, CondOp1,
-                                  DAG.getConstant(SSECC, DL, MVT::i8));
+        SDValue Cmp = DAG.getNode(X86ISD::FSETCCM, DL, MVT::i1, CondOp0,
+                                  CondOp1, DAG.getConstant(SSECC, DL, MVT::i8));
         return DAG.getNode(X86ISD::SELECT, DL, VT, Cmp, Op1, Op2);
       }
 
@@ -17510,7 +17510,7 @@ static SDValue getVectorMaskingNode(SDValue Op, SDValue Mask,
   case X86ISD::VTRUNC:
   case X86ISD::VTRUNCS:
   case X86ISD::VTRUNCUS:
-  case ISD::FP_TO_FP16:
+  case X86ISD::CVTPS2PH:
     // We can't use ISD::VSELECT here because it is not always "Legal"
     // for the destination type. For example vpmovqb require only AVX512
     // and vselect that can operate on byte element type require BWI
@@ -17541,7 +17541,8 @@ static SDValue getScalarMaskingNode(SDValue Op, SDValue Mask,
   // The mask should be of type MVT::i1
   SDValue IMask = DAG.getNode(ISD::TRUNCATE, dl, MVT::i1, Mask);
 
-  if (Op.getOpcode() == X86ISD::FSETCC)
+  if (Op.getOpcode() == X86ISD::FSETCCM ||
+      Op.getOpcode() == X86ISD::FSETCCM_RND)
     return DAG.getNode(ISD::AND, dl, VT, Op, IMask);
   if (Op.getOpcode() == X86ISD::VFPCLASS ||
       Op.getOpcode() == X86ISD::VFPCLASSS)
@@ -17645,13 +17646,7 @@ static SDValue LowerINTRINSIC_WO_CHAIN(SDValue Op, const X86Subtarget &Subtarget
           DAG.getConstant(X86::STATIC_ROUNDING::CUR_DIRECTION, dl, MVT::i32);
       else
         RoundingMode = Op.getOperand(4);
-      unsigned IntrWithRoundingModeOpcode = IntrData->Opc1;
-      if (IntrWithRoundingModeOpcode != 0)
-        if (cast<ConstantSDNode>(RoundingMode)->getZExtValue() !=
-            X86::STATIC_ROUNDING::CUR_DIRECTION)
-          return getVectorMaskingNode(DAG.getNode(IntrWithRoundingModeOpcode,
-                                      dl, Op.getValueType(), Src, RoundingMode),
-                                      Mask, PassThru, Subtarget, DAG);
+      assert(IntrData->Opc1 == 0 && "Unexpected second opcode!");
       return getVectorMaskingNode(DAG.getNode(IntrData->Opc0, dl, VT, Src,
                                               RoundingMode),
                                   Mask, PassThru, Subtarget, DAG);
@@ -18114,10 +18109,10 @@ static SDValue LowerINTRINSIC_WO_CHAIN(SDValue Op, const X86Subtarget &Subtarget
       SDValue FCmp;
       if (cast<ConstantSDNode>(Sae)->getZExtValue() ==
           X86::STATIC_ROUNDING::CUR_DIRECTION)
-        FCmp = DAG.getNode(X86ISD::FSETCC, dl, MVT::i1, LHS, RHS,
+        FCmp = DAG.getNode(X86ISD::FSETCCM, dl, MVT::i1, LHS, RHS,
                                   DAG.getConstant(CondVal, dl, MVT::i8));
       else
-        FCmp = DAG.getNode(X86ISD::FSETCC, dl, MVT::i1, LHS, RHS,
+        FCmp = DAG.getNode(X86ISD::FSETCCM_RND, dl, MVT::i1, LHS, RHS,
                                   DAG.getConstant(CondVal, dl, MVT::i8), Sae);
       // AnyExt just uses KMOVW %kreg, %r32; ZeroExt emits "and $1, %reg"
       return DAG.getNode(ISD::ANY_EXTEND, dl, MVT::i32, FCmp);
@@ -20867,9 +20862,12 @@ static SDValue LowerXALUO(SDValue Op, SelectionDAG &DAG) {
     SDValue Sum = DAG.getNode(X86ISD::UMUL, DL, VTs, LHS, RHS);
 
     SDValue SetCC =
-      DAG.getNode(X86ISD::SETCC, DL, N->getValueType(1),
+      DAG.getNode(X86ISD::SETCC, DL, MVT::i8,
                   DAG.getConstant(X86::COND_O, DL, MVT::i32),
                   SDValue(Sum.getNode(), 2));
+
+    if (N->getValueType(1) == MVT::i1)
+      SetCC = DAG.getNode(ISD::TRUNCATE, DL, MVT::i1, SetCC);
 
     return DAG.getNode(ISD::MERGE_VALUES, DL, N->getVTList(), Sum, SetCC);
   }
@@ -20880,9 +20878,12 @@ static SDValue LowerXALUO(SDValue Op, SelectionDAG &DAG) {
   SDValue Sum = DAG.getNode(BaseOp, DL, VTs, LHS, RHS);
 
   SDValue SetCC =
-    DAG.getNode(X86ISD::SETCC, DL, N->getValueType(1),
+    DAG.getNode(X86ISD::SETCC, DL, MVT::i8,
                 DAG.getConstant(Cond, DL, MVT::i32),
                 SDValue(Sum.getNode(), 1));
+
+  if (N->getValueType(1) == MVT::i1)
+    SetCC = DAG.getNode(ISD::TRUNCATE, DL, MVT::i1, SetCC);
 
   return DAG.getNode(ISD::MERGE_VALUES, DL, N->getVTList(), Sum, SetCC);
 }
@@ -22437,6 +22438,8 @@ const char *X86TargetLowering::getTargetNodeName(unsigned Opcode) const {
   case X86ISD::SETCC:              return "X86ISD::SETCC";
   case X86ISD::SETCC_CARRY:        return "X86ISD::SETCC_CARRY";
   case X86ISD::FSETCC:             return "X86ISD::FSETCC";
+  case X86ISD::FSETCCM:            return "X86ISD::FSETCCM";
+  case X86ISD::FSETCCM_RND:        return "X86ISD::FSETCCM_RND";
   case X86ISD::CMOV:               return "X86ISD::CMOV";
   case X86ISD::BRCOND:             return "X86ISD::BRCOND";
   case X86ISD::RET_FLAG:           return "X86ISD::RET_FLAG";
@@ -22662,6 +22665,8 @@ const char *X86TargetLowering::getTargetNodeName(unsigned Opcode) const {
   case X86ISD::MULTISHIFT:         return "X86ISD::MULTISHIFT";
   case X86ISD::SCALAR_FP_TO_SINT_RND: return "X86ISD::SCALAR_FP_TO_SINT_RND";
   case X86ISD::SCALAR_FP_TO_UINT_RND: return "X86ISD::SCALAR_FP_TO_UINT_RND";
+  case X86ISD::CVTPS2PH:           return "X86ISD::CVTPS2PH";
+  case X86ISD::CVTPH2PS:           return "X86ISD::CVTPH2PS";
   }
   return nullptr;
 }
@@ -28481,7 +28486,7 @@ static SDValue combineCompareEqual(SDNode *N, SelectionDAG &DAG,
           // See X86ATTInstPrinter.cpp:printSSECC().
           unsigned x86cc = (cc0 == X86::COND_E) ? 0 : 4;
           if (Subtarget.hasAVX512()) {
-            SDValue FSetCC = DAG.getNode(X86ISD::FSETCC, DL, MVT::i1, CMP00,
+            SDValue FSetCC = DAG.getNode(X86ISD::FSETCCM, DL, MVT::i1, CMP00,
                                          CMP01,
                                          DAG.getConstant(x86cc, DL, MVT::i8));
             if (N->getValueType(0) != MVT::i1)

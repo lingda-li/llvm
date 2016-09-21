@@ -55,10 +55,6 @@ void PrintASCII(const uint8_t *Data, size_t Size, const char *PrintAfter) {
   Printf("%s", PrintAfter);
 }
 
-void PrintASCII(const Word &W, const char *PrintAfter) {
-  PrintASCII(W.data(), W.size(), PrintAfter);
-}
-
 void PrintASCII(const Unit &U, const char *PrintAfter) {
   PrintASCII(U.data(), U.size(), PrintAfter);
 }
@@ -246,7 +242,7 @@ bool ParseDictionaryFile(const std::string &Text, std::vector<Unit> *Units) {
 }
 
 void SleepSeconds(int Seconds) {
-  std::this_thread::sleep_for(std::chrono::seconds(Seconds));
+  sleep(Seconds);  // Use C API to avoid coverage from instrumented libc++.
 }
 
 int GetPid() { return getpid(); }

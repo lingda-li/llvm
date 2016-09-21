@@ -12,7 +12,9 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "FuzzerInternal.h"
+#include "FuzzerDefs.h"
+#include "FuzzerTracePC.h"
+#include "FuzzerValueBitMap.h"
 
 namespace fuzzer {
 
