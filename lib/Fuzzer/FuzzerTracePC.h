@@ -22,27 +22,34 @@ class TracePC {
   void HandleTrace(uintptr_t *guard, uintptr_t PC);
   void HandleInit(uintptr_t *start, uintptr_t *stop);
   void HandleCallerCallee(uintptr_t Caller, uintptr_t Callee);
-  size_t GetTotalCoverage() { return TotalCoverage; }
+  void HandleValueProfile(size_t Value) { ValueProfileMap.AddValue(Value); }
+  size_t GetTotalPCCoverage() { return TotalPCCoverage; }
+  void ResetTotalPCCoverage() { TotalPCCoverage = 0; }
   void SetUseCounters(bool UC) { UseCounters = UC; }
-  size_t UpdateCounterMap(ValueBitMap *Map);
+  void SetUseValueProfile(bool VP) { UseValueProfile = VP; }
+  bool UpdateCounterMap(ValueBitMap *MaxCounterMap) {
+    return MaxCounterMap->MergeFrom(CounterMap);
+  }
+  bool UpdateValueProfileMap(ValueBitMap *MaxValueProfileMap) {
+    return UseValueProfile && MaxValueProfileMap->MergeFrom(ValueProfileMap);
+  }
   void FinalizeTrace();
 
-  size_t GetNewPCsAndFlush(uintptr_t **NewPCsPtr = nullptr) {
-    if (NewPCsPtr)
-      *NewPCsPtr = NewPCs;
-    size_t Res = NumNewPCs;
-    NumNewPCs = 0;
-    return Res;
+  size_t GetNewPCIDs(uintptr_t **NewPCIDsPtr) {
+    *NewPCIDsPtr = NewPCIDs;
+    return Min(kMaxNewPCIDs, NumNewPCIDs);
   }
 
-  void Reset() {
-    TotalCoverage = 0;
-    TotalCounterBits = 0;
-    NumNewPCs = 0;
+  void ResetNewPCIDs() { NumNewPCIDs = 0; }
+  uintptr_t GetPCbyPCID(uintptr_t PCID) { return PCs[PCID]; }
+
+  void ResetMaps() {
+    NumNewPCIDs = 0;
     CounterMap.Reset();
-    TotalCoverageMap.Reset();
-    ResetGuards();
+    ValueProfileMap.Reset();
   }
+
+  void ResetGuards();
 
   void PrintModuleInfo();
 
@@ -50,15 +57,16 @@ class TracePC {
 
 private:
   bool UseCounters = false;
-  size_t TotalCoverage = 0;
-  size_t TotalCounterBits = 0;
+  bool UseValueProfile = false;
+  size_t TotalPCCoverage = 0;
 
-  static const size_t kMaxNewPCs = 64;
-  uintptr_t NewPCs[kMaxNewPCs];
-  size_t NumNewPCs = 0;
-  void AddNewPC(uintptr_t PC) { NewPCs[(NumNewPCs++) % kMaxNewPCs] = PC; }
+  static const size_t kMaxNewPCIDs = 64;
+  uintptr_t NewPCIDs[kMaxNewPCIDs];
+  size_t NumNewPCIDs = 0;
+  void AddNewPCID(uintptr_t PCID) {
+    NewPCIDs[(NumNewPCIDs++) % kMaxNewPCIDs] = PCID;
+  }
 
-  void ResetGuards();
 
   struct Module {
     uintptr_t *Start, *Stop;
@@ -75,7 +83,7 @@ private:
   uintptr_t PCs[kNumPCs];
 
   ValueBitMap CounterMap;
-  ValueBitMap TotalCoverageMap;
+  ValueBitMap ValueProfileMap;
 };
 
 extern TracePC TPC;
