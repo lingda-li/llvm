@@ -1958,9 +1958,11 @@ X86TargetLowering::findRepresentativeClass(const TargetRegisterInfo *TRI,
   case MVT::f32: case MVT::f64:
   case MVT::v16i8: case MVT::v8i16: case MVT::v4i32: case MVT::v2i64:
   case MVT::v4f32: case MVT::v2f64:
-  case MVT::v32i8: case MVT::v8i32: case MVT::v4i64: case MVT::v8f32:
-  case MVT::v4f64:
-    RRC = &X86::VR128RegClass;
+  case MVT::v32i8: case MVT::v16i16: case MVT::v8i32: case MVT::v4i64:
+  case MVT::v8f32: case MVT::v4f64:
+  case MVT::v64i8: case MVT::v32i16: case MVT::v16i32: case MVT::v8i64:
+  case MVT::v16f32: case MVT::v8f64:
+    RRC = &X86::VR128XRegClass;
     break;
   }
   return std::make_pair(RRC, Cost);
@@ -12863,10 +12865,6 @@ static SDValue LowerSCALAR_TO_VECTOR(SDValue Op, SelectionDAG &DAG) {
     return insert128BitVector(DAG.getUNDEF(OpVT), Op, 0, DAG, dl);
   }
 
-  if (OpVT == MVT::v1i64 &&
-      Op.getOperand(0).getValueType() == MVT::i64)
-    return DAG.getNode(ISD::SCALAR_TO_VECTOR, dl, MVT::v1i64, Op.getOperand(0));
-
   SDValue AnyExt = DAG.getNode(ISD::ANY_EXTEND, dl, MVT::i32, Op.getOperand(0));
   assert(OpVT.is128BitVector() && "Expected an SSE type!");
   return DAG.getBitcast(
@@ -14633,28 +14631,22 @@ static SDValue LowerFABSorFNEG(SDValue Op, SelectionDAG &DAG) {
 }
 
 static SDValue LowerFCOPYSIGN(SDValue Op, SelectionDAG &DAG) {
-  const TargetLowering &TLI = DAG.getTargetLoweringInfo();
-  LLVMContext *Context = DAG.getContext();
   SDValue Mag = Op.getOperand(0);
   SDValue Sign = Op.getOperand(1);
   SDLoc dl(Op);
-  MVT VT = Op.getSimpleValueType();
-  MVT SignVT = Sign.getSimpleValueType();
-  bool IsF128 = (VT == MVT::f128);
 
   // If the sign operand is smaller, extend it first.
-  if (SignVT.bitsLT(VT)) {
+  MVT VT = Op.getSimpleValueType();
+  if (Sign.getSimpleValueType().bitsLT(VT))
     Sign = DAG.getNode(ISD::FP_EXTEND, dl, VT, Sign);
-    SignVT = VT;
-  }
+
   // And if it is bigger, shrink it first.
-  if (SignVT.bitsGT(VT)) {
+  if (Sign.getSimpleValueType().bitsGT(VT))
     Sign = DAG.getNode(ISD::FP_ROUND, dl, VT, Sign, DAG.getIntPtrConstant(1, dl));
-    SignVT = VT;
-  }
 
   // At this point the operands and the result should have the same
   // type, and that won't be f80 since that is not custom lowered.
+  bool IsF128 = (VT == MVT::f128);
   assert((VT == MVT::f64 || VT == MVT::f32 || IsF128) &&
          "Unexpected type in LowerFCOPYSIGN");
 
@@ -14663,61 +14655,41 @@ static SDValue LowerFCOPYSIGN(SDValue Op, SelectionDAG &DAG) {
           (IsF128 ? APFloat::IEEEquad : APFloat::IEEEsingle);
   const unsigned SizeInBits = VT.getSizeInBits();
 
-  SmallVector<Constant *, 4> CV(
-      VT == MVT::f64 ? 2 : (IsF128 ? 1 : 4),
-      ConstantFP::get(*Context, APFloat(Sem, APInt(SizeInBits, 0))));
+  // Perform all logic operations as 16-byte vectors because there are no
+  // scalar FP logic instructions in SSE.
+  MVT LogicVT =
+      (VT == MVT::f64) ? MVT::v2f64 : (IsF128 ? MVT::f128 : MVT::v4f32);
+  SDValue SignMask = DAG.getConstantFP(
+      APFloat(Sem, APInt::getSignBit(SizeInBits)), dl, LogicVT);
 
   // First, clear all bits but the sign bit from the second operand (sign).
-  CV[0] = ConstantFP::get(*Context,
-                          APFloat(Sem, APInt::getSignBit(SizeInBits)));
-  Constant *C = ConstantVector::get(CV);
-  auto PtrVT = TLI.getPointerTy(DAG.getDataLayout());
-  SDValue CPIdx = DAG.getConstantPool(C, PtrVT, 16);
-
-  // Perform all logic operations as 16-byte vectors because there are no
-  // scalar FP logic instructions in SSE. This allows load folding of the
-  // constants into the logic instructions.
-  MVT LogicVT = (VT == MVT::f64) ? MVT::v2f64 : (IsF128 ? MVT::f128 : MVT::v4f32);
-  SDValue SignMask =
-      DAG.getLoad(LogicVT, dl, DAG.getEntryNode(), CPIdx,
-                  MachinePointerInfo::getConstantPool(DAG.getMachineFunction()),
-                  /* Alignment = */ 16);
   if (!IsF128)
     Sign = DAG.getNode(ISD::SCALAR_TO_VECTOR, dl, LogicVT, Sign);
   SDValue SignBit = DAG.getNode(X86ISD::FAND, dl, LogicVT, Sign, SignMask);
 
   // Next, clear the sign bit from the first operand (magnitude).
   // If it's a constant, we can clear it here.
+  SDValue MagMask = DAG.getConstantFP(
+      APFloat(Sem, ~APInt::getSignBit(SizeInBits)), dl, LogicVT);
+
+  // TODO: If we had general constant folding for FP logic ops, this check
+  // wouldn't be necessary.
+  SDValue MagBits;
   if (ConstantFPSDNode *Op0CN = dyn_cast<ConstantFPSDNode>(Mag)) {
     APFloat APF = Op0CN->getValueAPF();
-    // If the magnitude is a positive zero, the sign bit alone is enough.
-    if (APF.isPosZero())
-      return IsF128 ? SignBit :
-          DAG.getNode(ISD::EXTRACT_VECTOR_ELT, dl, SignVT, SignBit,
-                      DAG.getIntPtrConstant(0, dl));
     APF.clearSign();
-    CV[0] = ConstantFP::get(*Context, APF);
+    MagBits = DAG.getConstantFP(APF, dl, LogicVT);
   } else {
-    CV[0] = ConstantFP::get(*Context,
-                            APFloat(Sem, ~APInt::getSignBit(SizeInBits)));
-  }
-  C = ConstantVector::get(CV);
-  CPIdx = DAG.getConstantPool(C, PtrVT, 16);
-  SDValue MagMask =
-      DAG.getLoad(LogicVT, dl, DAG.getEntryNode(), CPIdx,
-                  MachinePointerInfo::getConstantPool(DAG.getMachineFunction()),
-                  /* Alignment = */ 16);
-  // If the magnitude operand wasn't a constant, we need to AND out the sign.
-  SDValue MagBits = MagMask;
-  if (!isa<ConstantFPSDNode>(Mag)) {
+    // If the magnitude operand wasn't a constant, we need to AND out the sign.
     if (!IsF128)
       Mag = DAG.getNode(ISD::SCALAR_TO_VECTOR, dl, LogicVT, Mag);
     MagBits = DAG.getNode(X86ISD::FAND, dl, LogicVT, Mag, MagMask);
   }
+
   // OR the magnitude value with the sign bit.
   SDValue Or = DAG.getNode(X86ISD::FOR, dl, LogicVT, MagBits, SignBit);
   return IsF128 ? Or :
-      DAG.getNode(ISD::EXTRACT_VECTOR_ELT, dl, SignVT, Or,
+      DAG.getNode(ISD::EXTRACT_VECTOR_ELT, dl, VT, Or,
                   DAG.getIntPtrConstant(0, dl));
 }
 
@@ -16016,7 +15988,8 @@ SDValue X86TargetLowering::LowerSELECT(SDValue Op, SelectionDAG &DAG) const {
       if (Subtarget.hasAVX512()) {
         SDValue Cmp = DAG.getNode(X86ISD::FSETCCM, DL, MVT::i1, CondOp0,
                                   CondOp1, DAG.getConstant(SSECC, DL, MVT::i8));
-        return DAG.getNode(X86ISD::SELECT, DL, VT, Cmp, Op1, Op2);
+        return DAG.getNode(VT.isVector() ? X86ISD::SELECT : X86ISD::SELECTS,
+                           DL, VT, Cmp, Op1, Op2);
       }
 
       SDValue Cmp = DAG.getNode(X86ISD::FSETCC, DL, VT, CondOp0, CondOp1,
@@ -17550,7 +17523,7 @@ static SDValue getScalarMaskingNode(SDValue Op, SDValue Mask,
 
   if (PreservedSrc.isUndef())
     PreservedSrc = getZeroVector(VT, Subtarget, DAG, dl);
-  return DAG.getNode(X86ISD::SELECT, dl, VT, IMask, Op, PreservedSrc);
+  return DAG.getNode(X86ISD::SELECTS, dl, VT, IMask, Op, PreservedSrc);
 }
 
 static int getSEHRegistrationNodeSize(const Function *Fn) {
@@ -17690,8 +17663,7 @@ static SDValue LowerINTRINSIC_WO_CHAIN(SDValue Op, const X86Subtarget &Subtarget
       // (2) With rounding mode and sae - 7 operands.
       if (Op.getNumOperands() == 6) {
         SDValue Sae  = Op.getOperand(5);
-        unsigned Opc = IntrData->Opc1 ? IntrData->Opc1 : IntrData->Opc0;
-        return getScalarMaskingNode(DAG.getNode(Opc, dl, VT, Src1, Src2,
+        return getScalarMaskingNode(DAG.getNode(IntrData->Opc0, dl, VT, Src1, Src2,
                                                 Sae),
                                     Mask, Src0, Subtarget, DAG);
       }
@@ -18843,11 +18815,11 @@ static SDValue LowerINTRINSIC_W_CHAIN(SDValue Op, const X86Subtarget &Subtarget,
       return DAG.getStore(Chain, dl, DataToCompress, Addr,
                           MemIntr->getMemOperand());
 
-    SDValue Compressed =
-      getVectorMaskingNode(DAG.getNode(IntrData->Opc0, dl, VT, DataToCompress),
-                           Mask, DAG.getUNDEF(VT), Subtarget, DAG);
-    return DAG.getStore(Chain, dl, Compressed, Addr,
-                        MemIntr->getMemOperand());
+    MVT MaskVT = MVT::getVectorVT(MVT::i1, VT.getVectorNumElements());
+    SDValue VMask = getMaskNode(Mask, MaskVT, Subtarget, DAG, dl);
+
+    return DAG.getMaskedStore(Chain, dl, DataToCompress, Addr, VMask, VT,
+                              MemIntr->getMemOperand(), false, true);
   }
   case TRUNCATE_TO_MEM_VI8:
   case TRUNCATE_TO_MEM_VI16:
@@ -22647,6 +22619,7 @@ const char *X86TargetLowering::getTargetNodeName(unsigned Opcode) const {
   case X86ISD::COMPRESS:           return "X86ISD::COMPRESS";
   case X86ISD::EXPAND:             return "X86ISD::EXPAND";
   case X86ISD::SELECT:             return "X86ISD::SELECT";
+  case X86ISD::SELECTS:            return "X86ISD::SELECTS";
   case X86ISD::ADDSUB:             return "X86ISD::ADDSUB";
   case X86ISD::RCP28:              return "X86ISD::RCP28";
   case X86ISD::RCP28S:             return "X86ISD::RCP28S";
@@ -26443,13 +26416,18 @@ static SDValue combineShuffle(SDNode *N, SelectionDAG &DAG,
       bool CanFold = false;
       switch (Opcode) {
       default : break;
-      case ISD::ADD :
-      case ISD::FADD :
-      case ISD::SUB :
-      case ISD::FSUB :
-      case ISD::MUL :
-      case ISD::FMUL :
-        CanFold = true;
+      case ISD::ADD:
+      case ISD::SUB:
+      case ISD::MUL:
+        // isOperationLegal lies for integer ops on floating point types.
+        CanFold = VT.isInteger();
+        break;
+      case ISD::FADD:
+      case ISD::FSUB:
+      case ISD::FMUL:
+        // isOperationLegal lies for floating point ops on integer types.
+        CanFold = VT.isFloatingPoint();
+        break;
       }
 
       unsigned SVTNumElts = SVT.getVectorNumElements();
@@ -27161,7 +27139,7 @@ static SDValue combineSelectOfTwoConstants(SDNode *N, SelectionDAG &DAG) {
       return Cond;
     }
   }
-  
+
   return SDValue();
 }
 
@@ -30514,24 +30492,73 @@ static SDValue combineXor(SDNode *N, SelectionDAG &DAG,
   return SDValue();
 }
 
+
+static bool isNullFPScalarOrVectorConst(SDValue V) {
+  return isNullFPConstant(V) || ISD::isBuildVectorAllZeros(V.getNode());
+}
+
+/// If a value is a scalar FP zero or a vector FP zero (potentially including
+/// undefined elements), return a zero constant that may be used to fold away
+/// that value. In the case of a vector, the returned constant will not contain
+/// undefined elements even if the input parameter does. This makes it suitable
+/// to be used as a replacement operand with operations (eg, bitwise-and) where
+/// an undef should not propagate.
+static SDValue getNullFPConstForNullVal(SDValue V, SelectionDAG &DAG,
+                                        const X86Subtarget &Subtarget) {
+  if (!isNullFPScalarOrVectorConst(V))
+    return SDValue();
+
+  if (V.getValueType().isVector())
+    return getZeroVector(V.getSimpleValueType(), Subtarget, DAG, SDLoc(V));
+
+  return V;
+}
+
+/// Do target-specific dag combines on X86ISD::FAND nodes.
+static SDValue combineFAnd(SDNode *N, SelectionDAG &DAG,
+                           const X86Subtarget &Subtarget) {
+  // FAND(0.0, x) -> 0.0
+  if (SDValue V = getNullFPConstForNullVal(N->getOperand(0), DAG, Subtarget))
+    return V;
+
+  // FAND(x, 0.0) -> 0.0
+  if (SDValue V = getNullFPConstForNullVal(N->getOperand(1), DAG, Subtarget))
+    return V;
+
+  return lowerX86FPLogicOp(N, DAG, Subtarget);
+}
+
+/// Do target-specific dag combines on X86ISD::FANDN nodes.
+static SDValue combineFAndn(SDNode *N, SelectionDAG &DAG,
+                            const X86Subtarget &Subtarget) {
+  // FANDN(0.0, x) -> x
+  if (isNullFPScalarOrVectorConst(N->getOperand(0)))
+    return N->getOperand(1);
+
+  // FANDN(x, 0.0) -> 0.0
+  if (SDValue V = getNullFPConstForNullVal(N->getOperand(1), DAG, Subtarget))
+    return V;
+
+  return lowerX86FPLogicOp(N, DAG, Subtarget);
+}
+
 /// Do target-specific dag combines on X86ISD::FOR and X86ISD::FXOR nodes.
 static SDValue combineFOr(SDNode *N, SelectionDAG &DAG,
                           const X86Subtarget &Subtarget) {
   assert(N->getOpcode() == X86ISD::FOR || N->getOpcode() == X86ISD::FXOR);
 
   // F[X]OR(0.0, x) -> x
-  if (ConstantFPSDNode *C = dyn_cast<ConstantFPSDNode>(N->getOperand(0)))
-    if (C->getValueAPF().isPosZero())
-      return N->getOperand(1);
+  if (isNullFPScalarOrVectorConst(N->getOperand(0)))
+    return N->getOperand(1);
 
   // F[X]OR(x, 0.0) -> x
-  if (ConstantFPSDNode *C = dyn_cast<ConstantFPSDNode>(N->getOperand(1)))
-    if (C->getValueAPF().isPosZero())
-      return N->getOperand(0);
+  if (isNullFPScalarOrVectorConst(N->getOperand(1)))
+    return N->getOperand(0);
 
   if (isFNEG(N))
     if (SDValue NewVal = combineFneg(N, DAG, Subtarget))
       return NewVal;
+
   return lowerX86FPLogicOp(N, DAG, Subtarget);
 }
 
@@ -30610,38 +30637,6 @@ static SDValue combineFMinNumFMaxNum(SDNode *N, SelectionDAG &DAG,
   // are NaN, the NaN value of Op1 is the result.
   auto SelectOpcode = VT.isVector() ? ISD::VSELECT : ISD::SELECT;
   return DAG.getNode(SelectOpcode, DL, VT, IsOp0Nan, Op1, MinOrMax);
-}
-
-/// Do target-specific dag combines on X86ISD::FAND nodes.
-static SDValue combineFAnd(SDNode *N, SelectionDAG &DAG,
-                           const X86Subtarget &Subtarget) {
-  // FAND(0.0, x) -> 0.0
-  if (ConstantFPSDNode *C = dyn_cast<ConstantFPSDNode>(N->getOperand(0)))
-    if (C->getValueAPF().isPosZero())
-      return N->getOperand(0);
-
-  // FAND(x, 0.0) -> 0.0
-  if (ConstantFPSDNode *C = dyn_cast<ConstantFPSDNode>(N->getOperand(1)))
-    if (C->getValueAPF().isPosZero())
-      return N->getOperand(1);
-
-  return lowerX86FPLogicOp(N, DAG, Subtarget);
-}
-
-/// Do target-specific dag combines on X86ISD::FANDN nodes
-static SDValue combineFAndn(SDNode *N, SelectionDAG &DAG,
-                            const X86Subtarget &Subtarget) {
-  // FANDN(0.0, x) -> x
-  if (ConstantFPSDNode *C = dyn_cast<ConstantFPSDNode>(N->getOperand(0)))
-    if (C->getValueAPF().isPosZero())
-      return N->getOperand(1);
-
-  // FANDN(x, 0.0) -> 0.0
-  if (ConstantFPSDNode *C = dyn_cast<ConstantFPSDNode>(N->getOperand(1)))
-    if (C->getValueAPF().isPosZero())
-      return N->getOperand(1);
-
-  return lowerX86FPLogicOp(N, DAG, Subtarget);
 }
 
 static SDValue combineBT(SDNode *N, SelectionDAG &DAG,
@@ -31085,9 +31080,10 @@ static SDValue combineSetCC(SDNode *N, SelectionDAG &DAG,
     }
   }
 
-  // For an SSE1-only target, lower to X86ISD::CMPP early to avoid scalarization
-  // via legalization because v4i32 is not a legal type.
-  if (Subtarget.hasSSE1() && !Subtarget.hasSSE2() && VT == MVT::v4i32)
+  // For an SSE1-only target, lower a comparison of v4f32 to X86ISD::CMPP early
+  // to avoid scalarization via legalization because v4i32 is not a legal type.
+  if (Subtarget.hasSSE1() && !Subtarget.hasSSE2() && VT == MVT::v4i32 &&
+      LHS.getValueType() == MVT::v4f32)
     return LowerVSETCC(SDValue(N, 0), Subtarget, DAG);
 
   return SDValue();
@@ -31677,14 +31673,14 @@ SDValue X86TargetLowering::PerformDAGCombine(SDNode *N,
   case ISD::FSUB:           return combineFaddFsub(N, DAG, Subtarget);
   case ISD::FNEG:           return combineFneg(N, DAG, Subtarget);
   case ISD::TRUNCATE:       return combineTruncate(N, DAG, Subtarget);
+  case X86ISD::FAND:        return combineFAnd(N, DAG, Subtarget);
+  case X86ISD::FANDN:       return combineFAndn(N, DAG, Subtarget);
   case X86ISD::FXOR:
   case X86ISD::FOR:         return combineFOr(N, DAG, Subtarget);
   case X86ISD::FMIN:
   case X86ISD::FMAX:        return combineFMinFMax(N, DAG);
   case ISD::FMINNUM:
   case ISD::FMAXNUM:        return combineFMinNumFMaxNum(N, DAG, Subtarget);
-  case X86ISD::FAND:        return combineFAnd(N, DAG, Subtarget);
-  case X86ISD::FANDN:       return combineFAndn(N, DAG, Subtarget);
   case X86ISD::BT:          return combineBT(N, DAG, DCI);
   case ISD::ANY_EXTEND:
   case ISD::ZERO_EXTEND:    return combineZext(N, DAG, DCI, Subtarget);

@@ -37,13 +37,13 @@ static cl::opt<RegBankSelect::Mode> RegBankSelectMode(
                clEnumValEnd));
 
 char RegBankSelect::ID = 0;
-INITIALIZE_PASS_BEGIN(RegBankSelect, "regbankselect",
+INITIALIZE_PASS_BEGIN(RegBankSelect, DEBUG_TYPE,
                       "Assign register bank of generic virtual registers",
                       false, false);
 INITIALIZE_PASS_DEPENDENCY(MachineBlockFrequencyInfo)
 INITIALIZE_PASS_DEPENDENCY(MachineBranchProbabilityInfo)
 INITIALIZE_PASS_DEPENDENCY(TargetPassConfig)
-INITIALIZE_PASS_END(RegBankSelect, "regbankselect",
+INITIALIZE_PASS_END(RegBankSelect, DEBUG_TYPE,
                     "Assign register bank of generic virtual registers", false,
                     false)
 
@@ -382,8 +382,8 @@ RegBankSelect::MappingCost RegBankSelect::computeMapping(
   // match this mapping. In other words, we may need to locally reassign the
   // register banks. Account for that repairing cost as well.
   // In this context, local means in the surrounding of MI.
-  for (unsigned OpIdx = 0, EndOpIdx = MI.getNumOperands(); OpIdx != EndOpIdx;
-       ++OpIdx) {
+  for (unsigned OpIdx = 0, EndOpIdx = InstrMapping.getNumOperands();
+       OpIdx != EndOpIdx; ++OpIdx) {
     const MachineOperand &MO = MI.getOperand(OpIdx);
     if (!MO.isReg())
       continue;
