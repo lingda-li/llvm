@@ -1,6 +1,8 @@
 ; RUN: opt < %s -S -inline -pass-remarks-missed=inline -pass-remarks-with-hotness \
 ; RUN:     -pass-remarks-output=%t 2>&1 | FileCheck %s
 ; RUN: cat %t | FileCheck -check-prefix=YAML %s
+; RUN: opt < %s -S -inline -pass-remarks-with-hotness -pass-remarks-output=%t
+; RUN: cat %t | FileCheck -check-prefix=YAML %s
 
 ; Check the YAML file generated for inliner remarks for this program:
 ;
@@ -22,9 +24,9 @@
 ; YAML-NEXT: Hotness:         30
 ; YAML-NEXT: Args:
 ; YAML-NEXT:   - Callee: foo
-; YAML-NEXT:   - String:  will not be inlined into
+; YAML-NEXT:   - String: ' will not be inlined into '
 ; YAML-NEXT:   - Caller: baz
-; YAML-NEXT:   - String:  because its definition is unavailable
+; YAML-NEXT:   - String: ' because its definition is unavailable'
 ; YAML-NEXT: ...
 ; YAML-NEXT: --- !Missed
 ; YAML-NEXT: Pass:            inline
@@ -34,9 +36,9 @@
 ; YAML-NEXT: Hotness:         30
 ; YAML-NEXT: Args:
 ; YAML-NEXT:   - Callee: bar
-; YAML-NEXT:   - String:  will not be inlined into
+; YAML-NEXT:   - String: ' will not be inlined into '
 ; YAML-NEXT:   - Caller: baz
-; YAML-NEXT:   - String:  because its definition is unavailable
+; YAML-NEXT:   - String: ' because its definition is unavailable'
 ; YAML-NEXT: ...
 
 ; ModuleID = '/tmp/s.c'
@@ -48,14 +50,14 @@ target triple = "x86_64-apple-macosx10.11.0"
 define i32 @baz() !dbg !7 !prof !14 {
 entry:
   %call = call i32 (...) @foo(), !dbg !9
-  %call1 = call i32 (...) @bar(), !dbg !10
+  %call1 = call i32 (...) @"\01bar"(), !dbg !10
   %add = add nsw i32 %call, %call1, !dbg !12
   ret i32 %add, !dbg !13
 }
 
 declare i32 @foo(...)
 
-declare i32 @bar(...)
+declare i32 @"\01bar"(...)
 
 !llvm.dbg.cu = !{!0}
 !llvm.module.flags = !{!3, !4, !5}

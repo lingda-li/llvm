@@ -215,6 +215,8 @@ cl::opt<bool> DumpLineInfo("line-info",
                            cl::cat(FileOptions), cl::sub(RawSubcommand));
 
 // SYMBOL OPTIONS
+cl::opt<bool> DumpGlobals("globals", cl::desc("dump globals stream data"),
+                          cl::cat(SymbolOptions), cl::sub(RawSubcommand));
 cl::opt<bool> DumpModuleSyms("module-syms", cl::desc("dump module symbols"),
                              cl::cat(SymbolOptions), cl::sub(RawSubcommand));
 cl::opt<bool> DumpPublics("publics", cl::desc("dump Publics stream data"),
@@ -280,6 +282,11 @@ cl::opt<bool>
                   cl::desc("Dump DBI Module Information (implies -dbi-stream)"),
                   cl::sub(PdbToYamlSubcommand), cl::init(false));
 
+cl::opt<bool> DbiModuleSyms(
+    "dbi-module-syms",
+    cl::desc("Dump DBI Module Information (implies -dbi-module-info)"),
+    cl::sub(PdbToYamlSubcommand), cl::init(false));
+
 cl::opt<bool> DbiModuleSourceFileInfo(
     "dbi-module-source-info",
     cl::desc(
@@ -321,17 +328,9 @@ static void yamlToPdb(StringRef Path) {
     ExitOnErr(make_error<GenericError>(generic_error_code::unspecified,
                                        "Yaml does not contain MSF headers"));
 
-  auto OutFileOrError = FileOutputBuffer::create(
-      opts::yaml2pdb::YamlPdbOutputFile, YamlObj.Headers->FileSize);
-  if (OutFileOrError.getError())
-    ExitOnErr(make_error<GenericError>(generic_error_code::invalid_path,
-                                       opts::yaml2pdb::YamlPdbOutputFile));
-
-  auto FileByteStream =
-      llvm::make_unique<FileBufferByteStream>(std::move(*OutFileOrError));
   PDBFileBuilder Builder(Allocator);
 
-  ExitOnErr(Builder.initialize(YamlObj.Headers->SuperBlock));
+  ExitOnErr(Builder.initialize(YamlObj.Headers->SuperBlock.BlockSize));
   // Add each of the reserved streams.  We ignore stream metadata in the
   // yaml, because we will reconstruct our own view of the streams.  For
   // example, the YAML may say that there were 20 streams in the original
@@ -382,7 +381,7 @@ static void yamlToPdb(StringRef Path) {
       IpiBuilder.addTypeRecord(R.Record);
   }
 
-  ExitOnErr(Builder.commit(*FileByteStream));
+  ExitOnErr(Builder.commit(opts::yaml2pdb::YamlPdbOutputFile));
 }
 
 static void pdb2Yaml(StringRef Path) {
@@ -562,6 +561,7 @@ int main(int argc_, const char *argv_[]) {
     opts::raw::DumpModules = true;
     opts::raw::DumpModuleFiles = true;
     opts::raw::DumpModuleSyms = true;
+    opts::raw::DumpGlobals = true;
     opts::raw::DumpPublics = true;
     opts::raw::DumpSectionHeaders = true;
     opts::raw::DumpStreamSummary = true;

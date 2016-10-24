@@ -673,11 +673,12 @@ You can get the coverage for your corpus like this:
 
 .. code-block:: console
 
-  ASAN_OPTIONS=coverage=1:html_cov_report=1 ./fuzzer CORPUS_DIR -runs=0
+  ASAN_OPTIONS=coverage=1 ./fuzzer CORPUS_DIR -runs=0
 
 This will run all tests in the CORPUS_DIR but will not perform any fuzzing.
-At the end of the process it will dump a single html file with coverage information.
-See SanitizerCoverage_ for details.
+At the end of the process it will dump a single ``.sancov`` file with coverage 
+information.  See SanitizerCoverage_ for details on querying the file using the
+``sancov`` tool.
 
 You may also use other ways to visualize coverage,
 e.g. using `Clang coverage <http://clang.llvm.org/docs/SourceBasedCodeCoverage.html>`_,
@@ -902,6 +903,8 @@ Trophies
 * WOFF2: `[1] <https://github.com/google/woff2/commit/a15a8ab>`__
 
 * LLVM: `Clang <https://llvm.org/bugs/show_bug.cgi?id=23057>`_, `Clang-format <https://llvm.org/bugs/show_bug.cgi?id=23052>`_, `libc++ <https://llvm.org/bugs/show_bug.cgi?id=24411>`_, `llvm-as <https://llvm.org/bugs/show_bug.cgi?id=24639>`_, `Demangler <https://bugs.chromium.org/p/chromium/issues/detail?id=606626>`_, Disassembler: http://reviews.llvm.org/rL247405, http://reviews.llvm.org/rL247414, http://reviews.llvm.org/rL247416, http://reviews.llvm.org/rL247417, http://reviews.llvm.org/rL247420, http://reviews.llvm.org/rL247422.
+
+* Tensorflow: `[1] <https://github.com/tensorflow/tensorflow/commit/7231d01fcb2cd9ef9ffbfea03b724892c8a4026e>`__
 
 .. _pcre2: http://www.pcre.org/
 .. _AFL: http://lcamtuf.coredump.cx/afl/

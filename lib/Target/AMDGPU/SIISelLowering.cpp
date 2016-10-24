@@ -37,6 +37,12 @@
 
 using namespace llvm;
 
+static cl::opt<bool> EnableVGPRIndexMode(
+  "amdgpu-vgpr-index-mode",
+  cl::desc("Use GPR indexing mode instead of movrel for vector indexing"),
+  cl::init(false));
+
+
 static unsigned findFirstFreeSGPR(CCState &CCInfo) {
   unsigned NumSGPRs = AMDGPU::SGPR_32RegClass.getNumRegs();
   for (unsigned Reg = 0; Reg < NumSGPRs; ++Reg) {
@@ -227,6 +233,7 @@ SITargetLowering::SITargetLowering(const TargetMachine &TM,
   setTargetDAGCombine(ISD::AND);
   setTargetDAGCombine(ISD::OR);
   setTargetDAGCombine(ISD::XOR);
+  setTargetDAGCombine(ISD::SINT_TO_FP);
   setTargetDAGCombine(ISD::UINT_TO_FP);
   setTargetDAGCombine(ISD::FCANONICALIZE);
 
@@ -453,6 +460,15 @@ bool SITargetLowering::allowsMisalignedMemoryAccesses(EVT VT,
     return AlignedBy4;
   }
 
+  // FIXME: We have to be conservative here and assume that flat operations
+  // will access scratch.  If we had access to the IR function, then we
+  // could determine if any private memory was used in the function.
+  if (!Subtarget->hasUnalignedScratchAccess() &&
+      (AddrSpace == AMDGPUAS::PRIVATE_ADDRESS ||
+       AddrSpace == AMDGPUAS::FLAT_ADDRESS)) {
+    return false;
+  }
+
   if (Subtarget->hasUnalignedBufferAccess()) {
     // If we have an uniform constant load, it still requires using a slow
     // buffer instruction if unaligned.
@@ -571,24 +587,32 @@ SDValue SITargetLowering::LowerParameter(SelectionDAG &DAG, EVT VT, EVT MemVT,
                                          const SDLoc &SL, SDValue Chain,
                                          unsigned Offset, bool Signed) const {
   const DataLayout &DL = DAG.getDataLayout();
-  Type *Ty = VT.getTypeForEVT(*DAG.getContext());
-  MVT PtrVT = getPointerTy(DL, AMDGPUAS::CONSTANT_ADDRESS);
+  Type *Ty = MemVT.getTypeForEVT(*DAG.getContext());
   PointerType *PtrTy = PointerType::get(Ty, AMDGPUAS::CONSTANT_ADDRESS);
-  SDValue PtrOffset = DAG.getUNDEF(PtrVT);
   MachinePointerInfo PtrInfo(UndefValue::get(PtrTy));
 
   unsigned Align = DL.getABITypeAlignment(Ty);
 
-  ISD::LoadExtType ExtTy = Signed ? ISD::SEXTLOAD : ISD::ZEXTLOAD;
-  if (MemVT.isFloatingPoint())
-    ExtTy = ISD::EXTLOAD;
-
   SDValue Ptr = LowerParameterPtr(DAG, SL, Chain, Offset);
-  return DAG.getLoad(ISD::UNINDEXED, ExtTy, VT, SL, Chain, Ptr, PtrOffset,
-                     PtrInfo, MemVT, Align,
-                     MachineMemOperand::MONonTemporal |
-                         MachineMemOperand::MODereferenceable |
-                         MachineMemOperand::MOInvariant);
+  SDValue Load = DAG.getLoad(MemVT, SL, Chain, Ptr, PtrInfo, Align,
+                             MachineMemOperand::MONonTemporal |
+                             MachineMemOperand::MODereferenceable |
+                             MachineMemOperand::MOInvariant);
+
+  SDValue Val;
+  if (MemVT.isFloatingPoint())
+    Val = DAG.getNode(ISD::FP_EXTEND, SL, VT, Load);
+  else if (Signed)
+    Val = DAG.getSExtOrTrunc(Load, SL, VT);
+  else
+    Val = DAG.getZExtOrTrunc(Load, SL, VT);
+
+  SDValue Ops[] = {
+    Val,
+    Load.getValue(1)
+  };
+
+  return DAG.getMergeValues(Ops, SL);
 }
 
 SDValue SITargetLowering::LowerFormalArguments(
@@ -875,8 +899,12 @@ SDValue SITargetLowering::LowerFormalArguments(
   if (HasStackObjects)
     Info->setHasNonSpillStackObjects(true);
 
+  // Everything live out of a block is spilled with fast regalloc, so it's
+  // almost certain that spilling will be required.
+  if (getTargetMachine().getOptLevel() == CodeGenOpt::None)
+    HasStackObjects = true;
+
   if (ST.isAmdCodeObjectV2()) {
-    // TODO: Assume we will spill without optimizations.
     if (HasStackObjects) {
       // If we have stack objects, we unquestionably need the private buffer
       // resource. For the Code Object V2 ABI, this will be the first 4 user
@@ -1118,18 +1146,19 @@ MachineBasicBlock *SITargetLowering::splitKillBlock(MachineInstr &MI,
 // will only do one iteration. In the worst case, this will loop 64 times.
 //
 // TODO: Just use v_readlane_b32 if we know the VGPR has a uniform value.
-static void emitLoadM0FromVGPRLoop(const SIInstrInfo *TII,
-                                   MachineRegisterInfo &MRI,
-                                   MachineBasicBlock &OrigBB,
-                                   MachineBasicBlock &LoopBB,
-                                   const DebugLoc &DL,
-                                   MachineInstr *MovRel,
-                                   const MachineOperand &IdxReg,
-                                   unsigned InitReg,
-                                   unsigned ResultReg,
-                                   unsigned PhiReg,
-                                   unsigned InitSaveExecReg,
-                                   int Offset) {
+static MachineBasicBlock::iterator emitLoadM0FromVGPRLoop(
+  const SIInstrInfo *TII,
+  MachineRegisterInfo &MRI,
+  MachineBasicBlock &OrigBB,
+  MachineBasicBlock &LoopBB,
+  const DebugLoc &DL,
+  const MachineOperand &IdxReg,
+  unsigned InitReg,
+  unsigned ResultReg,
+  unsigned PhiReg,
+  unsigned InitSaveExecReg,
+  int Offset,
+  bool UseGPRIdxMode) {
   MachineBasicBlock::iterator I = LoopBB.begin();
 
   unsigned PhiExec = MRI.createVirtualRegister(&AMDGPU::SReg_64RegClass);
@@ -1158,14 +1187,31 @@ static void emitLoadM0FromVGPRLoop(const SIInstrInfo *TII,
     .addReg(CurrentIdxReg)
     .addReg(IdxReg.getReg(), 0, IdxReg.getSubReg());
 
-  // Move index from VCC into M0
-  if (Offset == 0) {
-    BuildMI(LoopBB, I, DL, TII->get(AMDGPU::S_MOV_B32), AMDGPU::M0)
-      .addReg(CurrentIdxReg, RegState::Kill);
+  if (UseGPRIdxMode) {
+    unsigned IdxReg;
+    if (Offset == 0) {
+      IdxReg = CurrentIdxReg;
+    } else {
+      IdxReg = MRI.createVirtualRegister(&AMDGPU::SGPR_32RegClass);
+      BuildMI(LoopBB, I, DL, TII->get(AMDGPU::S_ADD_I32), IdxReg)
+        .addReg(CurrentIdxReg, RegState::Kill)
+        .addImm(Offset);
+    }
+
+    MachineInstr *SetIdx =
+      BuildMI(LoopBB, I, DL, TII->get(AMDGPU::S_SET_GPR_IDX_IDX))
+      .addReg(IdxReg, RegState::Kill);
+    SetIdx->getOperand(2).setIsUndef();
   } else {
-    BuildMI(LoopBB, I, DL, TII->get(AMDGPU::S_ADD_I32), AMDGPU::M0)
-      .addReg(CurrentIdxReg, RegState::Kill)
-      .addImm(Offset);
+    // Move index from VCC into M0
+    if (Offset == 0) {
+      BuildMI(LoopBB, I, DL, TII->get(AMDGPU::S_MOV_B32), AMDGPU::M0)
+        .addReg(CurrentIdxReg, RegState::Kill);
+    } else {
+      BuildMI(LoopBB, I, DL, TII->get(AMDGPU::S_ADD_I32), AMDGPU::M0)
+        .addReg(CurrentIdxReg, RegState::Kill)
+        .addImm(Offset);
+    }
   }
 
   // Update EXEC, save the original EXEC value to VCC.
@@ -1174,11 +1220,9 @@ static void emitLoadM0FromVGPRLoop(const SIInstrInfo *TII,
 
   MRI.setSimpleHint(NewExec, CondReg);
 
-  // Do the actual move.
-  LoopBB.insert(I, MovRel);
-
   // Update EXEC, switch all done bits to 0 and all todo bits to 1.
-  BuildMI(LoopBB, I, DL, TII->get(AMDGPU::S_XOR_B64), AMDGPU::EXEC)
+  MachineInstr *InsertPt =
+    BuildMI(LoopBB, I, DL, TII->get(AMDGPU::S_XOR_B64), AMDGPU::EXEC)
     .addReg(AMDGPU::EXEC)
     .addReg(NewExec);
 
@@ -1188,6 +1232,8 @@ static void emitLoadM0FromVGPRLoop(const SIInstrInfo *TII,
   // Loop back to V_READFIRSTLANE_B32 if there are still variants to cover.
   BuildMI(LoopBB, I, DL, TII->get(AMDGPU::S_CBRANCH_EXECNZ))
     .addMBB(&LoopBB);
+
+  return InsertPt->getIterator();
 }
 
 // This has slightly sub-optimal regalloc when the source vector is killed by
@@ -1195,13 +1241,13 @@ static void emitLoadM0FromVGPRLoop(const SIInstrInfo *TII,
 // per-workitem, so is kept alive for the whole loop so we end up not re-using a
 // subregister from it, using 1 more VGPR than necessary. This was saved when
 // this was expanded after register allocation.
-static MachineBasicBlock *loadM0FromVGPR(const SIInstrInfo *TII,
-                                         MachineBasicBlock &MBB,
-                                         MachineInstr &MI,
-                                         MachineInstr *MovRel,
-                                         unsigned InitResultReg,
-                                         unsigned PhiReg,
-                                         int Offset) {
+static MachineBasicBlock::iterator loadM0FromVGPR(const SIInstrInfo *TII,
+                                                  MachineBasicBlock &MBB,
+                                                  MachineInstr &MI,
+                                                  unsigned InitResultReg,
+                                                  unsigned PhiReg,
+                                                  int Offset,
+                                                  bool UseGPRIdxMode) {
   MachineFunction *MF = MBB.getParent();
   MachineRegisterInfo &MRI = MF->getRegInfo();
   const DebugLoc &DL = MI.getDebugLoc();
@@ -1238,16 +1284,15 @@ static MachineBasicBlock *loadM0FromVGPR(const SIInstrInfo *TII,
 
   const MachineOperand *Idx = TII->getNamedOperand(MI, AMDGPU::OpName::idx);
 
-  emitLoadM0FromVGPRLoop(TII, MRI, MBB, *LoopBB, DL, MovRel, *Idx,
-                         InitResultReg, DstReg, PhiReg, TmpExec, Offset);
+  auto InsPt = emitLoadM0FromVGPRLoop(TII, MRI, MBB, *LoopBB, DL, *Idx,
+                                      InitResultReg, DstReg, PhiReg, TmpExec,
+                                      Offset, UseGPRIdxMode);
 
   MachineBasicBlock::iterator First = RemainderBB->begin();
   BuildMI(*RemainderBB, First, DL, TII->get(AMDGPU::S_MOV_B64), AMDGPU::EXEC)
     .addReg(SaveExec);
 
-  MI.eraseFromParent();
-
-  return RemainderBB;
+  return InsPt;
 }
 
 // Returns subreg index, offset
@@ -1270,7 +1315,9 @@ computeIndirectRegAndOffset(const SIRegisterInfo &TRI,
 static bool setM0ToIndexFromSGPR(const SIInstrInfo *TII,
                                  MachineRegisterInfo &MRI,
                                  MachineInstr &MI,
-                                 int Offset) {
+                                 int Offset,
+                                 bool UseGPRIdxMode,
+                                 bool IsIndirectSrc) {
   MachineBasicBlock *MBB = MI.getParent();
   const DebugLoc &DL = MI.getDebugLoc();
   MachineBasicBlock::iterator I(&MI);
@@ -1282,6 +1329,32 @@ static bool setM0ToIndexFromSGPR(const SIInstrInfo *TII,
 
   if (!TII->getRegisterInfo().isSGPRClass(IdxRC))
     return false;
+
+  if (UseGPRIdxMode) {
+    unsigned IdxMode = IsIndirectSrc ?
+      VGPRIndexMode::SRC0_ENABLE : VGPRIndexMode::DST_ENABLE;
+    if (Offset == 0) {
+      MachineInstr *SetOn =
+        BuildMI(*MBB, I, DL, TII->get(AMDGPU::S_SET_GPR_IDX_ON))
+        .addOperand(*Idx)
+        .addImm(IdxMode);
+
+      SetOn->getOperand(3).setIsUndef();
+    } else {
+      unsigned Tmp = MRI.createVirtualRegister(&AMDGPU::SReg_32_XM0RegClass);
+      BuildMI(*MBB, I, DL, TII->get(AMDGPU::S_ADD_I32), Tmp)
+        .addOperand(*Idx)
+        .addImm(Offset);
+      MachineInstr *SetOn =
+        BuildMI(*MBB, I, DL, TII->get(AMDGPU::S_SET_GPR_IDX_ON))
+        .addReg(Tmp, RegState::Kill)
+        .addImm(IdxMode);
+
+      SetOn->getOperand(3).setIsUndef();
+    }
+
+    return true;
+  }
 
   if (Offset == 0) {
     BuildMI(*MBB, I, DL, TII->get(AMDGPU::S_MOV_B32), AMDGPU::M0)
@@ -1298,32 +1371,48 @@ static bool setM0ToIndexFromSGPR(const SIInstrInfo *TII,
 // Control flow needs to be inserted if indexing with a VGPR.
 static MachineBasicBlock *emitIndirectSrc(MachineInstr &MI,
                                           MachineBasicBlock &MBB,
-                                          const SIInstrInfo *TII) {
+                                          const SISubtarget &ST) {
+  const SIInstrInfo *TII = ST.getInstrInfo();
   const SIRegisterInfo &TRI = TII->getRegisterInfo();
   MachineFunction *MF = MBB.getParent();
   MachineRegisterInfo &MRI = MF->getRegInfo();
 
   unsigned Dst = MI.getOperand(0).getReg();
-  const MachineOperand *SrcVec = TII->getNamedOperand(MI, AMDGPU::OpName::src);
+  unsigned SrcReg = TII->getNamedOperand(MI, AMDGPU::OpName::src)->getReg();
   int Offset = TII->getNamedOperand(MI, AMDGPU::OpName::offset)->getImm();
 
-  const TargetRegisterClass *VecRC = MRI.getRegClass(SrcVec->getReg());
+  const TargetRegisterClass *VecRC = MRI.getRegClass(SrcReg);
 
   unsigned SubReg;
   std::tie(SubReg, Offset)
-    = computeIndirectRegAndOffset(TRI, VecRC, SrcVec->getReg(), Offset);
+    = computeIndirectRegAndOffset(TRI, VecRC, SrcReg, Offset);
 
-  if (setM0ToIndexFromSGPR(TII, MRI, MI, Offset)) {
+  bool UseGPRIdxMode = ST.hasVGPRIndexMode() && EnableVGPRIndexMode;
+
+  if (setM0ToIndexFromSGPR(TII, MRI, MI, Offset, UseGPRIdxMode, true)) {
     MachineBasicBlock::iterator I(&MI);
     const DebugLoc &DL = MI.getDebugLoc();
 
-    BuildMI(MBB, I, DL, TII->get(AMDGPU::V_MOVRELS_B32_e32), Dst)
-      .addReg(SrcVec->getReg(), RegState::Undef, SubReg)
-      .addReg(SrcVec->getReg(), RegState::Implicit);
+    if (UseGPRIdxMode) {
+      // TODO: Look at the uses to avoid the copy. This may require rescheduling
+      // to avoid interfering with other uses, so probably requires a new
+      // optimization pass.
+      BuildMI(MBB, I, DL, TII->get(AMDGPU::V_MOV_B32_e32), Dst)
+        .addReg(SrcReg, RegState::Undef, SubReg)
+        .addReg(SrcReg, RegState::Implicit)
+        .addReg(AMDGPU::M0, RegState::Implicit);
+      BuildMI(MBB, I, DL, TII->get(AMDGPU::S_SET_GPR_IDX_OFF));
+    } else {
+      BuildMI(MBB, I, DL, TII->get(AMDGPU::V_MOVRELS_B32_e32), Dst)
+        .addReg(SrcReg, RegState::Undef, SubReg)
+        .addReg(SrcReg, RegState::Implicit);
+    }
+
     MI.eraseFromParent();
 
     return &MBB;
   }
+
 
   const DebugLoc &DL = MI.getDebugLoc();
   MachineBasicBlock::iterator I(&MI);
@@ -1333,17 +1422,39 @@ static MachineBasicBlock *emitIndirectSrc(MachineInstr &MI,
 
   BuildMI(MBB, I, DL, TII->get(TargetOpcode::IMPLICIT_DEF), InitReg);
 
-  MachineInstr *MovRel =
-    BuildMI(*MF, DL, TII->get(AMDGPU::V_MOVRELS_B32_e32), Dst)
-    .addReg(SrcVec->getReg(), RegState::Undef, SubReg)
-    .addReg(SrcVec->getReg(), RegState::Implicit);
+  if (UseGPRIdxMode) {
+    MachineInstr *SetOn = BuildMI(MBB, I, DL, TII->get(AMDGPU::S_SET_GPR_IDX_ON))
+      .addImm(0) // Reset inside loop.
+      .addImm(VGPRIndexMode::SRC0_ENABLE);
+    SetOn->getOperand(3).setIsUndef();
 
-  return loadM0FromVGPR(TII, MBB, MI, MovRel, InitReg, PhiReg, Offset);
+    // Disable again after the loop.
+    BuildMI(MBB, std::next(I), DL, TII->get(AMDGPU::S_SET_GPR_IDX_OFF));
+  }
+
+  auto InsPt = loadM0FromVGPR(TII, MBB, MI, InitReg, PhiReg, Offset, UseGPRIdxMode);
+  MachineBasicBlock *LoopBB = InsPt->getParent();
+
+  if (UseGPRIdxMode) {
+    BuildMI(*LoopBB, InsPt, DL, TII->get(AMDGPU::V_MOV_B32_e32), Dst)
+      .addReg(SrcReg, RegState::Undef, SubReg)
+      .addReg(SrcReg, RegState::Implicit)
+      .addReg(AMDGPU::M0, RegState::Implicit);
+  } else {
+    BuildMI(*LoopBB, InsPt, DL, TII->get(AMDGPU::V_MOVRELS_B32_e32), Dst)
+      .addReg(SrcReg, RegState::Undef, SubReg)
+      .addReg(SrcReg, RegState::Implicit);
+  }
+
+  MI.eraseFromParent();
+
+  return LoopBB;
 }
 
 static MachineBasicBlock *emitIndirectDst(MachineInstr &MI,
                                           MachineBasicBlock &MBB,
-                                          const SIInstrInfo *TII) {
+                                          const SISubtarget &ST) {
+  const SIInstrInfo *TII = ST.getInstrInfo();
   const SIRegisterInfo &TRI = TII->getRegisterInfo();
   MachineFunction *MF = MBB.getParent();
   MachineRegisterInfo &MRI = MF->getRegInfo();
@@ -1362,6 +1473,8 @@ static MachineBasicBlock *emitIndirectDst(MachineInstr &MI,
   std::tie(SubReg, Offset) = computeIndirectRegAndOffset(TRI, VecRC,
                                                          SrcVec->getReg(),
                                                          Offset);
+  bool UseGPRIdxMode = ST.hasVGPRIndexMode() && EnableVGPRIndexMode;
+
   if (Idx->getReg() == AMDGPU::NoRegister) {
     MachineBasicBlock::iterator I(&MI);
     const DebugLoc &DL = MI.getDebugLoc();
@@ -1377,23 +1490,36 @@ static MachineBasicBlock *emitIndirectDst(MachineInstr &MI,
     return &MBB;
   }
 
-  const MCInstrDesc &MovRelDesc = TII->get(AMDGPU::V_MOVRELD_B32_e32);
-  if (setM0ToIndexFromSGPR(TII, MRI, MI, Offset)) {
+  if (setM0ToIndexFromSGPR(TII, MRI, MI, Offset, UseGPRIdxMode, false)) {
     MachineBasicBlock::iterator I(&MI);
     const DebugLoc &DL = MI.getDebugLoc();
 
-    MachineInstr *MovRel =
-      BuildMI(MBB, I, DL, MovRelDesc)
-      .addReg(SrcVec->getReg(), RegState::Undef, SubReg) // vdst
-      .addOperand(*Val)
-      .addReg(Dst, RegState::ImplicitDefine)
-      .addReg(SrcVec->getReg(), RegState::Implicit);
+    if (UseGPRIdxMode) {
+      BuildMI(MBB, I, DL, TII->get(AMDGPU::V_MOV_B32_indirect))
+        .addReg(SrcVec->getReg(), RegState::Undef, SubReg) // vdst
+        .addOperand(*Val)
+        .addReg(Dst, RegState::ImplicitDefine)
+        .addReg(SrcVec->getReg(), RegState::Implicit)
+        .addReg(AMDGPU::M0, RegState::Implicit);
 
-    const int ImpDefIdx = MovRelDesc.getNumOperands() +
-      MovRelDesc.getNumImplicitUses();
-    const int ImpUseIdx = ImpDefIdx + 1;
+      BuildMI(MBB, I, DL, TII->get(AMDGPU::S_SET_GPR_IDX_OFF));
+    } else {
+      const MCInstrDesc &MovRelDesc = TII->get(AMDGPU::V_MOVRELD_B32_e32);
 
-    MovRel->tieOperands(ImpDefIdx, ImpUseIdx);
+      MachineInstr *MovRel =
+        BuildMI(MBB, I, DL, MovRelDesc)
+        .addReg(SrcVec->getReg(), RegState::Undef, SubReg) // vdst
+        .addOperand(*Val)
+        .addReg(Dst, RegState::ImplicitDefine)
+        .addReg(SrcVec->getReg(), RegState::Implicit);
+
+      const int ImpDefIdx = MovRelDesc.getNumOperands() +
+        MovRelDesc.getNumImplicitUses();
+      const int ImpUseIdx = ImpDefIdx + 1;
+
+      MovRel->tieOperands(ImpDefIdx, ImpUseIdx);
+    }
+
     MI.eraseFromParent();
     return &MBB;
   }
@@ -1402,24 +1528,52 @@ static MachineBasicBlock *emitIndirectDst(MachineInstr &MI,
     MRI.clearKillFlags(Val->getReg());
 
   const DebugLoc &DL = MI.getDebugLoc();
+
+  if (UseGPRIdxMode) {
+    MachineBasicBlock::iterator I(&MI);
+
+    MachineInstr *SetOn = BuildMI(MBB, I, DL, TII->get(AMDGPU::S_SET_GPR_IDX_ON))
+      .addImm(0) // Reset inside loop.
+      .addImm(VGPRIndexMode::DST_ENABLE);
+    SetOn->getOperand(3).setIsUndef();
+
+    // Disable again after the loop.
+    BuildMI(MBB, std::next(I), DL, TII->get(AMDGPU::S_SET_GPR_IDX_OFF));
+  }
+
   unsigned PhiReg = MRI.createVirtualRegister(VecRC);
 
-  // vdst is not actually read and just provides the base register index.
-  MachineInstr *MovRel =
-    BuildMI(*MF, DL, MovRelDesc)
+  auto InsPt = loadM0FromVGPR(TII, MBB, MI, SrcVec->getReg(), PhiReg,
+                              Offset, UseGPRIdxMode);
+  MachineBasicBlock *LoopBB = InsPt->getParent();
+
+  if (UseGPRIdxMode) {
+    BuildMI(*LoopBB, InsPt, DL, TII->get(AMDGPU::V_MOV_B32_indirect))
+      .addReg(PhiReg, RegState::Undef, SubReg) // vdst
+      .addOperand(*Val) // src0
+      .addReg(Dst, RegState::ImplicitDefine)
+      .addReg(PhiReg, RegState::Implicit)
+      .addReg(AMDGPU::M0, RegState::Implicit);
+  } else {
+    const MCInstrDesc &MovRelDesc = TII->get(AMDGPU::V_MOVRELD_B32_e32);
+    // vdst is not actually read and just provides the base register index.
+    MachineInstr *MovRel =
+      BuildMI(*LoopBB, InsPt, DL, MovRelDesc)
     .addReg(PhiReg, RegState::Undef, SubReg) // vdst
     .addOperand(*Val)
     .addReg(Dst, RegState::ImplicitDefine)
     .addReg(PhiReg, RegState::Implicit);
 
-  const int ImpDefIdx = MovRelDesc.getNumOperands() +
-    MovRelDesc.getNumImplicitUses();
-  const int ImpUseIdx = ImpDefIdx + 1;
+    const int ImpDefIdx = MovRelDesc.getNumOperands() +
+      MovRelDesc.getNumImplicitUses();
+    const int ImpUseIdx = ImpDefIdx + 1;
 
-  MovRel->tieOperands(ImpDefIdx, ImpUseIdx);
+    MovRel->tieOperands(ImpDefIdx, ImpUseIdx);
+  }
 
-  return loadM0FromVGPR(TII, MBB, MI, MovRel,
-                        SrcVec->getReg(), PhiReg, Offset);
+  MI.eraseFromParent();
+
+  return LoopBB;
 }
 
 MachineBasicBlock *SITargetLowering::EmitInstrWithCustomInserter(
@@ -1450,13 +1604,13 @@ MachineBasicBlock *SITargetLowering::EmitInstrWithCustomInserter(
   case AMDGPU::SI_INDIRECT_SRC_V4:
   case AMDGPU::SI_INDIRECT_SRC_V8:
   case AMDGPU::SI_INDIRECT_SRC_V16:
-    return emitIndirectSrc(MI, *BB, getSubtarget()->getInstrInfo());
+    return emitIndirectSrc(MI, *BB, *getSubtarget());
   case AMDGPU::SI_INDIRECT_DST_V1:
   case AMDGPU::SI_INDIRECT_DST_V2:
   case AMDGPU::SI_INDIRECT_DST_V4:
   case AMDGPU::SI_INDIRECT_DST_V8:
   case AMDGPU::SI_INDIRECT_DST_V16:
-    return emitIndirectDst(MI, *BB, getSubtarget()->getInstrInfo());
+    return emitIndirectDst(MI, *BB, *getSubtarget());
   case AMDGPU::SI_KILL:
     return splitKillBlock(MI, BB);
   case AMDGPU::V_CNDMASK_B64_PSEUDO: {
@@ -1660,6 +1814,23 @@ void SITargetLowering::createDebuggerPrologueStackObjects(
   }
 }
 
+bool SITargetLowering::shouldEmitFixup(const GlobalValue *GV) const {
+  const Triple &TT = getTargetMachine().getTargetTriple();
+  return GV->getType()->getAddressSpace() == AMDGPUAS::CONSTANT_ADDRESS &&
+         AMDGPU::shouldEmitConstantsToTextSection(TT);
+}
+
+bool SITargetLowering::shouldEmitGOTReloc(const GlobalValue *GV) const {
+  return (GV->getType()->getAddressSpace() == AMDGPUAS::GLOBAL_ADDRESS ||
+              GV->getType()->getAddressSpace() == AMDGPUAS::CONSTANT_ADDRESS) &&
+         !shouldEmitFixup(GV) &&
+         !getTargetMachine().shouldAssumeDSOLocal(*GV->getParent(), GV);
+}
+
+bool SITargetLowering::shouldEmitPCReloc(const GlobalValue *GV) const {
+  return !shouldEmitFixup(GV) && !shouldEmitGOTReloc(GV);
+}
+
 /// This transforms the control flow intrinsics to get the branch destination as
 /// last parameter, also switches branch target with BR if the need arise
 SDValue SITargetLowering::LowerBRCOND(SDValue BRCOND,
@@ -1844,17 +2015,12 @@ SDValue SITargetLowering::lowerADDRSPACECAST(SDValue Op,
   return DAG.getUNDEF(ASC->getValueType(0));
 }
 
-static bool shouldEmitGOTReloc(const GlobalValue *GV,
-                               const TargetMachine &TM) {
-  return GV->getType()->getAddressSpace() == AMDGPUAS::GLOBAL_ADDRESS &&
-         !TM.shouldAssumeDSOLocal(*GV->getParent(), GV);
-}
-
 bool
 SITargetLowering::isOffsetFoldingLegal(const GlobalAddressSDNode *GA) const {
   // We can fold offsets for anything that doesn't require a GOT relocation.
-  return GA->getAddressSpace() == AMDGPUAS::GLOBAL_ADDRESS &&
-         !shouldEmitGOTReloc(GA->getGlobal(), getTargetMachine());
+  return (GA->getAddressSpace() == AMDGPUAS::GLOBAL_ADDRESS ||
+              GA->getAddressSpace() == AMDGPUAS::CONSTANT_ADDRESS) &&
+         !shouldEmitGOTReloc(GA->getGlobal());
 }
 
 static SDValue buildPCRelGlobalAddress(SelectionDAG &DAG, const GlobalValue *GV,
@@ -1862,14 +2028,27 @@ static SDValue buildPCRelGlobalAddress(SelectionDAG &DAG, const GlobalValue *GV,
                                       unsigned GAFlags = SIInstrInfo::MO_NONE) {
   // In order to support pc-relative addressing, the PC_ADD_REL_OFFSET SDNode is
   // lowered to the following code sequence:
-  // s_getpc_b64 s[0:1]
-  // s_add_u32 s0, s0, $symbol
-  // s_addc_u32 s1, s1, 0
   //
-  // s_getpc_b64 returns the address of the s_add_u32 instruction and then
-  // a fixup or relocation is emitted to replace $symbol with a literal
-  // constant, which is a pc-relative offset from the encoding of the $symbol
-  // operand to the global variable.
+  // For constant address space:
+  //   s_getpc_b64 s[0:1]
+  //   s_add_u32 s0, s0, $symbol
+  //   s_addc_u32 s1, s1, 0
+  //
+  //   s_getpc_b64 returns the address of the s_add_u32 instruction and then
+  //   a fixup or relocation is emitted to replace $symbol with a literal
+  //   constant, which is a pc-relative offset from the encoding of the $symbol
+  //   operand to the global variable.
+  //
+  // For global address space:
+  //   s_getpc_b64 s[0:1]
+  //   s_add_u32 s0, s0, $symbol@{gotpc}rel32@lo
+  //   s_addc_u32 s1, s1, $symbol@{gotpc}rel32@hi
+  //
+  //   s_getpc_b64 returns the address of the s_add_u32 instruction and then
+  //   fixups or relocations are emitted to replace $symbol@*@lo and
+  //   $symbol@*@hi with lower 32 bits and higher 32 bits of a literal constant,
+  //   which is a 64-bit pc-relative offset from the encoding of the $symbol
+  //   operand to the global variable.
   //
   // What we want here is an offset from the value returned by s_getpc
   // (which is the address of the s_add_u32 instruction) to the global
@@ -1877,9 +2056,12 @@ static SDValue buildPCRelGlobalAddress(SelectionDAG &DAG, const GlobalValue *GV,
   // of the s_add_u32 instruction, we end up with an offset that is 4 bytes too
   // small. This requires us to add 4 to the global variable offset in order to
   // compute the correct address.
-  SDValue GA = DAG.getTargetGlobalAddress(GV, DL, MVT::i32, Offset + 4,
-                                          GAFlags);
-  return DAG.getNode(AMDGPUISD::PC_ADD_REL_OFFSET, DL, PtrVT, GA);
+  SDValue PtrLo = DAG.getTargetGlobalAddress(GV, DL, MVT::i32, Offset + 4,
+                                             GAFlags);
+  SDValue PtrHi = DAG.getTargetGlobalAddress(GV, DL, MVT::i32, Offset + 4,
+                                             GAFlags == SIInstrInfo::MO_NONE ?
+                                             GAFlags : GAFlags + 1);
+  return DAG.getNode(AMDGPUISD::PC_ADD_REL_OFFSET, DL, PtrVT, PtrLo, PtrHi);
 }
 
 SDValue SITargetLowering::LowerGlobalAddress(AMDGPUMachineFunction *MFI,
@@ -1895,11 +2077,14 @@ SDValue SITargetLowering::LowerGlobalAddress(AMDGPUMachineFunction *MFI,
   const GlobalValue *GV = GSD->getGlobal();
   EVT PtrVT = Op.getValueType();
 
-  if (!shouldEmitGOTReloc(GV, getTargetMachine()))
+  if (shouldEmitFixup(GV))
     return buildPCRelGlobalAddress(DAG, GV, DL, GSD->getOffset(), PtrVT);
+  else if (shouldEmitPCReloc(GV))
+    return buildPCRelGlobalAddress(DAG, GV, DL, GSD->getOffset(), PtrVT,
+                                   SIInstrInfo::MO_REL32);
 
   SDValue GOTAddr = buildPCRelGlobalAddress(DAG, GV, DL, 0, PtrVT,
-                                            SIInstrInfo::MO_GOTPCREL);
+                                            SIInstrInfo::MO_GOTPCREL32);
 
   Type *Ty = PtrVT.getTypeForEVT(*DAG.getContext());
   PointerType *PtrTy = PointerType::get(Ty, AMDGPUAS::CONSTANT_ADDRESS);
@@ -3336,19 +3521,27 @@ SDValue SITargetLowering::PerformDAGCombine(SDNode *N,
   case AMDGPUISD::CVT_F32_UBYTE2:
   case AMDGPUISD::CVT_F32_UBYTE3: {
     unsigned Offset = N->getOpcode() - AMDGPUISD::CVT_F32_UBYTE0;
+
     SDValue Src = N->getOperand(0);
+    SDValue Srl = N->getOperand(0);
+    if (Srl.getOpcode() == ISD::ZERO_EXTEND)
+      Srl = Srl.getOperand(0);
 
     // TODO: Handle (or x, (srl y, 8)) pattern when known bits are zero.
-    if (Src.getOpcode() == ISD::SRL) {
+    if (Srl.getOpcode() == ISD::SRL) {
       // cvt_f32_ubyte0 (srl x, 16) -> cvt_f32_ubyte2 x
       // cvt_f32_ubyte1 (srl x, 16) -> cvt_f32_ubyte3 x
       // cvt_f32_ubyte0 (srl x, 8) -> cvt_f32_ubyte1 x
 
-      if (const ConstantSDNode *C = dyn_cast<ConstantSDNode>(Src.getOperand(1))) {
+      if (const ConstantSDNode *C =
+              dyn_cast<ConstantSDNode>(Srl.getOperand(1))) {
+        Srl = DAG.getZExtOrTrunc(Srl.getOperand(0), SDLoc(Srl.getOperand(0)),
+                                 EVT(MVT::i32));
+
         unsigned SrcOffset = C->getZExtValue() + 8 * Offset;
         if (SrcOffset < 32 && SrcOffset % 8 == 0) {
           return DAG.getNode(AMDGPUISD::CVT_F32_UBYTE0 + SrcOffset / 8, DL,
-                             MVT::f32, Src.getOperand(0));
+                             MVT::f32, Srl);
         }
       }
     }
@@ -3366,7 +3559,7 @@ SDValue SITargetLowering::PerformDAGCombine(SDNode *N,
 
     break;
   }
-
+  case ISD::SINT_TO_FP:
   case ISD::UINT_TO_FP: {
     return performUCharToFloatCombine(N, DCI);
   }

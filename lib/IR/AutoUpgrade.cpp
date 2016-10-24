@@ -31,6 +31,8 @@
 #include <cstring>
 using namespace llvm;
 
+static void rename(GlobalValue *GV) { GV->setName(GV->getName() + ".old"); }
+
 // Upgrade the declarations of the SSE4.1 functions whose arguments have
 // changed their type from v4f32 to v2i64.
 static bool UpgradeSSE41Function(Function* F, Intrinsic::ID IID,
@@ -42,7 +44,7 @@ static bool UpgradeSSE41Function(Function* F, Intrinsic::ID IID,
     return false;
 
   // Yes, it's old, replace it with new version.
-  F->setName(F->getName() + ".old");
+  rename(F);
   NewFn = Intrinsic::getDeclaration(F->getParent(), IID);
   return true;
 }
@@ -58,7 +60,7 @@ static bool UpgradeX86IntrinsicsWith8BitMask(Function *F, Intrinsic::ID IID,
     return false;
 
   // Move this function aside and map down.
-  F->setName(F->getName() + ".old");
+  rename(F);
   NewFn = Intrinsic::getDeclaration(F->getParent(), IID);
   return true;
 }
@@ -135,13 +137,13 @@ static bool UpgradeIntrinsicFunction1(Function *F, Function *&NewFn) {
 
   case 'c': {
     if (Name.startswith("ctlz.") && F->arg_size() == 1) {
-      F->setName(Name + ".old");
+      rename(F);
       NewFn = Intrinsic::getDeclaration(F->getParent(), Intrinsic::ctlz,
                                         F->arg_begin()->getType());
       return true;
     }
     if (Name.startswith("cttz.") && F->arg_size() == 1) {
-      F->setName(Name + ".old");
+      rename(F);
       NewFn = Intrinsic::getDeclaration(F->getParent(), Intrinsic::cttz,
                                         F->arg_begin()->getType());
       return true;
@@ -154,7 +156,7 @@ static bool UpgradeIntrinsicFunction1(Function *F, Function *&NewFn) {
       Type* ObjectPtr[1] = {Args[1]};
       if (F->getName() !=
           Intrinsic::getName(Intrinsic::invariant_start, ObjectPtr)) {
-        F->setName(Name + ".old");
+        rename(F);
         NewFn = Intrinsic::getDeclaration(
             F->getParent(), Intrinsic::invariant_start, ObjectPtr);
         return true;
@@ -165,7 +167,7 @@ static bool UpgradeIntrinsicFunction1(Function *F, Function *&NewFn) {
       Type* ObjectPtr[1] = {Args[2]};
       if (F->getName() !=
           Intrinsic::getName(Intrinsic::invariant_end, ObjectPtr)) {
-        F->setName(Name + ".old");
+        rename(F);
         NewFn = Intrinsic::getDeclaration(F->getParent(),
                                           Intrinsic::invariant_end, ObjectPtr);
         return true;
@@ -177,7 +179,7 @@ static bool UpgradeIntrinsicFunction1(Function *F, Function *&NewFn) {
     if (Name.startswith("masked.load.")) {
       Type *Tys[] = { F->getReturnType(), F->arg_begin()->getType() };
       if (F->getName() != Intrinsic::getName(Intrinsic::masked_load, Tys)) {
-        F->setName(Name + ".old");
+        rename(F);
         NewFn = Intrinsic::getDeclaration(F->getParent(),
                                           Intrinsic::masked_load,
                                           Tys);
@@ -188,7 +190,7 @@ static bool UpgradeIntrinsicFunction1(Function *F, Function *&NewFn) {
       auto Args = F->getFunctionType()->params();
       Type *Tys[] = { Args[0], Args[1] };
       if (F->getName() != Intrinsic::getName(Intrinsic::masked_store, Tys)) {
-        F->setName(Name + ".old");
+        rename(F);
         NewFn = Intrinsic::getDeclaration(F->getParent(),
                                           Intrinsic::masked_store,
                                           Tys);
@@ -204,7 +206,7 @@ static bool UpgradeIntrinsicFunction1(Function *F, Function *&NewFn) {
     if (F->arg_size() == 2 && Name.startswith("objectsize.")) {
       Type *Tys[2] = { F->getReturnType(), F->arg_begin()->getType() };
       if (F->getName() != Intrinsic::getName(Intrinsic::objectsize, Tys)) {
-        F->setName(Name + ".old");
+        rename(F);
         NewFn = Intrinsic::getDeclaration(F->getParent(),
                                           Intrinsic::objectsize, Tys);
         return true;
@@ -244,6 +246,8 @@ static bool UpgradeIntrinsicFunction1(Function *F, Function *&NewFn) {
          Name == "sse41.pminud" ||
          Name.startswith("avx2.pmax") ||
          Name.startswith("avx2.pmin") ||
+         Name.startswith("avx512.mask.pmax") ||
+         Name.startswith("avx512.mask.pmin") ||
          Name.startswith("avx2.vbroadcast") ||
          Name.startswith("avx2.pbroadcast") ||
          Name.startswith("avx.vpermil.") ||
@@ -371,13 +375,13 @@ static bool UpgradeIntrinsicFunction1(Function *F, Function *&NewFn) {
 
     // frcz.ss/sd may need to have an argument dropped
     if (IsX86 && Name.startswith("xop.vfrcz.ss") && F->arg_size() == 2) {
-      F->setName(Name + ".old");
+      rename(F);
       NewFn = Intrinsic::getDeclaration(F->getParent(),
                                         Intrinsic::x86_xop_vfrcz_ss);
       return true;
     }
     if (IsX86 && Name.startswith("xop.vfrcz.sd") && F->arg_size() == 2) {
-      F->setName(Name + ".old");
+      rename(F);
       NewFn = Intrinsic::getDeclaration(F->getParent(),
                                         Intrinsic::x86_xop_vfrcz_sd);
       return true;
@@ -395,13 +399,13 @@ static bool UpgradeIntrinsicFunction1(Function *F, Function *&NewFn) {
       else
         ShiftID = Name[18] == 'd' ? Intrinsic::x86_avx512_mask_psrl_di_512
                                   : Intrinsic::x86_avx512_mask_psrl_qi_512;
-      F->setName("llvm.x86." + Name + ".old");
+      rename(F);
       NewFn = Intrinsic::getDeclaration(F->getParent(), ShiftID);
       return true;
     }
     // Fix the FMA4 intrinsics to remove the 4
     if (IsX86 && Name.startswith("fma4.")) {
-      F->setName("llvm.x86.fma" + Name.substr(5));
+      rename(F);
       NewFn = F;
       return true;
     }
@@ -410,7 +414,7 @@ static bool UpgradeIntrinsicFunction1(Function *F, Function *&NewFn) {
       auto Params = F->getFunctionType()->params();
       auto Idx = Params[2];
       if (Idx->getScalarType()->isFloatingPointTy()) {
-        F->setName("llvm.x86." + Name + ".old");
+        rename(F);
         unsigned IdxSize = Idx->getPrimitiveSizeInBits();
         unsigned EltSize = Idx->getScalarSizeInBits();
         Intrinsic::ID Permil2ID;
@@ -638,7 +642,12 @@ static Value *upgradeIntMinMax(IRBuilder<> &Builder, CallInst &CI,
   Value *Op0 = CI.getArgOperand(0);
   Value *Op1 = CI.getArgOperand(1);
   Value *Cmp = Builder.CreateICmp(Pred, Op0, Op1);
-  return Builder.CreateSelect(Cmp, Op0, Op1);
+  Value *Res = Builder.CreateSelect(Cmp, Op0, Op1);
+
+  if (CI.getNumArgOperands() == 4)
+    Res = EmitX86Select(Builder, CI.getArgOperand(3), Res, CI.getArgOperand(2));
+
+  return Res;
 }
 
 static Value *upgradeMaskedCompare(IRBuilder<> &Builder, CallInst &CI,
@@ -706,22 +715,26 @@ void llvm::UpgradeIntrinsicCall(CallInst *CI, Function *NewFn) {
     } else if (IsX86 && (Name == "sse41.pmaxsb" ||
                          Name == "sse2.pmaxs.w" ||
                          Name == "sse41.pmaxsd" ||
-                         Name.startswith("avx2.pmaxs"))) {
+                         Name.startswith("avx2.pmaxs") ||
+                         Name.startswith("avx512.mask.pmaxs"))) {
       Rep = upgradeIntMinMax(Builder, *CI, ICmpInst::ICMP_SGT);
     } else if (IsX86 && (Name == "sse2.pmaxu.b" ||
                          Name == "sse41.pmaxuw" ||
                          Name == "sse41.pmaxud" ||
-                         Name.startswith("avx2.pmaxu"))) {
+                         Name.startswith("avx2.pmaxu") ||
+                         Name.startswith("avx512.mask.pmaxu"))) {
       Rep = upgradeIntMinMax(Builder, *CI, ICmpInst::ICMP_UGT);
     } else if (IsX86 && (Name == "sse41.pminsb" ||
                          Name == "sse2.pmins.w" ||
                          Name == "sse41.pminsd" ||
-                         Name.startswith("avx2.pmins"))) {
+                         Name.startswith("avx2.pmins") ||
+                         Name.startswith("avx512.mask.pmins"))) {
       Rep = upgradeIntMinMax(Builder, *CI, ICmpInst::ICMP_SLT);
     } else if (IsX86 && (Name == "sse2.pminu.b" ||
                          Name == "sse41.pminuw" ||
                          Name == "sse41.pminud" ||
-                         Name.startswith("avx2.pminu"))) {
+                         Name.startswith("avx2.pminu") ||
+                         Name.startswith("avx512.mask.pminu"))) {
       Rep = upgradeIntMinMax(Builder, *CI, ICmpInst::ICMP_ULT);
     } else if (IsX86 && (Name == "sse2.cvtdq2pd" ||
                          Name == "sse2.cvtps2pd" ||

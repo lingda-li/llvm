@@ -70,7 +70,7 @@ public:
   explicit ARMAsmPrinter(TargetMachine &TM,
                          std::unique_ptr<MCStreamer> Streamer);
 
-  const char *getPassName() const override {
+  StringRef getPassName() const override {
     return "ARM Assembly / Object Emitter";
   }
 
@@ -112,6 +112,7 @@ public:
   // XRay-specific lowering for ARM.
   void LowerPATCHABLE_FUNCTION_ENTER(const MachineInstr &MI);
   void LowerPATCHABLE_FUNCTION_EXIT(const MachineInstr &MI);
+  void LowerPATCHABLE_TAIL_CALL(const MachineInstr &MI);
   // Helper function that emits the XRay sleds we've collected for a particular
   // function.
   void EmitXRayTable();

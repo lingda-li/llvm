@@ -43,8 +43,10 @@ static cl::opt<bool> EnableEmSjLj(
 
 extern "C" void LLVMInitializeWebAssemblyTarget() {
   // Register the target.
-  RegisterTargetMachine<WebAssemblyTargetMachine> X(TheWebAssemblyTarget32);
-  RegisterTargetMachine<WebAssemblyTargetMachine> Y(TheWebAssemblyTarget64);
+  RegisterTargetMachine<WebAssemblyTargetMachine> X(
+      getTheWebAssemblyTarget32());
+  RegisterTargetMachine<WebAssemblyTargetMachine> Y(
+      getTheWebAssemblyTarget64());
 
   // Register exception handling pass to opt
   initializeWebAssemblyLowerEmscriptenEHSjLjPass(
@@ -73,10 +75,10 @@ WebAssemblyTargetMachine::WebAssemblyTargetMachine(
                         TT, CPU, FS, Options, getEffectiveRelocModel(RM),
                         CM, OL),
       TLOF(make_unique<WebAssemblyTargetObjectFile>()) {
-  // WebAssembly type-checks expressions, but a noreturn function with a return
+  // WebAssembly type-checks instructions, but a noreturn function with a return
   // type that doesn't match the context will cause a check failure. So we lower
   // LLVM 'unreachable' to ISD::TRAP and then lower that to WebAssembly's
-  // 'unreachable' expression which is meant for that case.
+  // 'unreachable' instructions which is meant for that case.
   this->Options.TrapUnreachable = true;
 
   initAsmInfo();
@@ -227,6 +229,11 @@ void WebAssemblyPassConfig::addPreEmitPass() {
   // colored, and numbered with the rest of the registers.
   addPass(createWebAssemblyReplacePhysRegs());
 
+  // Rewrite pseudo call_indirect instructions as real instructions.
+  // This needs to run before register stackification, because we change the
+  // order of the arguments.
+  addPass(createWebAssemblyCallIndirectFixup());
+
   if (getOptLevel() != CodeGenOpt::None) {
     // LiveIntervals isn't commonly run this late. Re-establish preconditions.
     addPass(createWebAssemblyPrepareForLiveIntervals());
@@ -237,7 +244,7 @@ void WebAssemblyPassConfig::addPreEmitPass() {
     // Prepare store instructions for register stackifying.
     addPass(createWebAssemblyStoreResults());
 
-    // Mark registers as representing wasm's expression stack. This is a key
+    // Mark registers as representing wasm's value stack. This is a key
     // code-compression technique in WebAssembly. We run this pass (and
     // StoreResults above) very late, so that it sees as much code as possible,
     // including code emitted by PEI and expanded by late tail duplication.

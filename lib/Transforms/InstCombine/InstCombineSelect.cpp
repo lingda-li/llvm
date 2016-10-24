@@ -916,32 +916,62 @@ static Instruction *foldAddSubSelect(SelectInst &SI,
   return nullptr;
 }
 
-/// If one of the operands is a sext/zext from i1 and the other is a constant,
-/// we may be able to create an i1 select which can be further folded to
-/// logical ops.
-Instruction *InstCombiner::foldSelectExtConst(SelectInst &Sel,
-                                              Instruction *ExtInst,
-                                              const APInt &C) {
+Instruction *InstCombiner::foldSelectExtConst(SelectInst &Sel) {
+  Instruction *ExtInst;
+  if (!match(Sel.getTrueValue(), m_Instruction(ExtInst)) &&
+      !match(Sel.getFalseValue(), m_Instruction(ExtInst)))
+    return nullptr;
+
+  auto ExtOpcode = ExtInst->getOpcode();
+  if (ExtOpcode != Instruction::ZExt && ExtOpcode != Instruction::SExt)
+    return nullptr;
+
   // TODO: Handle larger types? That requires adjusting FoldOpIntoSelect too.
-  Value *SmallVal = ExtInst->getOperand(0);
-  Type *SmallType = SmallVal->getType();
+  Value *X = ExtInst->getOperand(0);
+  Type *SmallType = X->getType();
   if (!SmallType->getScalarType()->isIntegerTy(1))
     return nullptr;
 
+  Constant *C;
+  if (!match(Sel.getTrueValue(), m_Constant(C)) &&
+      !match(Sel.getFalseValue(), m_Constant(C)))
+    return nullptr;
+
+  // If the constant is the same after truncation to the smaller type and
+  // extension to the original type, we can narrow the select.
   Value *Cond = Sel.getCondition();
-  bool IsExtTrueVal = Sel.getTrueValue() == ExtInst;
-  bool IsSext = ExtInst->getOpcode() == Instruction::SExt;
-  if (C == 0 || (!IsSext && C == 1) || (IsSext && C.isAllOnesValue())) {
-    Value *SmallConst = ConstantInt::get(SmallType, C.trunc(1));
-    Value *TrueVal = IsExtTrueVal ? SmallVal : SmallConst;
-    Value *FalseVal = IsExtTrueVal ? SmallConst : SmallVal;
-    Value *NewSel = Builder->CreateSelect(Cond, TrueVal, FalseVal,
-                                          "fold." + Sel.getName(), &Sel);
+  Type *SelType = Sel.getType();
+  Constant *TruncC = ConstantExpr::getTrunc(C, SmallType);
+  Constant *ExtC = ConstantExpr::getCast(ExtOpcode, TruncC, SelType);
+  if (ExtC == C) {
+    Value *TruncCVal = cast<Value>(TruncC);
+    if (ExtInst == Sel.getFalseValue())
+      std::swap(X, TruncCVal);
 
-    if (IsSext)
-      return new SExtInst(NewSel, Sel.getType());
+    // select Cond, (ext X), C --> ext(select Cond, X, C')
+    // select Cond, C, (ext X) --> ext(select Cond, C', X)
+    Value *NewSel = Builder->CreateSelect(Cond, X, TruncCVal, "narrow", &Sel);
+    return CastInst::Create(Instruction::CastOps(ExtOpcode), NewSel, SelType);
+  }
 
-    return new ZExtInst(NewSel, Sel.getType());
+  // If one arm of the select is the extend of the condition, replace that arm
+  // with the extension of the appropriate known bool value.
+  if (Cond == X) {
+    SelectInst *NewSel;
+    if (ExtInst == Sel.getTrueValue()) {
+      // select X, (sext X), C --> select X, -1, C
+      // select X, (zext X), C --> select X,  1, C
+      Constant *One = ConstantInt::getTrue(SmallType);
+      Constant *AllOnesOrOne = ConstantExpr::getCast(ExtOpcode, One, SelType);
+      NewSel = SelectInst::Create(Cond, AllOnesOrOne, C);
+    } else {
+      // select X, C, (sext X) --> select X, C, 0
+      // select X, C, (zext X) --> select X, C, 0
+      Constant *Zero = ConstantInt::getNullValue(SelType);
+      NewSel = SelectInst::Create(Cond, C, Zero);
+    }
+    NewSel->copyMetadata(Sel);
+    return NewSel;
   }
 
   return nullptr;
@@ -1172,23 +1202,8 @@ Instruction *InstCombiner::visitSelectInst(SelectInst &SI) {
     if (Instruction *IV = foldSelectOpOp(SI, TI, FI))
       return IV;
 
-  // (select C, (ext X), const) -> (ext (select C, X, const')) and variations
-  // thereof when extending from i1, as that allows further folding into logic
-  // ops. When the sext is from a larger type, prefer to have it as an operand.
-  if (TI && (TI->getOpcode() == Instruction::ZExt ||
-             TI->getOpcode() == Instruction::SExt)) {
-    const APInt *C;
-    if (match(FalseVal, m_APInt(C)))
-      if (auto *I = foldSelectExtConst(SI, TI, *C))
-        return I;
-  }
-  if (FI && (FI->getOpcode() == Instruction::ZExt ||
-             FI->getOpcode() == Instruction::SExt)) {
-    const APInt *C;
-    if (match(TrueVal, m_APInt(C)))
-      if (auto *I = foldSelectExtConst(SI, FI, *C))
-        return I;
-  }
+  if (Instruction *I = foldSelectExtConst(SI))
+    return I;
 
   // See if we can fold the select into one of our operands.
   if (SelType->isIntOrIntVectorTy() || SelType->isFPOrFPVectorTy()) {

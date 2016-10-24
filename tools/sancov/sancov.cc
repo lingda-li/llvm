@@ -89,10 +89,10 @@ cl::opt<ActionType> Action(
         clEnumValN(StatsAction, "print-coverage-stats",
                    "Print coverage statistics."),
         clEnumValN(HtmlReportAction, "html-report",
-                   "REMOVED. Use -symbolize & symcov-report-server.py."),
+                   "REMOVED. Use -symbolize & coverage-report-server.py."),
         clEnumValN(SymbolizeAction, "symbolize",
                    "Produces a symbolized JSON report from binary report."),
-        clEnumValN(MergeAction, "merge", "Merges reports."), clEnumValEnd));
+        clEnumValN(MergeAction, "merge", "Merges reports.")));
 
 static cl::list<std::string>
     ClInputFiles(cl::Positional, cl::OneOrMore,
@@ -652,9 +652,11 @@ getCoveragePoints(const std::string &ObjectFile,
 static bool isCoveragePointSymbol(StringRef Name) {
   return Name == "__sanitizer_cov" || Name == "__sanitizer_cov_with_check" ||
          Name == "__sanitizer_cov_trace_func_enter" ||
+         Name == "__sanitizer_cov_trace_pc_guard" ||
          // Mac has '___' prefix
          Name == "___sanitizer_cov" || Name == "___sanitizer_cov_with_check" ||
-         Name == "___sanitizer_cov_trace_func_enter";
+         Name == "___sanitizer_cov_trace_func_enter" ||
+         Name == "___sanitizer_cov_trace_pc_guard";
 }
 
 // Locate __sanitizer_cov* function addresses inside the stubs table on MachO.
@@ -1204,7 +1206,7 @@ int main(int Argc, char **Argv) {
   }
   case HtmlReportAction:
     errs() << "-html-report option is removed: "
-              "use -symbolize & symcov-report-server.py instead\n";
+              "use -symbolize & coverage-report-server.py instead\n";
     return 1;
   case PrintAction:
   case PrintCovPointsAction:

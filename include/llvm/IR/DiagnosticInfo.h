@@ -387,7 +387,7 @@ public:
     std::string Val;
 
     explicit Argument(StringRef Str = "") : Key("String"), Val(Str) {}
-    Argument(StringRef Key, Value *V) : Key(Key), Val(V->getName()) {}
+    Argument(StringRef Key, Value *V);
     Argument(StringRef Key, int N);
     Argument(StringRef Key, unsigned N);
     Argument(StringRef Key, bool B) : Key(Key), Val(B ? "true" : "false") {}
@@ -458,7 +458,7 @@ public:
   /// in BackendConsumer::OptimizationRemarkHandler).
   virtual bool isEnabled() const = 0;
 
-  const char *getPassName() const { return PassName; }
+  StringRef getPassName() const { return PassName; }
   std::string getMsg() const;
   Optional<uint64_t> getHotness() const { return Hotness; }
   void setHotness(Optional<uint64_t> H) { Hotness = H; }

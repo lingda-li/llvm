@@ -33,7 +33,7 @@ public:
 
   bool runOnMachineFunction(MachineFunction &MF) override;
 
-  const char *getPassName() const override {
+  StringRef getPassName() const override {
     return "SI optimize exec mask operations";
   }
 
@@ -248,14 +248,17 @@ bool SIOptimizeExecMasking::runOnMachineFunction(MachineFunction &MF) {
         if (J->readsRegister(CopyFromExec, TRI)) {
           SaveExecInst = &*J;
           DEBUG(dbgs() << "Found save exec op: " << *SaveExecInst << '\n');
+          continue;
         } else {
           DEBUG(dbgs() << "Instruction does not read exec copy: " << *J << '\n');
           break;
         }
       }
 
-      if (SaveExecInst && J->readsRegister(CopyToExec, TRI))
+      if (SaveExecInst && J->readsRegister(CopyToExec, TRI)) {
+        assert(SaveExecInst != &*J);
         OtherUseInsts.push_back(&*J);
+      }
     }
 
     if (!SaveExecInst)
@@ -266,17 +269,14 @@ bool SIOptimizeExecMasking::runOnMachineFunction(MachineFunction &MF) {
     MachineOperand &Src0 = SaveExecInst->getOperand(1);
     MachineOperand &Src1 = SaveExecInst->getOperand(2);
 
-    MachineOperand *CopyOp = nullptr;
     MachineOperand *OtherOp = nullptr;
 
     if (Src0.isReg() && Src0.getReg() == CopyFromExec) {
-      CopyOp = &Src0;
       OtherOp = &Src1;
     } else if (Src1.isReg() && Src1.getReg() == CopyFromExec) {
       if (!SaveExecInst->isCommutable())
         break;
 
-      CopyOp = &Src1;
       OtherOp = &Src0;
     } else
       llvm_unreachable("unexpected");

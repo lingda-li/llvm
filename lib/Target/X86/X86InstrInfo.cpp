@@ -409,6 +409,30 @@ X86InstrInfo::X86InstrInfo(X86Subtarget &STI)
     { X86::VMOVDQU16Zrr,    X86::VMOVDQU16Zmr,  TB_FOLDED_STORE },
     { X86::VMOVDQU32Zrr,    X86::VMOVDQU32Zmr,  TB_FOLDED_STORE },
     { X86::VMOVDQU64Zrr,    X86::VMOVDQU64Zmr,  TB_FOLDED_STORE },
+    { X86::VPMOVDBZrr,      X86::VPMOVDBZmr,    TB_FOLDED_STORE },
+    { X86::VPMOVDWZrr,      X86::VPMOVDWZmr,    TB_FOLDED_STORE },
+    { X86::VPMOVQDZrr,      X86::VPMOVQDZmr,    TB_FOLDED_STORE },
+    { X86::VPMOVQWZrr,      X86::VPMOVQWZmr,    TB_FOLDED_STORE },
+    { X86::VPMOVWBZrr,      X86::VPMOVWBZmr,    TB_FOLDED_STORE },
+    { X86::VPMOVSDBZrr,     X86::VPMOVSDBZmr,   TB_FOLDED_STORE },
+    { X86::VPMOVSDWZrr,     X86::VPMOVSDWZmr,   TB_FOLDED_STORE },
+    { X86::VPMOVSQDZrr,     X86::VPMOVSQDZmr,   TB_FOLDED_STORE },
+    { X86::VPMOVSQWZrr,     X86::VPMOVSQWZmr,   TB_FOLDED_STORE },
+    { X86::VPMOVSWBZrr,     X86::VPMOVSWBZmr,   TB_FOLDED_STORE },
+    { X86::VPMOVUSDBZrr,    X86::VPMOVUSDBZmr,  TB_FOLDED_STORE },
+    { X86::VPMOVUSDWZrr,    X86::VPMOVUSDWZmr,  TB_FOLDED_STORE },
+    { X86::VPMOVUSQDZrr,    X86::VPMOVUSQDZmr,  TB_FOLDED_STORE },
+    { X86::VPMOVUSQWZrr,    X86::VPMOVUSQWZmr,  TB_FOLDED_STORE },
+    { X86::VPMOVUSWBZrr,    X86::VPMOVUSWBZmr,  TB_FOLDED_STORE },
+    { X86::VEXTRACTF32x4Zrr,X86::VEXTRACTF32x4Zmr, TB_FOLDED_STORE },
+    { X86::VEXTRACTF32x8Zrr,X86::VEXTRACTF32x8Zmr, TB_FOLDED_STORE },
+    { X86::VEXTRACTF64x2Zrr,X86::VEXTRACTF64x2Zmr, TB_FOLDED_STORE },
+    { X86::VEXTRACTF64x4Zrr,X86::VEXTRACTF64x4Zmr, TB_FOLDED_STORE },
+    { X86::VEXTRACTI32x4Zrr,X86::VEXTRACTI32x4Zmr, TB_FOLDED_STORE },
+    { X86::VEXTRACTI32x8Zrr,X86::VEXTRACTI32x8Zmr, TB_FOLDED_STORE },
+    { X86::VEXTRACTI64x2Zrr,X86::VEXTRACTI64x2Zmr, TB_FOLDED_STORE },
+    { X86::VEXTRACTI64x4Zrr,X86::VEXTRACTI64x4Zmr, TB_FOLDED_STORE },
+    { X86::VEXTRACTPSZrr,   X86::VEXTRACTPSZmr,    TB_FOLDED_STORE },
 
     // AVX-512 foldable instructions (256-bit versions)
     { X86::VMOVAPDZ256rr,      X86::VMOVAPDZ256mr,    TB_FOLDED_STORE | TB_ALIGN_32 },
@@ -421,6 +445,19 @@ X86InstrInfo::X86InstrInfo(X86Subtarget &STI)
     { X86::VMOVDQU16Z256rr,    X86::VMOVDQU16Z256mr,  TB_FOLDED_STORE },
     { X86::VMOVDQU32Z256rr,    X86::VMOVDQU32Z256mr,  TB_FOLDED_STORE },
     { X86::VMOVDQU64Z256rr,    X86::VMOVDQU64Z256mr,  TB_FOLDED_STORE },
+    { X86::VPMOVDWZ256rr,      X86::VPMOVDWZ256mr,    TB_FOLDED_STORE },
+    { X86::VPMOVQDZ256rr,      X86::VPMOVQDZ256mr,    TB_FOLDED_STORE },
+    { X86::VPMOVWBZ256rr,      X86::VPMOVWBZ256mr,    TB_FOLDED_STORE },
+    { X86::VPMOVSDWZ256rr,     X86::VPMOVSDWZ256mr,   TB_FOLDED_STORE },
+    { X86::VPMOVSQDZ256rr,     X86::VPMOVSQDZ256mr,   TB_FOLDED_STORE },
+    { X86::VPMOVSWBZ256rr,     X86::VPMOVSWBZ256mr,   TB_FOLDED_STORE },
+    { X86::VPMOVUSDWZ256rr,    X86::VPMOVUSDWZ256mr,  TB_FOLDED_STORE },
+    { X86::VPMOVUSQDZ256rr,    X86::VPMOVUSQDZ256mr,  TB_FOLDED_STORE },
+    { X86::VPMOVUSWBZ256rr,    X86::VPMOVUSWBZ256mr,  TB_FOLDED_STORE },
+    { X86::VEXTRACTF32x4Z256rr,X86::VEXTRACTF32x4Z256mr, TB_FOLDED_STORE },
+    { X86::VEXTRACTF64x2Z256rr,X86::VEXTRACTF64x2Z256mr, TB_FOLDED_STORE },
+    { X86::VEXTRACTI32x4Z256rr,X86::VEXTRACTI32x4Z256mr, TB_FOLDED_STORE },
+    { X86::VEXTRACTI64x2Z256rr,X86::VEXTRACTI64x2Z256mr, TB_FOLDED_STORE },
 
     // AVX-512 foldable instructions (128-bit versions)
     { X86::VMOVAPDZ128rr,      X86::VMOVAPDZ128mr,    TB_FOLDED_STORE | TB_ALIGN_16 },
@@ -1797,6 +1834,14 @@ X86InstrInfo::X86InstrInfo(X86Subtarget &STI)
     { X86::VPCMPUDZrri,       X86::VPCMPUDZrmi,         0 },
     { X86::VPCMPUQZrri,       X86::VPCMPUQZrmi,         0 },
     { X86::VPCMPUWZrri,       X86::VPCMPUWZrmi,         0 },
+    { X86::VINSERTF32x4Zrr,   X86::VINSERTF32x4Zrm,     0 },
+    { X86::VINSERTF32x8Zrr,   X86::VINSERTF32x8Zrm,     0 },
+    { X86::VINSERTF64x2Zrr,   X86::VINSERTF64x2Zrm,     0 },
+    { X86::VINSERTF64x4Zrr,   X86::VINSERTF64x4Zrm,     0 },
+    { X86::VINSERTI32x4Zrr,   X86::VINSERTI32x4Zrm,     0 },
+    { X86::VINSERTI32x8Zrr,   X86::VINSERTI32x8Zrm,     0 },
+    { X86::VINSERTI64x2Zrr,   X86::VINSERTI64x2Zrm,     0 },
+    { X86::VINSERTI64x4Zrr,   X86::VINSERTI64x4Zrm,     0 },
 
     // AVX-512{F,VL} foldable instructions
     { X86::VBROADCASTSSZ256rkz,  X86::VBROADCASTSSZ256mkz,      TB_NO_REVERSE },
@@ -1928,6 +1973,10 @@ X86InstrInfo::X86InstrInfo(X86Subtarget &STI)
     { X86::VPSUBUSWZ256rr,    X86::VPSUBUSWZ256rm,      0 },
     { X86::VPSUBWZ128rr,      X86::VPSUBWZ128rm,        0 },
     { X86::VPSUBWZ256rr,      X86::VPSUBWZ256rm,        0 },
+    { X86::VINSERTF32x4Z256rr,X86::VINSERTF32x4Z256rm,  0 },
+    { X86::VINSERTF64x2Z256rr,X86::VINSERTF64x2Z256rm,  0 },
+    { X86::VINSERTI32x4Z256rr,X86::VINSERTI32x4Z256rm,  0 },
+    { X86::VINSERTI64x2Z256rr,X86::VINSERTI64x2Z256rm,  0 },
 
     // AES foldable instructions
     { X86::AESDECLASTrr,      X86::AESDECLASTrm,        TB_ALIGN_16 },
@@ -2620,6 +2669,7 @@ bool X86InstrInfo::isReallyTriviallyReMaterializable(const MachineInstr &MI,
   switch (MI.getOpcode()) {
   default: break;
   case X86::MOV8rm:
+  case X86::MOV8rm_NOREX:
   case X86::MOV16rm:
   case X86::MOV32rm:
   case X86::MOV64rm:
@@ -2629,6 +2679,7 @@ bool X86InstrInfo::isReallyTriviallyReMaterializable(const MachineInstr &MI,
   case X86::MOVAPSrm:
   case X86::MOVUPSrm:
   case X86::MOVAPDrm:
+  case X86::MOVUPDrm:
   case X86::MOVDQArm:
   case X86::MOVDQUrm:
   case X86::VMOVSSrm:
@@ -2636,11 +2687,13 @@ bool X86InstrInfo::isReallyTriviallyReMaterializable(const MachineInstr &MI,
   case X86::VMOVAPSrm:
   case X86::VMOVUPSrm:
   case X86::VMOVAPDrm:
+  case X86::VMOVUPDrm:
   case X86::VMOVDQArm:
   case X86::VMOVDQUrm:
   case X86::VMOVAPSYrm:
   case X86::VMOVUPSYrm:
   case X86::VMOVAPDYrm:
+  case X86::VMOVUPDYrm:
   case X86::VMOVDQAYrm:
   case X86::VMOVDQUYrm:
   case X86::MMX_MOVD64rm:
@@ -2674,6 +2727,9 @@ bool X86InstrInfo::isReallyTriviallyReMaterializable(const MachineInstr &MI,
   case X86::VMOVDQU8Z128rm:
   case X86::VMOVDQU8Z256rm:
   case X86::VMOVDQU8Zrm:
+  case X86::VMOVUPDZ128rm:
+  case X86::VMOVUPDZ256rm:
+  case X86::VMOVUPDZrm:
   case X86::VMOVUPSZ128rm:
   case X86::VMOVUPSZ256rm:
   case X86::VMOVUPSZ128rm_NOVLX:
@@ -3543,6 +3599,39 @@ MachineInstr *X86InstrInfo::commuteInstructionImpl(MachineInstr &MI, bool NewMI,
     return TargetInstrInfo::commuteInstructionImpl(WorkingMI, /*NewMI=*/false,
                                                    OpIdx1, OpIdx2);
   }
+  case X86::MOVSDrr:
+  case X86::MOVSSrr:
+  case X86::VMOVSDrr:
+  case X86::VMOVSSrr:{
+    // On SSE41 or later we can commute a MOVSS/MOVSD to a BLENDPS/BLENDPD.
+    if (!Subtarget.hasSSE41())
+      return nullptr;
+
+    unsigned Mask, Opc;
+    switch (MI.getOpcode()) {
+    default: llvm_unreachable("Unreachable!");
+    case X86::MOVSDrr:  Opc = X86::BLENDPDrri;  Mask = 0x02; break;
+    case X86::MOVSSrr:  Opc = X86::BLENDPSrri;  Mask = 0x0E; break;
+    case X86::VMOVSDrr: Opc = X86::VBLENDPDrri; Mask = 0x02; break;
+    case X86::VMOVSSrr: Opc = X86::VBLENDPSrri; Mask = 0x0E; break;
+    }
+
+    // MOVSD/MOVSS's 2nd operand is a FR64/FR32 reg class - we need to copy
+    // this over to a VR128 class like the 1st operand to use a BLENDPD/BLENDPS.
+    auto &MRI = MI.getParent()->getParent()->getRegInfo();
+    auto VR128RC = MRI.getRegClass(MI.getOperand(1).getReg());
+    unsigned VR128 = MRI.createVirtualRegister(VR128RC);
+    BuildMI(*MI.getParent(), MI, MI.getDebugLoc(), get(TargetOpcode::COPY),
+            VR128)
+        .addReg(MI.getOperand(2).getReg());
+
+    auto &WorkingMI = cloneIfNew(MI);
+    WorkingMI.setDesc(get(Opc));
+    WorkingMI.getOperand(2).setReg(VR128);
+    WorkingMI.addOperand(MachineOperand::CreateImm(Mask));
+    return TargetInstrInfo::commuteInstructionImpl(WorkingMI, /*NewMI=*/false,
+                                                   OpIdx1, OpIdx2);
+  }
   case X86::PCLMULQDQrr:
   case X86::VPCLMULQDQrr:{
     // SRC1 64bits = Imm[0] ? SRC1[127:64] : SRC1[63:0]
@@ -3913,6 +4002,14 @@ bool X86InstrInfo::findCommutedOpIndices(MachineInstr &MI, unsigned &SrcOpIdx1,
       // Assign them to the returned operand indices here.
       return fixCommutedOpIndices(SrcOpIdx1, SrcOpIdx2, 1, 2);
     }
+    return false;
+  }
+  case X86::MOVSDrr:
+  case X86::MOVSSrr:
+  case X86::VMOVSDrr:
+  case X86::VMOVSSrr: {
+    if (Subtarget.hasSSE41())
+      return TargetInstrInfo::findCommutedOpIndices(MI, SrcOpIdx1, SrcOpIdx2);
     return false;
   }
   case X86::VPTERNLOGDZrri:      case X86::VPTERNLOGDZrmi:
@@ -7976,32 +8073,6 @@ void X86InstrInfo::getNoopForMachoTarget(MCInst &NopInst) const {
   NopInst.setOpcode(X86::NOOP);
 }
 
-// This code must remain in sync with getJumpInstrTableEntryBound in this class!
-// In particular, getJumpInstrTableEntryBound must always return an upper bound
-// on the encoding lengths of the instructions generated by
-// getUnconditionalBranch and getTrap.
-void X86InstrInfo::getUnconditionalBranch(
-    MCInst &Branch, const MCSymbolRefExpr *BranchTarget) const {
-  Branch.setOpcode(X86::JMP_1);
-  Branch.addOperand(MCOperand::createExpr(BranchTarget));
-}
-
-// This code must remain in sync with getJumpInstrTableEntryBound in this class!
-// In particular, getJumpInstrTableEntryBound must always return an upper bound
-// on the encoding lengths of the instructions generated by
-// getUnconditionalBranch and getTrap.
-void X86InstrInfo::getTrap(MCInst &MI) const {
-  MI.setOpcode(X86::TRAP);
-}
-
-// See getTrap and getUnconditionalBranch for conditions on the value returned
-// by this function.
-unsigned X86InstrInfo::getJumpInstrTableEntryBound() const {
-  // 5 bytes suffice: JMP_4 Symbol@PLT is uses 1 byte (E9) for the JMP_4 and 4
-  // bytes for the symbol offset. And TRAP is ud2, which is two bytes (0F 0B).
-  return 5;
-}
-
 bool X86InstrInfo::isHighLatencyDef(int opc) const {
   switch (opc) {
   default: return false;
@@ -8714,7 +8785,7 @@ namespace {
       return true;
     }
 
-    const char *getPassName() const override {
+    StringRef getPassName() const override {
       return "X86 PIC Global Base Reg Initialization";
     }
 
@@ -8828,7 +8899,7 @@ namespace {
       return Copy;
     }
 
-    const char *getPassName() const override {
+    StringRef getPassName() const override {
       return "Local Dynamic TLS Access Clean-up";
     }
 

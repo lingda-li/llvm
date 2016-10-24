@@ -118,6 +118,8 @@ private:
   /// Translate an LLVM store instruction into generic IR.
   bool translateStore(const User &U);
 
+  bool translateMemcpy(const CallInst &CI);
+
   bool translateKnownIntrinsic(const CallInst &CI, Intrinsic::ID ID);
 
   /// Translate call instruction.
@@ -342,9 +344,7 @@ public:
   // Ctor, nothing fancy.
   IRTranslator();
 
-  const char *getPassName() const override {
-    return "IRTranslator";
-  }
+  StringRef getPassName() const override { return "IRTranslator"; }
 
   void getAnalysisUsage(AnalysisUsage &AU) const override;
 
