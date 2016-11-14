@@ -818,10 +818,10 @@ IEEEFloat::IEEEFloat(const fltSemantics &ourSemantics) {
   sign = false;
 }
 
-IEEEFloat::IEEEFloat(const fltSemantics &ourSemantics, uninitializedTag tag) {
-  // Allocates storage if necessary but does not initialize it.
-  initialize(&ourSemantics);
-}
+// Delegate to the previous constructor, because later copy constructor may
+// actually inspects category, which can't be garbage.
+IEEEFloat::IEEEFloat(const fltSemantics &ourSemantics, uninitializedTag tag)
+    : IEEEFloat(ourSemantics) {}
 
 IEEEFloat::IEEEFloat(const IEEEFloat &rhs) {
   initialize(rhs.semantics);
@@ -1686,8 +1686,10 @@ IEEEFloat::opStatus IEEEFloat::remainder(const IEEEFloat &rhs) {
   bool ignored;
   fs = V.convertToInteger(x, parts * integerPartWidth, true,
                           rmNearestTiesToEven, &ignored);
-  if (fs==opInvalidOp)
+  if (fs==opInvalidOp) {
+    delete[] x;
     return fs;
+  }
 
   fs = V.convertFromZeroExtendedInteger(x, parts * integerPartWidth, true,
                                         rmNearestTiesToEven);
@@ -1724,8 +1726,10 @@ IEEEFloat::opStatus IEEEFloat::mod(const IEEEFloat &rhs) {
     bool ignored;
     fs = V.convertToInteger(x, parts * integerPartWidth, true,
                             rmTowardZero, &ignored);
-    if (fs==opInvalidOp)
+    if (fs==opInvalidOp) {
+      delete[] x;
       return fs;
+    }
 
     fs = V.convertFromZeroExtendedInteger(x, parts * integerPartWidth, true,
                                           rmNearestTiesToEven);
@@ -3238,23 +3242,6 @@ void IEEEFloat::initFromAPInt(const fltSemantics *Sem, const APInt &api) {
   llvm_unreachable(nullptr);
 }
 
-IEEEFloat IEEEFloat::getAllOnesValue(unsigned BitWidth) {
-  switch (BitWidth) {
-  case 16:
-    return IEEEFloat(IEEEhalf, APInt::getAllOnesValue(BitWidth));
-  case 32:
-    return IEEEFloat(IEEEsingle, APInt::getAllOnesValue(BitWidth));
-  case 64:
-    return IEEEFloat(IEEEdouble, APInt::getAllOnesValue(BitWidth));
-  case 80:
-    return IEEEFloat(x87DoubleExtended, APInt::getAllOnesValue(BitWidth));
-  case 128:
-    return IEEEFloat(IEEEquad, APInt::getAllOnesValue(BitWidth));
-  default:
-    llvm_unreachable("Unknown floating bit width");
-  }
-}
-
 /// Make this number the largest magnitude normal number in the given
 /// semantics.
 void IEEEFloat::makeLargest(bool Negative) {
@@ -3877,7 +3864,9 @@ DoubleAPFloat::DoubleAPFloat(const fltSemantics &S, APFloat &&First,
 
 DoubleAPFloat::DoubleAPFloat(const DoubleAPFloat &RHS)
     : Semantics(RHS.Semantics),
-      Floats(new APFloat[2]{APFloat(RHS.Floats[0]), APFloat(RHS.Floats[1])}) {
+      Floats(RHS.Floats ? new APFloat[2]{APFloat(RHS.Floats[0]),
+                                         APFloat(RHS.Floats[1])}
+                        : nullptr) {
   assert(Semantics == &PPCDoubleDouble);
 }
 
@@ -3888,7 +3877,7 @@ DoubleAPFloat::DoubleAPFloat(DoubleAPFloat &&RHS)
 }
 
 DoubleAPFloat &DoubleAPFloat::operator=(const DoubleAPFloat &RHS) {
-  if (Semantics == RHS.Semantics) {
+  if (Semantics == RHS.Semantics && RHS.Floats) {
     Floats[0] = RHS.Floats[0];
     Floats[1] = RHS.Floats[1];
   } else if (this != &RHS) {
@@ -3899,6 +3888,18 @@ DoubleAPFloat &DoubleAPFloat::operator=(const DoubleAPFloat &RHS) {
 }
 
 } // End detail namespace
+
+APFloat::Storage::Storage(IEEEFloat F, const fltSemantics &Semantics) {
+  if (usesLayout<IEEEFloat>(Semantics)) {
+    new (&IEEE) IEEEFloat(std::move(F));
+  } else if (usesLayout<DoubleAPFloat>(Semantics)) {
+    new (&Double)
+        DoubleAPFloat(Semantics, APFloat(std::move(F), F.getSemantics()),
+                      APFloat(IEEEdouble));
+  } else {
+    llvm_unreachable("Unexpected semantics");
+  }
+}
 
 APFloat::opStatus APFloat::convertFromString(StringRef Str, roundingMode RM) {
   return getIEEE().convertFromString(Str, RM);
@@ -3923,15 +3924,38 @@ APFloat::opStatus APFloat::convert(const fltSemantics &ToSemantics,
     assert(&ToSemantics == &PPCDoubleDouble);
     auto Ret = U.IEEE.convert(PPCDoubleDoubleImpl, RM, losesInfo);
     *this = APFloat(
-        DoubleAPFloat(PPCDoubleDouble, std::move(*this), APFloat(IEEEdouble)));
+        DoubleAPFloat(PPCDoubleDouble, std::move(*this), APFloat(IEEEdouble)),
+        ToSemantics);
     return Ret;
   } else if (usesLayout<DoubleAPFloat>(getSemantics()) &&
              usesLayout<IEEEFloat>(ToSemantics)) {
     auto Ret = getIEEE().convert(ToSemantics, RM, losesInfo);
-    *this = APFloat(std::move(getIEEE()));
+    *this = APFloat(std::move(getIEEE()), ToSemantics);
     return Ret;
   } else {
     llvm_unreachable("Unexpected semantics");
+  }
+}
+
+APFloat APFloat::getAllOnesValue(unsigned BitWidth, bool isIEEE) {
+  if (isIEEE) {
+    switch (BitWidth) {
+    case 16:
+      return APFloat(IEEEhalf, APInt::getAllOnesValue(BitWidth));
+    case 32:
+      return APFloat(IEEEsingle, APInt::getAllOnesValue(BitWidth));
+    case 64:
+      return APFloat(IEEEdouble, APInt::getAllOnesValue(BitWidth));
+    case 80:
+      return APFloat(x87DoubleExtended, APInt::getAllOnesValue(BitWidth));
+    case 128:
+      return APFloat(IEEEquad, APInt::getAllOnesValue(BitWidth));
+    default:
+      llvm_unreachable("Unknown floating bit width");
+    }
+  } else {
+    assert(BitWidth == 128);
+    return APFloat(PPCDoubleDouble, APInt::getAllOnesValue(BitWidth));
   }
 }
 
