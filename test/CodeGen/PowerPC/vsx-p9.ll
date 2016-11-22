@@ -331,4 +331,83 @@ entry:
 ; Function Attrs: nounwind readnone
 declare <2 x i64> @llvm.ppc.vsx.xvtstdcdp(<2 x double> %a, i32 %b)
 
+define <4 x float> @testXVCVHPSP(<8 x i16> %a) {
+entry:
+  %0 = tail call <4 x float>@llvm.ppc.vsx.xvcvhpsp(<8 x i16> %a)
+  ret <4 x float> %0
+; CHECK-LABEL: testXVCVHPSP
+; CHECK: xvcvhpsp 34, 34
+; CHECK: blr
+}
+; Function Attrs: nounwind readnone
+declare <4 x float>@llvm.ppc.vsx.xvcvhpsp(<8 x i16>)
+
+; Function Attrs: nounwind readnone
+define <4 x i32> @testLXVL(i8* %a, i64 %b) {
+entry:
+  %0 = tail call <4 x i32> @llvm.ppc.vsx.lxvl(i8* %a, i64 %b)
+  ret <4 x i32> %0
+; CHECK-LABEL: testLXVL
+; CHECK: lxvl 34, 3, 4
+; CHECK: blr
+}
+; Function Attrs: nounwind readnone
+declare <4 x i32> @llvm.ppc.vsx.lxvl(i8*, i64)
+
+define void @testSTXVL(<4 x i32> %a, i8* %b, i64 %c) {
+entry:
+  tail call void @llvm.ppc.vsx.stxvl(<4 x i32> %a, i8* %b, i64 %c)
+  ret void
+; CHECK-LABEL: testSTXVL
+; CHECK: stxvl 34, 5, 6
+; CHECK: blr
+}
+; Function Attrs: nounwind readnone
+declare void @llvm.ppc.vsx.stxvl(<4 x i32>, i8*, i64)
+
+; Function Attrs: nounwind readnone
+define <4 x i32> @testLXVLL(i8* %a, i64 %b) {
+entry:
+  %0 = tail call <4 x i32> @llvm.ppc.vsx.lxvll(i8* %a, i64 %b)
+  ret <4 x i32> %0
+; CHECK-LABEL: testLXVLL
+; CHECK: lxvll 34, 3, 4
+; CHECK: blr
+}
+; Function Attrs: nounwind readnone
+declare <4 x i32> @llvm.ppc.vsx.lxvll(i8*, i64)
+
+define void @testSTXVLL(<4 x i32> %a, i8* %b, i64 %c) {
+entry:
+  tail call void @llvm.ppc.vsx.stxvll(<4 x i32> %a, i8* %b, i64 %c)
+  ret void
+; CHECK-LABEL: testSTXVLL
+; CHECK: stxvll 34, 5, 6
+; CHECK: blr
+}
+; Function Attrs: nounwind readnone
+declare void @llvm.ppc.vsx.stxvll(<4 x i32>, i8*, i64)
+
+define <4 x i32> @test0(<4 x i32> %a) local_unnamed_addr #0 {
+entry:
+  %sub.i = sub <4 x i32> zeroinitializer, %a
+  ret <4 x i32> %sub.i
+
+; CHECK-LABEL: @test0
+; CHECK: vnegw 2, 2
+; CHECK: blr
+
+}
+
+define <2 x i64> @test1(<2 x i64> %a) local_unnamed_addr #0 {
+entry:
+  %sub.i = sub <2 x i64> zeroinitializer, %a
+  ret <2 x i64> %sub.i
+
+; CHECK-LABEL: @test1
+; CHECK: vnegd 2, 2
+; CHECK: blr
+
+}
+
 declare void @sink(...)

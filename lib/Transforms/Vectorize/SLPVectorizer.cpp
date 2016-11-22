@@ -2641,6 +2641,7 @@ Value *BoUpSLP::vectorizeTree(TreeEntry *E) {
         ExternalUses.push_back(ExternalUser(ScalarArg, cast<User>(V), 0));
 
       E->VectorizedValue = V;
+      propagateIRFlags(E->VectorizedValue, E->Scalars);
       ++NumVectorInstructions;
       return V;
     }
@@ -4435,7 +4436,7 @@ static Value *getReductionValue(const DominatorTree *DT, PHINode *P,
     return nullptr;
 
   // There is a loop latch, return the incoming value if it comes from
-  // that. This reduction pattern occassionaly turns up.
+  // that. This reduction pattern occasionally turns up.
   if (P->getIncomingBlock(0) == BBLatch) {
     Rdx = P->getIncomingValue(0);
   } else if (P->getIncomingBlock(1) == BBLatch) {

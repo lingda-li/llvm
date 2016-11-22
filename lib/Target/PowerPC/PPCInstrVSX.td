@@ -138,7 +138,7 @@ let Uses = [RM] in {
     def LXVW4X : XX1Form<31, 780,
                          (outs vsrc:$XT), (ins memrr:$src),
                          "lxvw4x $XT, $src", IIC_LdStLFD,
-                         [(set v4i32:$XT, (int_ppc_vsx_lxvw4x xoaddr:$src))]>;
+                         []>;
   } // mayLoad
 
   // Store indexed instructions
@@ -160,7 +160,7 @@ let Uses = [RM] in {
     def STXVW4X : XX1Form<31, 908,
                          (outs), (ins vsrc:$XT, memrr:$dst),
                          "stxvw4x $XT, $dst", IIC_LdStSTFD,
-                         [(store v4i32:$XT, xoaddr:$dst)]>;
+                         []>;
     }
   } // mayStore
 
@@ -1018,7 +1018,9 @@ let Predicates = [HasVSX, HasOnlySwappingMemOps] in {
   // Stores.
   def : Pat<(int_ppc_vsx_stxvd2x v2f64:$rS, xoaddr:$dst),
             (STXVD2X $rS, xoaddr:$dst)>;
-  def : Pat<(int_ppc_vsx_stxvw4x v4i32:$rS, xoaddr:$dst),
+  def : Pat<(int_ppc_vsx_stxvd2x_be v2f64:$rS, xoaddr:$dst),
+            (STXVD2X $rS, xoaddr:$dst)>;
+  def : Pat<(int_ppc_vsx_stxvw4x_be v4i32:$rS, xoaddr:$dst),
             (STXVW4X $rS, xoaddr:$dst)>;
   def : Pat<(PPCstxvd2x v2f64:$rS, xoaddr:$dst), (STXVD2X $rS, xoaddr:$dst)>;
 }
@@ -1026,8 +1028,12 @@ let Predicates = [IsBigEndian, HasVSX, HasOnlySwappingMemOps] in {
   def : Pat<(v2f64 (load xoaddr:$src)), (LXVD2X xoaddr:$src)>;
   def : Pat<(v2i64 (load xoaddr:$src)), (LXVD2X xoaddr:$src)>;
   def : Pat<(v4i32 (load xoaddr:$src)), (LXVW4X xoaddr:$src)>;
+  def : Pat<(v4i32 (int_ppc_vsx_lxvw4x xoaddr:$src)), (LXVW4X xoaddr:$src)>;
   def : Pat<(store v2f64:$rS, xoaddr:$dst), (STXVD2X $rS, xoaddr:$dst)>;
   def : Pat<(store v2i64:$rS, xoaddr:$dst), (STXVD2X $rS, xoaddr:$dst)>;
+  def : Pat<(store v4i32:$XT, xoaddr:$dst), (STXVW4X $XT, xoaddr:$dst)>;
+  def : Pat<(int_ppc_vsx_stxvw4x v4i32:$rS, xoaddr:$dst),
+            (STXVW4X $rS, xoaddr:$dst)>;
 }
 
 // Permutes.
@@ -1848,6 +1854,9 @@ let Predicates = [IsLittleEndian, HasVSX] in
   def : Pat<(f64 (vector_extract v2f64:$S, i64:$Idx)),
             (f64 VectorExtractions.LE_VARIABLE_DOUBLE)>;
 
+def : Pat<(v4i32 (int_ppc_vsx_lxvw4x_be xoaddr:$src)), (LXVW4X xoaddr:$src)>;
+def : Pat<(v2f64 (int_ppc_vsx_lxvd2x_be xoaddr:$src)), (LXVD2X xoaddr:$src)>;
+
 let Predicates = [IsLittleEndian, HasDirectMove] in {
   // v16i8 scalar <-> vector conversions (LE)
   def : Pat<(v16i8 (scalar_to_vector i32:$A)),
@@ -2132,6 +2141,7 @@ let AddedComplexity = 400, Predicates = [HasP9Vector] in {
   def XSCVSDQP  : X_VT5_XO5_VB5_TyVB<63, 10, 836, "xscvsdqp", vfrc, []>;
   def XSCVUDQP  : X_VT5_XO5_VB5_TyVB<63,  2, 836, "xscvudqp", vfrc, []>;
 
+  let UseVSXReg = 1 in {
   //===--------------------------------------------------------------------===//
   // Round to Floating-Point Integer Instructions
 
@@ -2147,6 +2157,14 @@ let AddedComplexity = 400, Predicates = [HasP9Vector] in {
   def XVCVSPHP : XX2_XT6_XO5_XB6<60, 25, 475, "xvcvsphp", vsrc,
                                  [(set v4f32:$XT,
                                      (int_ppc_vsx_xvcvsphp v4f32:$XB))]>;
+
+  } // UseVSXReg = 1
+
+  // Pattern for matching Vector HP -> Vector SP intrinsic. Defined as a
+  // seperate pattern so that it can convert the input register class from
+  // VRRC(v8i16) to VSRC.
+  def : Pat<(v4f32 (int_ppc_vsx_xvcvhpsp v8i16:$A)),
+            (v4f32 (XVCVHPSP (COPY_TO_REGCLASS $A, VSRC)))>;
 
   class Z23_VT5_R1_VB5_RMC2_EX1<bits<6> opcode, bits<8> xo, bit ex, string opc,
                                 list<dag> pattern>
@@ -2317,8 +2335,14 @@ let AddedComplexity = 400, Predicates = [HasP9Vector] in {
                 [(set v2f64:$XT, (load xoaddr:$src))]>;
 
   // Load Vector (Left-justified) with Length
-  def LXVL    : X_XT6_RA5_RB5<31, 269, "lxvl"   , vsrc, []>;
-  def LXVLL   : X_XT6_RA5_RB5<31, 301, "lxvll"  , vsrc, []>;
+  def LXVL : XX1Form<31, 269, (outs vsrc:$XT), (ins memr:$src, g8rc:$rB),
+                   "lxvl $XT, $src, $rB", IIC_LdStLoad,
+                   [(set v4i32:$XT, (int_ppc_vsx_lxvl addr:$src, i64:$rB))]>,
+                    UseVSXReg;
+  def LXVLL : XX1Form<31,301, (outs vsrc:$XT), (ins memr:$src, g8rc:$rB),
+                   "lxvll $XT, $src, $rB", IIC_LdStLoad,
+                   [(set v4i32:$XT, (int_ppc_vsx_lxvll addr:$src, i64:$rB))]>,
+                    UseVSXReg;
 
   // Load Vector Word & Splat Indexed
   def LXVWSX  : X_XT6_RA5_RB5<31, 364, "lxvwsx" , vsrc, []>;
@@ -2362,8 +2386,14 @@ let AddedComplexity = 400, Predicates = [HasP9Vector] in {
                  [(store v2f64:$XT, xoaddr:$dst)]>;
 
   // Store Vector (Left-justified) with Length
-  def STXVL    : X_XS6_RA5_RB5<31,  397, "stxvl"   , vsrc, []>;
-  def STXVLL   : X_XS6_RA5_RB5<31,  429, "stxvll"  , vsrc, []>;
+  def STXVL : XX1Form<31, 397, (outs), (ins vsrc:$XT, memr:$dst, g8rc:$rB),
+                   "stxvl $XT, $dst, $rB", IIC_LdStLoad,
+                   [(int_ppc_vsx_stxvl v4i32:$XT, addr:$dst, i64:$rB)]>,
+                    UseVSXReg;
+  def STXVLL : XX1Form<31, 429, (outs), (ins vsrc:$XT, memr:$dst, g8rc:$rB),
+                   "stxvll $XT, $dst, $rB", IIC_LdStLoad,
+                   [(int_ppc_vsx_stxvll v4i32:$XT, addr:$dst, i64:$rB)]>,
+                    UseVSXReg;
   } // mayStore
 
   // Patterns for which instructions from ISA 3.0 are a better match
