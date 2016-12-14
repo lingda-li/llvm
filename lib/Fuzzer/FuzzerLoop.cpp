@@ -15,7 +15,6 @@
 #include "FuzzerMutate.h"
 #include "FuzzerRandom.h"
 #include "FuzzerTracePC.h"
-
 #include <algorithm>
 #include <cstring>
 #include <memory>
@@ -158,7 +157,7 @@ void FreeHook(const volatile void *ptr) {
 
 // Crash on a single malloc that exceeds the rss limit.
 void Fuzzer::HandleMalloc(size_t Size) {
-  if ((Size >> 20) < (size_t)Options.RssLimitMb)
+  if (!Options.RssLimitMb || (Size >> 20) < (size_t)Options.RssLimitMb)
     return;
   Printf("==%d== ERROR: libFuzzer: out-of-memory (malloc(%zd))\n", GetPid(),
          Size);
@@ -193,6 +192,8 @@ Fuzzer::Fuzzer(UserCallback CB, InputCorpus &Corpus, MutationDispatcher &MD,
     EpochOfLastReadOfOutputCorpus = GetEpoch(Options.OutputCorpus);
   MaxInputLen = MaxMutationLen = Options.MaxLen;
   AllocateCurrentUnitData();
+  CurrentUnitSize = 0;
+  memset(BaseSha1, 0, sizeof(BaseSha1));
 }
 
 Fuzzer::~Fuzzer() { }
@@ -263,7 +264,7 @@ void Fuzzer::StaticInterruptCallback() {
 }
 
 void Fuzzer::CrashCallback() {
-  Printf("==%d== ERROR: libFuzzer: deadly signal\n", GetPid());
+  Printf("==%lu== ERROR: libFuzzer: deadly signal\n", GetPid());
   if (EF->__sanitizer_print_stack_trace)
     EF->__sanitizer_print_stack_trace();
   Printf("NOTE: libFuzzer has rudimentary signal handlers.\n"
@@ -276,7 +277,7 @@ void Fuzzer::CrashCallback() {
 }
 
 void Fuzzer::InterruptCallback() {
-  Printf("==%d== libFuzzer: run interrupted; exiting\n", GetPid());
+  Printf("==%lu== libFuzzer: run interrupted; exiting\n", GetPid());
   PrintFinalStats();
   _Exit(0);  // Stop right now, don't perform any at-exit actions.
 }
@@ -285,7 +286,7 @@ NO_SANITIZE_MEMORY
 void Fuzzer::AlarmCallback() {
   assert(Options.UnitTimeoutSec > 0);
   if (!InFuzzingThread()) return;
-  if (!CurrentUnitSize)
+  if (!RunningCB)
     return; // We have not started running units yet.
   size_t Seconds =
       duration_cast<seconds>(system_clock::now() - UnitStartTime).count();
@@ -298,7 +299,7 @@ void Fuzzer::AlarmCallback() {
     Printf("       and the timeout value is %d (use -timeout=N to change)\n",
            Options.UnitTimeoutSec);
     DumpCurrentUnit("timeout-");
-    Printf("==%d== ERROR: libFuzzer: timeout after %d seconds\n", GetPid(),
+    Printf("==%lu== ERROR: libFuzzer: timeout after %d seconds\n", GetPid(),
            Seconds);
     if (EF->__sanitizer_print_stack_trace)
       EF->__sanitizer_print_stack_trace();
@@ -310,7 +311,7 @@ void Fuzzer::AlarmCallback() {
 
 void Fuzzer::RssLimitCallback() {
   Printf(
-      "==%d== ERROR: libFuzzer: out-of-memory (used: %zdMb; limit: %zdMb)\n",
+      "==%lu== ERROR: libFuzzer: out-of-memory (used: %zdMb; limit: %zdMb)\n",
       GetPid(), GetPeakRSSMb(), Options.RssLimitMb);
   Printf("   To change the out-of-memory limit use -rss_limit_mb=<N>\n\n");
   if (EF->__sanitizer_print_memory_profile)
@@ -486,7 +487,9 @@ size_t Fuzzer::RunOne(const uint8_t *Data, size_t Size) {
   ExecuteCallback(Data, Size);
 
   size_t Res = 0;
-  if (size_t NumFeatures = TPC.FinalizeTrace(&Corpus, Size, Options.Shrink))
+  if (size_t NumFeatures = TPC.CollectFeatures([&](size_t Feature) -> bool {
+        return Corpus.AddFeature(Feature, Size, Options.Shrink);
+      }))
     Res = NumFeatures;
 
   if (!TPC.UsingTracePcGuard()) {
@@ -529,7 +532,9 @@ void Fuzzer::ExecuteCallback(const uint8_t *Data, size_t Size) {
   UnitStartTime = system_clock::now();
   ResetCounters();  // Reset coverage right before the callback.
   TPC.ResetMaps();
+  RunningCB = true;
   int Res = CB(DataCopy, Size);
+  RunningCB = false;
   UnitStopTime = system_clock::now();
   (void)Res;
   assert(Res == 0);
@@ -634,7 +639,8 @@ void Fuzzer::Merge(const std::vector<std::string> &Corpora) {
 
   assert(MaxInputLen > 0);
   UnitVector Initial, Extra;
-  ReadDirToVectorOfUnits(Corpora[0].c_str(), &Initial, nullptr, MaxInputLen, true);
+  ReadDirToVectorOfUnits(Corpora[0].c_str(), &Initial, nullptr, MaxInputLen,
+                         true);
   for (auto &C : ExtraCorpora)
     ReadDirToVectorOfUnits(C.c_str(), &Extra, nullptr, MaxInputLen, true);
 
