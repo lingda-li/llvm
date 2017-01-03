@@ -565,7 +565,7 @@ Instruction *InstCombiner::FoldPHIArgOpIntoPHI(PHINode &PN) {
   if (CastInst *FirstCI = dyn_cast<CastInst>(FirstInst)) {
     CastInst *NewCI = CastInst::Create(FirstCI->getOpcode(), PhiVal,
                                        PN.getType());
-    NewCI->setDebugLoc(FirstInst->getDebugLoc());
+    NewCI->setDebugLoc(PHIArgMergedDebugLoc(PN));
     return NewCI;
   }
 
@@ -576,14 +576,14 @@ Instruction *InstCombiner::FoldPHIArgOpIntoPHI(PHINode &PN) {
     for (unsigned i = 1, e = PN.getNumIncomingValues(); i != e; ++i)
       BinOp->andIRFlags(PN.getIncomingValue(i));
 
-    BinOp->setDebugLoc(FirstInst->getDebugLoc());
+    BinOp->setDebugLoc(PHIArgMergedDebugLoc(PN));
     return BinOp;
   }
 
   CmpInst *CIOp = cast<CmpInst>(FirstInst);
   CmpInst *NewCI = CmpInst::Create(CIOp->getOpcode(), CIOp->getPredicate(),
                                    PhiVal, ConstantOp);
-  NewCI->setDebugLoc(FirstInst->getDebugLoc());
+  NewCI->setDebugLoc(PHIArgMergedDebugLoc(PN));
   return NewCI;
 }
 

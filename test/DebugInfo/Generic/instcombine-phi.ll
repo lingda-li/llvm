@@ -173,6 +173,131 @@ if.end:                                           ; preds = %if.else, %if.then
   ret i32 %r.0, !dbg !38
 }
 
+; Test folding of a cast.  Generated from source:
+
+; extern int foo(void);
+; extern int bar(void);
+; 
+; long long cast(int a) {
+;   long long r;
+;   if(a)
+;     r = foo();
+;   else
+;     r = bar();
+;   return r;
+; }
+
+; CHECK: define i64 @cast
+; CHECK-LABEL: if.end:
+; CHECK: %[[PHI:.*]] = phi i32 [ %call, %if.then ], [ %call1, %if.else ]
+; CHECK: sext i32 %[[PHI]] to i64
+; CHECK-NOT: !dbg
+; CHECK: ret i64
+
+define i64 @cast(i32 %a) !dbg !39 {
+entry:
+  %tobool = icmp ne i32 %a, 0, !dbg !40
+  br i1 %tobool, label %if.then, label %if.else, !dbg !40
+
+if.then:                                          ; preds = %entry
+  %call = call i32 @foo(), !dbg !41
+  %conv = sext i32 %call to i64, !dbg !41
+  br label %if.end, !dbg !42
+
+if.else:                                          ; preds = %entry
+  %call1 = call i32 @bar(), !dbg !43
+  %conv2 = sext i32 %call1 to i64, !dbg !43
+  br label %if.end
+
+if.end:                                           ; preds = %if.else, %if.then
+  %r.0 = phi i64 [ %conv, %if.then ], [ %conv2, %if.else ]
+  ret i64 %r.0, !dbg !44
+}
+
+; Test folding of a binary op with a RHS constant.  Generated from source:
+
+; extern int foo(void);
+; extern int bar(void);
+; 
+; int binop_const(int a) {
+;   int r;
+;   if(a)
+;     r = foo() - 5;
+;   else
+;     r = bar() - 5;
+;   return r;
+; }
+
+; CHECK: define i32 @binop_const
+; CHECK-LABEL: if.end:
+; CHECK: %[[PHI:.*]] = phi i32 [ %call, %if.then ], [ %call1, %if.else ]
+; CHECK: add nsw i32 %[[PHI]], -5
+; CHECK-NOT: !dbg
+; CHECK: ret i32
+
+define i32 @binop_const(i32 %a) !dbg !45 {
+entry:
+  %tobool = icmp ne i32 %a, 0, !dbg !46
+  br i1 %tobool, label %if.then, label %if.else, !dbg !46
+
+if.then:                                          ; preds = %entry
+  %call = call i32 @foo(), !dbg !47
+  %sub = sub nsw i32 %call, 5, !dbg !48
+  br label %if.end, !dbg !49
+
+if.else:                                          ; preds = %entry
+  %call1 = call i32 @bar(), !dbg !50
+  %sub2 = sub nsw i32 %call1, 5, !dbg !51
+  br label %if.end
+
+if.end:                                           ; preds = %if.else, %if.then
+  %r.0 = phi i32 [ %sub, %if.then ], [ %sub2, %if.else ]
+  ret i32 %r.0, !dbg !52
+}
+
+; Test folding of a compare with RHS constant.  Generated from source (with
+; editing to common the zext):
+
+; extern int foo(void);
+; extern int bar(void);
+; 
+; int cmp_const(int a) {
+;   int r;
+;   if(a)
+;     r = foo() < 10;
+;   else
+;     r = bar() < 10;
+;   return r;
+; }
+
+; CHECK: define i32 @cmp_const
+; CHECK-LABEL: if.end:
+; CHECK: %[[PHI:.*]] = phi i32 [ %call, %if.then ], [ %call1, %if.else ]
+; CHECK: icmp slt i32 %[[PHI]], 10
+; CHECK-NOT: !dbg
+; CHECK: ret i32
+
+define i32 @cmp_const(i32 %a) !dbg !53 {
+entry:
+  %tobool = icmp ne i32 %a, 0, !dbg !54
+  br i1 %tobool, label %if.then, label %if.else, !dbg !54
+
+if.then:                                          ; preds = %entry
+  %call = call i32 @foo(), !dbg !55
+  %cmp = icmp slt i32 %call, 10, !dbg !56
+  br label %if.end, !dbg !57
+
+if.else:                                          ; preds = %entry
+  %call1 = call i32 @bar(), !dbg !58
+  %cmp2 = icmp slt i32 %call1, 10, !dbg !59
+  br label %if.end
+
+if.end:                                           ; preds = %if.else, %if.then
+  %r.0 = phi i1 [ %cmp, %if.then ], [ %cmp2, %if.else ]
+  %conv = zext i1 %r.0 to i32
+  ret i32 %conv, !dbg !60
+}
+
 declare i32 @foo()
 declare i32 @bar()
 declare i64 @foo2()
@@ -221,3 +346,25 @@ declare i32* @bar3()
 !36 = !DILocation(line: 39, column: 10, scope: !31)
 !37 = !DILocation(line: 39, column: 9, scope: !31)
 !38 = !DILocation(line: 40, column: 3, scope: !31)
+!39 = distinct !DISubprogram(name: "cast", scope: !1, file: !1, line: 43, type: !7, isLocal: false, isDefinition: true, scopeLine: 43, flags: DIFlagPrototyped, isOptimized: false, unit: !0, variables: !2)
+!40 = !DILocation(line: 45, column: 6, scope: !39)
+!41 = !DILocation(line: 46, column: 9, scope: !39)
+!42 = !DILocation(line: 46, column: 5, scope: !39)
+!43 = !DILocation(line: 48, column: 9, scope: !39)
+!44 = !DILocation(line: 49, column: 3, scope: !39)
+!45 = distinct !DISubprogram(name: "binop_const", scope: !1, file: !1, line: 52, type: !7, isLocal: false, isDefinition: true, scopeLine: 52, flags: DIFlagPrototyped, isOptimized: false, unit: !0, variables: !2)
+!46 = !DILocation(line: 54, column: 6, scope: !45)
+!47 = !DILocation(line: 55, column: 9, scope: !45)
+!48 = !DILocation(line: 55, column: 15, scope: !45)
+!49 = !DILocation(line: 55, column: 5, scope: !45)
+!50 = !DILocation(line: 57, column: 9, scope: !45)
+!51 = !DILocation(line: 57, column: 15, scope: !45)
+!52 = !DILocation(line: 58, column: 3, scope: !45)
+!53 = distinct !DISubprogram(name: "cmp_const", scope: !1, file: !1, line: 61, type: !7, isLocal: false, isDefinition: true, scopeLine: 61, flags: DIFlagPrototyped, isOptimized: false, unit: !0, variables: !2)
+!54 = !DILocation(line: 63, column: 6, scope: !53)
+!55 = !DILocation(line: 64, column: 9, scope: !53)
+!56 = !DILocation(line: 64, column: 15, scope: !53)
+!57 = !DILocation(line: 64, column: 5, scope: !53)
+!58 = !DILocation(line: 66, column: 9, scope: !53)
+!59 = !DILocation(line: 66, column: 15, scope: !53)
+!60 = !DILocation(line: 67, column: 3, scope: !53)

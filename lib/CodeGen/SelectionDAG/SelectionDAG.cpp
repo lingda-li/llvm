@@ -2087,7 +2087,10 @@ void SelectionDAG::computeKnownBits(SDValue Op, APInt &KnownZero,
       if (M < 0) {
         // For UNDEF elements, we don't know anything about the common state of
         // the shuffle result.
-        KnownZero = KnownOne = APInt(BitWidth, 0);
+        KnownOne.clearAllBits();
+        KnownZero.clearAllBits();
+        DemandedLHS.clearAllBits();
+        DemandedRHS.clearAllBits();
         break;
       }
 
@@ -2103,6 +2106,9 @@ void SelectionDAG::computeKnownBits(SDValue Op, APInt &KnownZero,
       KnownOne &= KnownOne2;
       KnownZero &= KnownZero2;
     }
+    // If we don't know any bits, early out.
+    if (!KnownOne && !KnownZero)
+      break;
     if (!!DemandedRHS) {
       SDValue RHS = Op.getOperand(1);
       computeKnownBits(RHS, KnownZero2, KnownOne2, DemandedRHS, Depth + 1);
@@ -2126,6 +2132,9 @@ void SelectionDAG::computeKnownBits(SDValue Op, APInt &KnownZero,
         KnownOne &= KnownOne2;
         KnownZero &= KnownZero2;
       }
+      // If we don't know any bits, early out.
+      if (!KnownOne && !KnownZero)
+        break;
     }
     break;
   }
@@ -2207,6 +2216,9 @@ void SelectionDAG::computeKnownBits(SDValue Op, APInt &KnownZero,
           unsigned Offset = (i % SubScale) * BitWidth;
           KnownOne &= KnownOne2.lshr(Offset).trunc(BitWidth);
           KnownZero &= KnownZero2.lshr(Offset).trunc(BitWidth);
+          // If we don't know any bits, early out.
+          if (!KnownOne && !KnownZero)
+            break;
         }
     }
     break;
@@ -2290,6 +2302,9 @@ void SelectionDAG::computeKnownBits(SDValue Op, APInt &KnownZero,
   }
   case ISD::SELECT:
     computeKnownBits(Op.getOperand(2), KnownZero, KnownOne, Depth+1);
+    // If we don't know any bits, early out.
+    if (!KnownOne && !KnownZero)
+      break;
     computeKnownBits(Op.getOperand(1), KnownZero2, KnownOne2, Depth+1);
 
     // Only known if known in both the LHS and RHS.
@@ -2298,6 +2313,9 @@ void SelectionDAG::computeKnownBits(SDValue Op, APInt &KnownZero,
     break;
   case ISD::SELECT_CC:
     computeKnownBits(Op.getOperand(3), KnownZero, KnownOne, Depth+1);
+    // If we don't know any bits, early out.
+    if (!KnownOne && !KnownZero)
+      break;
     computeKnownBits(Op.getOperand(2), KnownZero2, KnownOne2, Depth+1);
 
     // Only known if known in both the LHS and RHS.
@@ -2691,15 +2709,15 @@ void SelectionDAG::computeKnownBits(SDValue Op, APInt &KnownZero,
   case ISD::SMAX:
   case ISD::UMIN:
   case ISD::UMAX: {
-    APInt Op0Zero, Op0One;
-    APInt Op1Zero, Op1One;
-    computeKnownBits(Op.getOperand(0), Op0Zero, Op0One, DemandedElts,
+    computeKnownBits(Op.getOperand(0), KnownZero, KnownOne, DemandedElts,
                      Depth + 1);
-    computeKnownBits(Op.getOperand(1), Op1Zero, Op1One, DemandedElts,
+    // If we don't know any bits, early out.
+    if (!KnownOne && !KnownZero)
+      break;
+    computeKnownBits(Op.getOperand(1), KnownZero2, KnownOne2, DemandedElts,
                      Depth + 1);
-
-    KnownZero = Op0Zero & Op1Zero;
-    KnownOne = Op0One & Op1One;
+    KnownZero &= KnownZero2;
+    KnownOne &= KnownOne2;
     break;
   }
   case ISD::FrameIndex:
@@ -6159,14 +6177,14 @@ SDNode *SelectionDAG::SelectNodeTo(SDNode *N, unsigned MachineOpc,
   return New;
 }
 
-/// UpdadeSDLocOnMergedSDNode - If the opt level is -O0 then it throws away
+/// UpdateSDLocOnMergeSDNode - If the opt level is -O0 then it throws away
 /// the line number information on the merged node since it is not possible to
 /// preserve the information that operation is associated with multiple lines.
 /// This will make the debugger working better at -O0, were there is a higher
 /// probability having other instructions associated with that line.
 ///
 /// For IROrder, we keep the smaller of the two
-SDNode *SelectionDAG::UpdadeSDLocOnMergedSDNode(SDNode *N, const SDLoc &OLoc) {
+SDNode *SelectionDAG::UpdateSDLocOnMergeSDNode(SDNode *N, const SDLoc &OLoc) {
   DebugLoc NLoc = N->getDebugLoc();
   if (NLoc && OptLevel == CodeGenOpt::None && OLoc.getDebugLoc() != NLoc) {
     N->setDebugLoc(DebugLoc());
@@ -6200,7 +6218,7 @@ SDNode *SelectionDAG::MorphNodeTo(SDNode *N, unsigned Opc,
     FoldingSetNodeID ID;
     AddNodeIDNode(ID, Opc, VTs, Ops);
     if (SDNode *ON = FindNodeOrInsertPos(ID, SDLoc(N), IP))
-      return UpdadeSDLocOnMergedSDNode(ON, SDLoc(N));
+      return UpdateSDLocOnMergeSDNode(ON, SDLoc(N));
   }
 
   if (!RemoveNodeFromCSEMaps(N))
@@ -6352,7 +6370,7 @@ MachineSDNode *SelectionDAG::getMachineNode(unsigned Opcode, const SDLoc &DL,
     AddNodeIDNode(ID, ~Opcode, VTs, Ops);
     IP = nullptr;
     if (SDNode *E = FindNodeOrInsertPos(ID, DL, IP)) {
-      return cast<MachineSDNode>(UpdadeSDLocOnMergedSDNode(E, DL));
+      return cast<MachineSDNode>(UpdateSDLocOnMergeSDNode(E, DL));
     }
   }
 
@@ -7514,6 +7532,16 @@ SDNode *SelectionDAG::isConstantIntBuildVectorOrConstantInt(SDValue N) {
     if (GA->getOpcode() == ISD::GlobalAddress &&
         TLI->isOffsetFoldingLegal(GA))
       return GA;
+  return nullptr;
+}
+
+SDNode *SelectionDAG::isConstantFPBuildVectorOrConstantFP(SDValue N) {
+  if (isa<ConstantFPSDNode>(N))
+    return N.getNode();
+
+  if (ISD::isBuildVectorOfConstantFPSDNodes(N.getNode()))
+    return N.getNode();
+
   return nullptr;
 }
 
