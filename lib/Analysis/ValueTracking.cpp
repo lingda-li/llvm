@@ -3234,21 +3234,6 @@ bool llvm::isSafeToSpeculativelyExecute(const Value *V,
     // The numerator *might* be MinSignedValue.
     return false;
   }
-  case Instruction::FDiv:
-  case Instruction::FRem:{
-    const Value *Denominator = Inst->getOperand(1);
-    // x / y is undefined if y == 0
-    // The denominator is not a constant, so there is nothing we can do to prove
-    // it is non-zero.
-    if (auto *VV = dyn_cast<ConstantVector>(Denominator))
-      Denominator = VV->getSplatValue();
-    if (!isa<ConstantFP>(Denominator))
-      return false;
-    // The denominator is a zero constant - we can't speculate here.
-    if (m_AnyZero().match(Denominator))
-      return false;
-    return true;
-  }
   case Instruction::Load: {
     const LoadInst *LI = cast<LoadInst>(Inst);
     if (!LI->isUnordered() ||
