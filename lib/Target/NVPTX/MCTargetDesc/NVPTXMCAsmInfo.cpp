@@ -37,7 +37,7 @@ NVPTXMCAsmInfo::NVPTXMCAsmInfo(const Triple &TheTriple) {
   InlineAsmStart = " begin inline asm";
   InlineAsmEnd = " end inline asm";
 
-  SupportsDebugInformation = CompileForDebugging;
+  SupportsDebugInformation = true;
   // PTX does not allow .align on functions.
   HasFunctionAlignment = false;
   HasDotTypeDotSizeDirective = false;
@@ -46,12 +46,13 @@ NVPTXMCAsmInfo::NVPTXMCAsmInfo(const Triple &TheTriple) {
   ProtectedVisibilityAttr = MCSA_Invalid;
 
   Data8bitsDirective = " .b8 ";
-  Data16bitsDirective = " .b16 ";
+  Data16bitsDirective = nullptr; // not supported
   Data32bitsDirective = " .b32 ";
   Data64bitsDirective = " .b64 ";
   ZeroDirective = " .b8";
   AsciiDirective = " .b8";
   AscizDirective = " .b8";
+  SupportsQuotedNames = false;
 
   // @TODO: Can we just disable this?
   WeakDirective = "\t// .weak\t";

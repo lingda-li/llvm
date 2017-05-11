@@ -254,6 +254,18 @@ class DwarfDebug : public DebugHandlerBase {
   /// Whether to use DWARF 2 bitfields (instead of the DWARF 4 format).
   bool UseDWARF2Bitfields;
 
+  /// Use inlined strings.
+  bool UseInlineStrings = false;
+
+  /// Has debug info for macros.
+  bool HasMacDebugInfo = false;
+
+  /// Has debug info ranges.
+  bool HasRangesDebugInfo = false;
+
+  /// Emit debug info in cuda-gdb compatibility mode.
+  bool CUDACompatibilityMode = false;
+
   /// Whether to emit all linkage names, or just abstract subprograms.
   bool UseAllLinkageNames;
 
@@ -301,6 +313,9 @@ class DwarfDebug : public DebugHandlerBase {
   bool tuneForGDB() const { return DebuggerTuning == DebuggerKind::GDB; }
   bool tuneForLLDB() const { return DebuggerTuning == DebuggerKind::LLDB; }
   bool tuneForSCE() const { return DebuggerTuning == DebuggerKind::SCE; }
+  bool tuneForCudaGDB() const {
+    return DebuggerTuning == DebuggerKind::CudaGDB;
+  }
   /// @}
 
   MCDwarfDwoLineTable *getDwoLineTable(const DwarfCompileUnit &);
@@ -498,6 +513,13 @@ public:
   /// Returns whether to use the DWARF2 format for bitfields instyead of the
   /// DWARF4 format.
   bool useDWARF2Bitfields() const { return UseDWARF2Bitfields; }
+
+  /// Returns wether to use inline strings.
+  bool useInlineStrings() const { return UseInlineStrings; }
+
+  /// Should DW_AT_address_class be added to the variable for compatibility with
+  /// cuda-gdb.
+  bool isCUDACompatibilityMode() const { return CUDACompatibilityMode; }
 
   // Experimental DWARF5 features.
 

@@ -228,6 +228,8 @@ DwarfDebug::DwarfDebug(AsmPrinter *A, Module *M)
     DebuggerTuning = DebuggerKind::LLDB;
   else if (TT.isPS4CPU())
     DebuggerTuning = DebuggerKind::SCE;
+  else if (TT.isNVPTX() && TT.getOS() == Triple::CUDA)
+    DebuggerTuning = DebuggerKind::CudaGDB;
   else
     DebuggerTuning = DebuggerKind::GDB;
 
@@ -237,6 +239,9 @@ DwarfDebug::DwarfDebug(AsmPrinter *A, Module *M)
   else
     HasDwarfAccelTables = DwarfAccelTables == Enable;
 
+  CUDACompatibilityMode = tuneForCudaGDB();
+  UseInlineStrings = tuneForCudaGDB();
+  HasMacDebugInfo = HasRangesDebugInfo = !tuneForCudaGDB();
   HasAppleExtensionAttributes = tuneForLLDB();
 
   // Handle split DWARF. Off by default for now.
@@ -630,7 +635,8 @@ void DwarfDebug::finalizeModuleInfo() {
         U.addUInt(U.getUnitDie(), dwarf::DW_AT_low_pc, dwarf::DW_FORM_addr, 0);
       else
         U.setBaseAddress(TheCU.getRanges().front().getStart());
-      U.attachRangesOrLowHighPC(U.getUnitDie(), TheCU.takeRanges());
+      if (HasRangesDebugInfo || NumRanges == 1)
+        U.attachRangesOrLowHighPC(U.getUnitDie(), TheCU.takeRanges());
     }
 
     auto *CUNode = cast<DICompileUnit>(P.first);
@@ -661,7 +667,8 @@ void DwarfDebug::endModule() {
   // Finalize the debug info for the module.
   finalizeModuleInfo();
 
-  emitDebugStr();
+  if (!UseInlineStrings)
+    emitDebugStr();
 
   if (useSplitDwarf())
     emitDebugLocDWO();
@@ -680,10 +687,12 @@ void DwarfDebug::endModule() {
     emitDebugARanges();
 
   // Emit info into a debug ranges section.
-  emitDebugRanges();
+  if (HasRangesDebugInfo)
+    emitDebugRanges();
 
   // Emit info into a debug macinfo section.
-  emitDebugMacinfo();
+  if (HasMacDebugInfo)
+    emitDebugMacinfo();
 
   if (useSplitDwarf()) {
     emitDebugStrDWO();

@@ -11,6 +11,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "NVPTXMCAsmStreamer.h"
 #include "NVPTXMCTargetDesc.h"
 #include "InstPrinter/NVPTXInstPrinter.h"
 #include "NVPTXMCAsmInfo.h"
@@ -75,5 +76,8 @@ extern "C" void LLVMInitializeNVPTXTargetMC() {
 
     // Register the MCInstPrinter.
     TargetRegistry::RegisterMCInstPrinter(*T, createNVPTXMCInstPrinter);
+
+    // Register the AsmStreamer.
+    TargetRegistry::RegisterAsmStreamer(*T, createNVPTXAsmStreamer);
   }
 }

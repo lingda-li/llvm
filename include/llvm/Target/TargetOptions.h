@@ -93,7 +93,8 @@ namespace llvm {
     Default,  // No specific tuning requested.
     GDB,      // Tune debug info for gdb.
     LLDB,     // Tune debug info for lldb.
-    SCE       // Tune debug info for SCE targets (e.g. PS4).
+    SCE,      // Tune debug info for SCE targets (e.g. PS4).
+    CudaGDB,  // Tune debug info for NVPTX targets.
   };
 
   class TargetOptions {

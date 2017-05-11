@@ -110,56 +110,7 @@ void VisitGlobalVariableForEmission(
 }
 }
 
-void NVPTXAsmPrinter::emitLineNumberAsDotLoc(const MachineInstr &MI) {
-  if (!EmitLineNumbers)
-    return;
-  if (ignoreLoc(MI))
-    return;
-
-  const DebugLoc &curLoc = MI.getDebugLoc();
-
-  if (!prevDebugLoc && !curLoc)
-    return;
-
-  if (prevDebugLoc == curLoc)
-    return;
-
-  prevDebugLoc = curLoc;
-
-  if (!curLoc)
-    return;
-
-  auto *Scope = cast_or_null<DIScope>(curLoc.getScope());
-  if (!Scope)
-     return;
-
-  StringRef fileName(Scope->getFilename());
-  StringRef dirName(Scope->getDirectory());
-  SmallString<128> FullPathName = dirName;
-  if (!dirName.empty() && !sys::path::is_absolute(fileName)) {
-    sys::path::append(FullPathName, fileName);
-    fileName = FullPathName;
-  }
-
-  if (filenameMap.find(fileName) == filenameMap.end())
-    return;
-
-  // Emit the line from the source file.
-  if (InterleaveSrc)
-    this->emitSrcInText(fileName, curLoc.getLine());
-
-  std::stringstream temp;
-  temp << "\t.loc " << filenameMap[fileName] << " " << curLoc.getLine()
-       << " " << curLoc.getCol();
-  OutStreamer->EmitRawText(temp.str());
-}
-
 void NVPTXAsmPrinter::EmitInstruction(const MachineInstr *MI) {
-  SmallString<128> Str;
-  raw_svector_ostream OS(Str);
-  if (static_cast<NVPTXTargetMachine &>(TM).getDrvInterface() == NVPTX::CUDA)
-    emitLineNumberAsDotLoc(*MI);
-
   MCInst Inst;
   lowerToMCInst(MI, Inst);
   EmitToStreamer(*OutStreamer, Inst);
@@ -476,13 +427,13 @@ void NVPTXAsmPrinter::EmitFunctionEntryLabel() {
   OutStreamer->EmitRawText(O.str());
 
   prevDebugLoc = DebugLoc();
+  OutStreamer->EmitRawText(StringRef("{\n"));
+
+  VRegMapping.clear();
+  setAndEmitFunctionVirtualRegisters(*MF);
 }
 
 void NVPTXAsmPrinter::EmitFunctionBodyStart() {
-  VRegMapping.clear();
-  OutStreamer->EmitRawText(StringRef("{\n"));
-  setAndEmitFunctionVirtualRegisters(*MF);
-
   SmallString<128> Str;
   raw_svector_ostream O(Str);
   emitDemotedVars(MF->getFunction(), O);
@@ -490,7 +441,6 @@ void NVPTXAsmPrinter::EmitFunctionBodyStart() {
 }
 
 void NVPTXAsmPrinter::EmitFunctionBodyEnd() {
-  OutStreamer->EmitRawText(StringRef("}\n"));
   VRegMapping.clear();
 }
 
@@ -770,42 +720,6 @@ void NVPTXAsmPrinter::emitDeclarations(const Module &M, raw_ostream &O) {
   }
 }
 
-void NVPTXAsmPrinter::recordAndEmitFilenames(Module &M) {
-  DebugInfoFinder DbgFinder;
-  DbgFinder.processModule(M);
-
-  unsigned i = 1;
-  for (const DICompileUnit *DIUnit : DbgFinder.compile_units()) {
-    StringRef Filename = DIUnit->getFilename();
-    StringRef Dirname = DIUnit->getDirectory();
-    SmallString<128> FullPathName = Dirname;
-    if (!Dirname.empty() && !sys::path::is_absolute(Filename)) {
-      sys::path::append(FullPathName, Filename);
-      Filename = FullPathName;
-    }
-    if (filenameMap.find(Filename) != filenameMap.end())
-      continue;
-    filenameMap[Filename] = i;
-    OutStreamer->EmitDwarfFileDirective(i, "", Filename);
-    ++i;
-  }
-
-  for (DISubprogram *SP : DbgFinder.subprograms()) {
-    StringRef Filename = SP->getFilename();
-    StringRef Dirname = SP->getDirectory();
-    SmallString<128> FullPathName = Dirname;
-    if (!Dirname.empty() && !sys::path::is_absolute(Filename)) {
-      sys::path::append(FullPathName, Filename);
-      Filename = FullPathName;
-    }
-    if (filenameMap.find(Filename) != filenameMap.end())
-      continue;
-    filenameMap[Filename] = i;
-    OutStreamer->EmitDwarfFileDirective(i, "", Filename);
-    ++i;
-  }
-}
-
 static bool isEmptyXXStructor(GlobalVariable *GV) {
   if (!GV) return true;
   const ConstantArray *InitList = dyn_cast<ConstantArray>(GV->getInitializer());
@@ -841,23 +755,20 @@ bool NVPTXAsmPrinter::doInitialization(Module &M) {
   SmallString<128> Str1;
   raw_svector_ostream OS1(Str1);
 
-  MMI = getAnalysisIfAvailable<MachineModuleInfo>();
-
   // We need to call the parent's one explicitly.
   //bool Result = AsmPrinter::doInitialization(M);
 
   // Initialize TargetLoweringObjectFile since we didn't do in
   // AsmPrinter::doInitialization either right above or where it's commented out
   // below.
-  const_cast<TargetLoweringObjectFile &>(getObjFileLowering())
-      .Initialize(OutContext, TM);
+  // const_cast<TargetLoweringObjectFile &>(getObjFileLowering())
+  //     .Initialize(OutContext, TM);
 
   // Emit header before any dwarf directives are emitted below.
+  bool Result = AsmPrinter::doInitialization(M);
   emitHeader(M, OS1, STI);
   OutStreamer->EmitRawText(OS1.str());
 
-  // Already commented out
-  //bool Result = AsmPrinter::doInitialization(M);
 
   // Emit module-level inline asm if it exists.
   if (!M.getModuleInlineAsm().empty()) {
@@ -869,13 +780,9 @@ bool NVPTXAsmPrinter::doInitialization(Module &M) {
     OutStreamer->AddBlankLine();
   }
 
-  // If we're not NVCL we're CUDA, go ahead and emit filenames.
-  if (TM.getTargetTriple().getOS() != Triple::NVCL)
-    recordAndEmitFilenames(M);
-
   GlobalsEmitted = false;
-    
-  return false; // success
+
+  return Result;
 }
 
 void NVPTXAsmPrinter::emitGlobals(const Module &M) {
@@ -931,7 +838,7 @@ void NVPTXAsmPrinter::emitHeader(Module &M, raw_ostream &O,
       O << ", map_f64_to_f32";
   }
 
-  if (MAI->doesSupportDebugInformation())
+  if (MMI && MMI->hasDebugInfo())
     O << ", debug";
 
   O << "\n";
@@ -1665,8 +1572,14 @@ void NVPTXAsmPrinter::setAndEmitFunctionVirtualRegisters(
   const MachineFrameInfo &MFI = MF.getFrameInfo();
   int NumBytes = (int) MFI.getStackSize();
   if (NumBytes) {
-    O << "\t.local .align " << MFI.getMaxAlignment() << " .b8 \t" << DEPOTNAME
-      << getFunctionNumber() << "[" << NumBytes << "];\n";
+    SmallString<128> Str1;
+    raw_svector_ostream O1(Str1);
+    O1 << DEPOTNAME << getFunctionNumber();
+    MCSymbol *Sym = OutContext.getOrCreateSymbol(O1.str());
+    Sym->setUsed(/*Value=*/true);
+    FunctionsFrame.insert({&MF, Sym});
+    O << "\t.local .align " << MFI.getMaxAlignment() << " .b8 \t"
+      << Sym->getName() << "[" << NumBytes << "];\n";
     if (static_cast<const NVPTXTargetMachine &>(MF.getTarget()).is64Bit()) {
       O << "\t.reg .b64 \t%SP;\n";
       O << "\t.reg .b64 \t%SPL;\n";
@@ -1985,7 +1898,6 @@ void NVPTXAsmPrinter::bufferAggregateConstant(const Constant *CPV,
 // buildTypeNameMap - Run through symbol table looking for type names.
 //
 
-
 bool NVPTXAsmPrinter::ignoreLoc(const MachineInstr &MI) {
   switch (MI.getOpcode()) {
   default:
@@ -2284,6 +2196,14 @@ bool NVPTXAsmPrinter::PrintAsmMemoryOperand(
   return false;
 }
 
+MCSymbol *
+NVPTXAsmPrinter::getFunctionFrameSymbol(const MachineFunction *MF) const {
+  auto I = FunctionsFrame.find(MF);
+  if (I != FunctionsFrame.end())
+    return I->second;
+  return nullptr;
+}
+
 void NVPTXAsmPrinter::printOperand(const MachineInstr *MI, int opNum,
                                    raw_ostream &O, const char *Modifier) {
   const MachineOperand &MO = MI->getOperand(opNum);
@@ -2366,6 +2286,29 @@ LineReader *NVPTXAsmPrinter::getReader(const std::string &filename) {
   }
 
   return reader;
+}
+
+void NVPTXAsmPrinter::emitDwarfSymbolReference(const MCSymbol *Label,
+                                               bool ForceOffset) const {
+  MCSection *Section = &Label->getSection(/*SetUsed=*/false);
+  if (Section->getBeginSymbol() == Label) {
+    const MCObjectFileInfo *FI = OutContext.getObjectFileInfo();
+    SmallString<128> Str;
+    raw_svector_ostream OS1(Str);
+    if (Section == FI->getDwarfLocSection())
+      OS1 << ".debug_loc";
+    else if (Section == FI->getDwarfAbbrevSection())
+      OS1 << ".debug_abbrev";
+    else if (Section == FI->getDwarfInfoSection())
+      OS1 << ".debug_info";
+    else if (Section == FI->getDwarfLineSection())
+      OS1 << ".debug_line";
+    else
+      llvm_unreachable("Unknown dwarf section!");
+    OutStreamer->EmitRawText(OS1.str());
+    return;
+  }
+  AsmPrinter::emitDwarfSymbolReference(Label, ForceOffset);
 }
 
 std::string LineReader::readLine(unsigned lineNum) {

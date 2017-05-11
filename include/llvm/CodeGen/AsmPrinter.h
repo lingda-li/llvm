@@ -165,6 +165,9 @@ public:
   MCSymbol *getFunctionBegin() const { return CurrentFnBegin; }
   MCSymbol *getFunctionEnd() const { return CurrentFnEnd; }
   MCSymbol *getCurExceptionSym();
+  virtual MCSymbol *getFunctionFrameSymbol(const MachineFunction *MF) const {
+    return nullptr;
+  }
 
   /// Return information about object file lowering.
   const TargetLoweringObjectFile &getObjFileLowering() const;

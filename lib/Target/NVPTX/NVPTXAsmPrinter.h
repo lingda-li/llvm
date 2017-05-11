@@ -308,6 +308,11 @@ private:
   //
   bool EmitGeneric;
 
+  void emitDwarfSymbolReference(const MCSymbol *Label,
+                                bool ForceOffset = false) const;
+
+  llvm::SmallDenseMap<const MachineFunction *, MCSymbol *> FunctionsFrame;
+
 public:
   NVPTXAsmPrinter(TargetMachine &TM, std::unique_ptr<MCStreamer> Streamer)
       : AsmPrinter(TM, std::move(Streamer)),
@@ -322,9 +327,13 @@ public:
       delete reader;
   }
 
+  MCSymbol *getFunctionFrameSymbol(const MachineFunction *MF) const override;
+
   bool runOnMachineFunction(MachineFunction &F) override {
     nvptxSubtarget = &F.getSubtarget<NVPTXSubtarget>();
-    return AsmPrinter::runOnMachineFunction(F);
+    bool Result = AsmPrinter::runOnMachineFunction(F);
+    OutStreamer->EmitRawText(StringRef("}\n"));
+    return Result;
   }
   void getAnalysisUsage(AnalysisUsage &AU) const override {
     AU.addRequired<MachineLoopInfo>();
@@ -336,7 +345,6 @@ public:
   std::string getVirtualRegisterName(unsigned) const;
 
   DebugLoc prevDebugLoc;
-  void emitLineNumberAsDotLoc(const MachineInstr &);
 };
 } // end of namespace
 

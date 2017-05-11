@@ -61,6 +61,12 @@ void NVPTXFrameLowering::emitPrologue(MachineFunction &MF,
     BuildMI(MBB, MI, dl, MF.getSubtarget().getInstrInfo()->get(MovDepotOpcode),
             NVPTX::VRFrameLocal)
         .addImm(MF.getFunctionNumber());
+    if (getStackGrowthDirection() == TargetFrameLowering::StackGrowsUp) {
+      MF.getFrameInfo().setOffsetAdjustment(
+          -(int)MF.getFrameInfo().getStackSize());
+    } else {
+      MF.getFrameInfo().setOffsetAdjustment(MF.getFrameInfo().getStackSize());
+    }
   }
 }
 
@@ -76,3 +82,4 @@ MachineBasicBlock::iterator NVPTXFrameLowering::eliminateCallFramePseudoInstr(
   // ADJCALLSTACKUP instructions.
   return MBB.erase(I);
 }
+

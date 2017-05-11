@@ -194,6 +194,8 @@ DIE *DwarfCompileUnit::getOrCreateGlobalVariableDIE(
   }
   if (Loc)
     addBlock(*VariableDIE, dwarf::DW_AT_location, DwarfExpr->finalize());
+  if (DD->isCUDACompatibilityMode())
+    addUInt(*VariableDIE, dwarf::DW_AT_address_class, dwarf::DW_FORM_data1, 5);
 
   if (DD->useAllLinkageNames())
     addLinkageName(*VariableDIE, GV->getLinkageName());
@@ -286,10 +288,16 @@ DIE &DwarfCompileUnit::updateSubprogramScopeDIE(const DISubprogram *SP) {
 
   // Only include DW_AT_frame_base in full debug info
   if (!includeMinimalInlineScopes()) {
-    const TargetRegisterInfo *RI = Asm->MF->getSubtarget().getRegisterInfo();
-    MachineLocation Location(RI->getFrameRegister(*Asm->MF));
-    if (RI->isPhysicalRegister(Location.getReg()))
-      addAddress(*SPDie, dwarf::DW_AT_frame_base, Location);
+    if (DD->isCUDACompatibilityMode()) {
+      DIELoc *Loc = new (DIEValueAllocator) DIELoc;
+      addUInt(*Loc, dwarf::DW_FORM_data1, dwarf::DW_OP_call_frame_cfa);
+      addBlock(*SPDie, dwarf::DW_AT_frame_base, Loc);
+    } else {
+      const TargetRegisterInfo *RI = Asm->MF->getSubtarget().getRegisterInfo();
+      MachineLocation Location(RI->getFrameRegister(*Asm->MF));
+      if (RI->isPhysicalRegister(Location.getReg()))
+        addAddress(*SPDie, dwarf::DW_AT_frame_base, Location);
+    }
   }
 
   // Add name to the name table, we do this here because we're guaranteed
@@ -527,6 +535,8 @@ DIE *DwarfCompileUnit::constructVariableDIEImpl(const DbgVariable &DV,
 
   auto Expr = DV.getExpression().begin();
   DIELoc *Loc = new (DIEValueAllocator) DIELoc;
+  if (DD->isCUDACompatibilityMode())
+    addOpAddress(*Loc, Asm->getFunctionFrameSymbol(Asm->MF));
   DIEDwarfExpression DwarfExpr(*Asm, *this, *Loc);
   for (auto FI : DV.getFrameIndex()) {
     unsigned FrameReg = 0;
@@ -534,9 +544,28 @@ DIE *DwarfCompileUnit::constructVariableDIEImpl(const DbgVariable &DV,
     int Offset = TFI->getFrameIndexReference(*Asm->MF, FI, FrameReg);
     assert(Expr != DV.getExpression().end() && "Wrong number of expressions");
     DwarfExpr.addFragmentOffset(*Expr);
-    DwarfExpr.AddMachineRegIndirect(*Asm->MF->getSubtarget().getRegisterInfo(),
-                                    FrameReg, Offset);
-    DwarfExpr.AddExpression(*Expr);
+    if (DD->isCUDACompatibilityMode()) {
+      SmallVector<uint64_t, 8> Ops;
+      Ops.push_back(dwarf::DW_OP_plus);
+      Ops.push_back(Offset);
+      if ((*Expr)->getNumElements() == 4 &&
+          (*Expr)->getElement(3) == dwarf::DW_OP_xderef) {
+        addUInt(*VariableDie, dwarf::DW_AT_address_class, dwarf::DW_FORM_data1,
+                (*Expr)->getElement(1));
+      } else {
+        if (DD->isCUDACompatibilityMode()) {
+          addUInt(*VariableDie, dwarf::DW_AT_address_class,
+                  dwarf::DW_FORM_data1, 6);
+        }
+        Ops.append((*Expr)->elements_begin(), (*Expr)->elements_end());
+      }
+      DIExpressionCursor Cursor(Ops);
+      DwarfExpr.AddExpression(std::move(Cursor));
+    } else {
+      DwarfExpr.AddMachineRegIndirect(
+          *Asm->MF->getSubtarget().getRegisterInfo(), FrameReg, Offset);
+      DwarfExpr.AddExpression(*Expr);
+    }
     ++Expr;
   }
   addBlock(*VariableDie, dwarf::DW_AT_location, DwarfExpr.finalize());
