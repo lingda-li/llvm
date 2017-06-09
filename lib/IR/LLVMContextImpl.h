@@ -545,6 +545,7 @@ template <> struct MDNodeKeyImpl<DISubprogram> {
   Metadata *TemplateParams;
   Metadata *Declaration;
   Metadata *Variables;
+  Metadata *ThrownTypes;
 
   MDNodeKeyImpl(Metadata *Scope, MDString *Name, MDString *LinkageName,
                 Metadata *File, unsigned Line, Metadata *Type,
@@ -552,7 +553,8 @@ template <> struct MDNodeKeyImpl<DISubprogram> {
                 Metadata *ContainingType, unsigned Virtuality,
                 unsigned VirtualIndex, int ThisAdjustment, unsigned Flags,
                 bool IsOptimized, Metadata *Unit, Metadata *TemplateParams,
-                Metadata *Declaration, Metadata *Variables)
+                Metadata *Declaration, Metadata *Variables,
+                Metadata *ThrownTypes)
       : Scope(Scope), Name(Name), LinkageName(LinkageName), File(File),
         Line(Line), Type(Type), IsLocalToUnit(IsLocalToUnit),
         IsDefinition(IsDefinition), ScopeLine(ScopeLine),
@@ -560,7 +562,7 @@ template <> struct MDNodeKeyImpl<DISubprogram> {
         VirtualIndex(VirtualIndex), ThisAdjustment(ThisAdjustment),
         Flags(Flags), IsOptimized(IsOptimized), Unit(Unit),
         TemplateParams(TemplateParams), Declaration(Declaration),
-        Variables(Variables) {}
+        Variables(Variables), ThrownTypes(ThrownTypes) {}
   MDNodeKeyImpl(const DISubprogram *N)
       : Scope(N->getRawScope()), Name(N->getRawName()),
         LinkageName(N->getRawLinkageName()), File(N->getRawFile()),
@@ -571,7 +573,8 @@ template <> struct MDNodeKeyImpl<DISubprogram> {
         ThisAdjustment(N->getThisAdjustment()), Flags(N->getFlags()),
         IsOptimized(N->isOptimized()), Unit(N->getRawUnit()),
         TemplateParams(N->getRawTemplateParams()),
-        Declaration(N->getRawDeclaration()), Variables(N->getRawVariables()) {}
+        Declaration(N->getRawDeclaration()), Variables(N->getRawVariables()),
+        ThrownTypes(N->getRawThrownTypes()) {}
 
   bool isKeyOf(const DISubprogram *RHS) const {
     return Scope == RHS->getRawScope() && Name == RHS->getRawName() &&
@@ -588,7 +591,8 @@ template <> struct MDNodeKeyImpl<DISubprogram> {
            Unit == RHS->getUnit() &&
            TemplateParams == RHS->getRawTemplateParams() &&
            Declaration == RHS->getRawDeclaration() &&
-           Variables == RHS->getRawVariables();
+           Variables == RHS->getRawVariables() &&
+           ThrownTypes == RHS->getRawThrownTypes();
   }
   unsigned getHashValue() const {
     // If this is a declaration inside an ODR type, only hash the type and the
