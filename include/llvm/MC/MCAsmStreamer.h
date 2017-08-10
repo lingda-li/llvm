@@ -19,8 +19,9 @@ class MCAsmInfo;
 class MCCodeEmitter;
 class MCExpr;
 class MCInst;
+class raw_ostream;
 
-class MCAsmStreamer final : public MCStreamer {
+class MCAsmStreamer : public MCStreamer {
   std::unique_ptr<formatted_raw_ostream> OSOwner;
   formatted_raw_ostream &OS;
   const MCAsmInfo *MAI;
@@ -60,6 +61,9 @@ public:
   void EmitSyntaxDirective() override;
 
   void EmitCommentsAndEOL();
+
+  /// Prints the specified quoted \p Data string to the stream \p OS.
+  static void PrintQuotedString(StringRef Data, raw_ostream &OS);
 
   /// isVerboseAsm - Return true if this streamer supports verbose assembly at
   /// all.

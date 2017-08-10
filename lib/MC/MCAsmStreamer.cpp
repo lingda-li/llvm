@@ -34,7 +34,7 @@
 
 using namespace llvm;
 
-inline void MCAsmStreamer::EmitEOL() {
+void MCAsmStreamer::EmitEOL() {
   // Dump Explicit Comments here.
   emitExplicitComments();
   // If we don't have any comments, just emit a \n.
@@ -468,7 +468,7 @@ void MCAsmStreamer::EmitTBSSSymbol(MCSection *Section, MCSymbol *Symbol,
 
 static inline char toOctal(int X) { return (X&7)+'0'; }
 
-static void PrintQuotedString(StringRef Data, raw_ostream &OS) {
+void MCAsmStreamer::PrintQuotedString(StringRef Data, raw_ostream &OS) {
   OS << '"';
 
   for (unsigned i = 0, e = Data.size(); i != e; ++i) {
