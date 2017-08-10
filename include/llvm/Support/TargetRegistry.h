@@ -155,6 +155,10 @@ public:
       const Triple &TT, LLVMOpInfoCallback GetOpInfo,
       LLVMSymbolLookupCallback SymbolLookUp, void *DisInfo, MCContext *Ctx,
       std::unique_ptr<MCRelocationInfo> &&RelInfo);
+  typedef MCStreamer *(*AsmStreamerCtorTy)(
+      MCContext &Context, std::unique_ptr<formatted_raw_ostream> OS,
+      bool isVerboseAsm, bool useDwarfDirectory, MCInstPrinter *IP,
+      MCCodeEmitter *CE, MCAsmBackend *MAB, bool ShowInst);
 
 private:
   /// Next - The next registered target in the linked list, maintained by the
@@ -247,6 +251,9 @@ private:
   /// MCSymbolizerCtorFn - Construction function for this target's
   /// MCSymbolizer, if registered (default = llvm::createMCSymbolizer)
   MCSymbolizerCtorTy MCSymbolizerCtorFn;
+
+  /// Construction function for common asm streamer.
+  AsmStreamerCtorTy AsmStreamerCtorFn = nullptr;
 
 public:
   Target()
@@ -473,9 +480,11 @@ public:
                                 MCInstPrinter *InstPrint, MCCodeEmitter *CE,
                                 MCAsmBackend *TAB, bool ShowInst) const {
     formatted_raw_ostream &OSRef = *OS;
-    MCStreamer *S = llvm::createAsmStreamer(Ctx, std::move(OS), IsVerboseAsm,
-                                            UseDwarfDirectory, InstPrint, CE,
-                                            TAB, ShowInst);
+    AsmStreamerCtorTy Streamer =
+        AsmStreamerCtorFn ? AsmStreamerCtorFn : llvm::createAsmStreamer;
+    MCStreamer *S = Streamer(Ctx, std::move(OS), IsVerboseAsm,
+                             UseDwarfDirectory, InstPrint, CE, TAB, ShowInst);
+
     createAsmTargetStreamer(*S, OSRef, InstPrint, IsVerboseAsm);
     return S;
   }
@@ -814,6 +823,10 @@ struct TargetRegistry {
   RegisterObjectTargetStreamer(Target &T,
                                Target::ObjectTargetStreamerCtorTy Fn) {
     T.ObjectTargetStreamerCtorFn = Fn;
+  }
+
+  static void RegisterAsmStreamer(Target &T, Target::AsmStreamerCtorTy Fn) {
+    T.AsmStreamerCtorFn = Fn;
   }
 
   /// RegisterMCRelocationInfo - Register an MCRelocationInfo
