@@ -521,6 +521,8 @@ public:
   /// cuda-gdb.
   bool isCUDACompatibilityMode() const { return CUDACompatibilityMode; }
 
+  /// Checks if the debug_ranges section should be emitted or not.
+  bool hasRangesDebugInfo() const { return HasRangesDebugInfo; }
   // Experimental DWARF5 features.
 
   /// Returns whether or not to emit tables that dwarf consumers can

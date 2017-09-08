@@ -436,7 +436,8 @@ DIE *DwarfCompileUnit::constructInlinedScopeDIE(LexicalScope *Scope) {
   auto ScopeDIE = DIE::get(DIEValueAllocator, dwarf::DW_TAG_inlined_subroutine);
   addDIEEntry(*ScopeDIE, dwarf::DW_AT_abstract_origin, *OriginDIE);
 
-  attachRangesOrLowHighPC(*ScopeDIE, Scope->getRanges());
+  if (DD->hasRangesDebugInfo() || Scope->getRanges().size() == 1)
+    attachRangesOrLowHighPC(*ScopeDIE, Scope->getRanges());
 
   // Add the call site information to the DIE.
   const DILocation *IA = Scope->getInlinedAt();
@@ -464,7 +465,8 @@ DIE *DwarfCompileUnit::constructLexicalScopeDIE(LexicalScope *Scope) {
   if (Scope->isAbstractScope())
     return ScopeDIE;
 
-  attachRangesOrLowHighPC(*ScopeDIE, Scope->getRanges());
+  if (DD->hasRangesDebugInfo() || Scope->getRanges().size() == 1)
+    attachRangesOrLowHighPC(*ScopeDIE, Scope->getRanges());
 
   return ScopeDIE;
 }
