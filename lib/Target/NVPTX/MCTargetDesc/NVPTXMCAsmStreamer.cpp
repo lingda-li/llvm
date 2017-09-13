@@ -205,7 +205,8 @@ void NVPTXMCAsmStreamer::EmitValueImpl(const MCExpr *Value, unsigned Size,
       OS1 << ".debug_pubnames";
     else if (Sym == FI->getDwarfLineSection()->getBeginSymbol())
       ;
-    else if (EmittedSymbols.count(Sym) > 0)
+    else if (EmittedSymbols.count(Sym) > 0 ||
+             !Sym->isInSection(/*SetUsed=*/false))
       Value->print(OS1, MAI);
     else
       llvm_unreachable("Unknown section.");
