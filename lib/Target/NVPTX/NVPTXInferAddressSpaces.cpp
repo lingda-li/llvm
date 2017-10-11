@@ -277,8 +277,8 @@ static Value *cloneInstructionWithNewAddressSpace(
 
   if (I->getOpcode() == Instruction::AddrSpaceCast) {
     Value *Src = I->getOperand(0);
-    // Because `I` is generic, the source address space must be specific.
-    // Therefore, the inferred address space must be the source space, according
+    // Because `I` is generic, the source address space must be specific. Therefore,
+    // the inferred address space must be the source space, according
     // to our algorithm.
     assert(Src->getType()->getPointerAddressSpace() == NewAddrSpace);
     if (Src->getType() != NewPtrType)
