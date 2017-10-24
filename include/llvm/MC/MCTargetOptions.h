@@ -50,6 +50,8 @@ public:
   /// Preserve Comments in Assembly.
   bool PreserveAsmComments : 1;
 
+  bool NaNsInject = false;
+
   int DwarfVersion;
   /// getABIName - If this returns a non-empty string this represents the
   /// textual name of the ABI that we want the backend to use, e.g. o32, or

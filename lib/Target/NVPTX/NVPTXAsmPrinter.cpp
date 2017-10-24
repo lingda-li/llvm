@@ -62,6 +62,9 @@ InterleaveSrc("nvptx-emit-src", cl::ZeroOrMore, cl::Hidden,
               cl::desc("NVPTX Specific: Emit source line in ptx file"),
               cl::init(false));
 
+cl::opt<bool> NaNsInject("nans-inject", cl::desc("Inject signalling NaNs"),
+                         cl::init(false));
+
 namespace {
 /// DiscoverDependentGlobals - Return a set of GlobalVariables on which \p V
 /// depends.
@@ -1628,6 +1631,40 @@ void NVPTXAsmPrinter::setAndEmitFunctionVirtualRegisters(
     }
   }
 
+  if (NaNsInject && NumBytes && MF.getName() != "___nvptx_cuda_snans_poison") {
+    O << "\t{ // stack init\n";
+    O << "\t.reg .b32 temp_param_reg;\n";
+    if (static_cast<const NVPTXTargetMachine &>(MF.getTarget()).is64Bit()) {
+      O << "\t.reg .b64 \t%DPL;\n";
+      O << "\t.reg .b64 \t%DP;\n";
+      O << "\t.reg .b64 \t%SZ;\n";
+      O << "\tmov.u64 \t%DPL, " << DEPOTNAME << getFunctionNumber() << ";\n";
+      O << "\tcvta.local.u64 \t%DP, %DPL;\n";
+      O << "\tmov.u64 \t%SZ, " << NumBytes << ";\n";
+      O << "\t.param .b64 param0;\n";
+      O << "\tst.param.b64\t[param0+0], %DP;\n";
+      O << "\t.param .b64 param1;\n";
+      O << "\tst.param.b64\t[param1+0], %SZ;\n";
+    } else {
+      O << "\t.reg .b32 \t%DPL;\n";
+      O << "\t.reg .b32 \t%DP;\n";
+      O << "\t.reg .b32 \t%SZ;\n";
+      O << "\tmov.u32 \t%DPL, " << DEPOTNAME << getFunctionNumber() << ";\n";
+      O << "\tcvta.local.u32 \t%DP, %DPL;\n";
+      O << "\tmov.u32 \t%SZ, " << NumBytes << ";\n";
+      O << "\t.param .b32 param0;\n";
+      O << "\tst.param.b32\t[param0+0], %DP;\n";
+      O << "\t.param .b32 param1;\n";
+      O << "\tst.param.b32\t[param1+0], %SZ;\n";
+    }
+    O << "\tcall.uni \n";
+    O << "\t___nvptx_cuda_snans_poison, \n";
+    O << "\t(\n";
+    O << "\tparam0, \n";
+    O << "\tparam1\n";
+    O << "\t);\n";
+    O << "\t} // stack init\n";
+  }
   OutStreamer->EmitRawText(O.str());
 }
 
