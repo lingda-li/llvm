@@ -150,6 +150,7 @@ def hasPTX31 : Predicate<"Subtarget->getPTXVersion() >= 31">;
 def hasPTX60 : Predicate<"Subtarget->getPTXVersion() >= 60">;
 
 def hasSM30 : Predicate<"Subtarget->getSmVersion() >= 30">;
+def hasSM70 : Predicate<"Subtarget->getSmVersion() >= 70">;
 
 //===----------------------------------------------------------------------===//
 // Some Common Instruction Class Templates
