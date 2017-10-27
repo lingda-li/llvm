@@ -588,7 +588,7 @@ void AsmPrinter::EmitFunctionHeader() {
     OutStreamer->EmitLabel(DeadBlockSyms[i]);
   }
 
-  if (CurrentFnBegin) {
+  if (CurrentFnBegin && !MF->getTarget().getTargetTriple().isNVPTX()) {
     if (MAI->useAssignmentForEHBegin()) {
       MCSymbol *CurPos = OutContext.createTempSymbol();
       OutStreamer->EmitLabel(CurPos);
@@ -605,6 +605,9 @@ void AsmPrinter::EmitFunctionHeader() {
                        HI.TimerGroupDescription, TimePassesIsEnabled);
     HI.Handler->beginFunction(MF);
   }
+
+  if (CurrentFnBegin && MF->getTarget().getTargetTriple().isNVPTX())
+    OutStreamer->EmitLabel(CurrentFnBegin);
 
   // Emit the prologue data.
   if (F->hasPrologueData())
